@@ -56,6 +56,9 @@ auditable from this tree.
                                    above with the vendored poly1305 below. all
                                    checked in test/test_aead.c against the rfc
                                    8439 keystream, poly1305 and aead vectors
+    crypto/kdf.c   crypto/kdf.h    argon2id wrapper over the vendored argon2 below,
+                                   checked in test/test_argon2.c against a phc
+                                   reference vector
 
 ## vendored
 
@@ -70,6 +73,15 @@ auditable from this tree.
                            130-bit field arithmetic is the error-prone part we
                            do not hand-roll. exercised by the rfc 8439 poly1305
                            and aead vectors in test/test_aead.c.
+
+    crypto/vendor/argon2/  the argon2 reference (p-h-c/phc-winner-argon2), tag
+                           20190702, commit 62358ba2123abd17fccf2a108a301d4b52c01a7c,
+                           dual cc0-1.0 / apache-2.0 (see its LICENSE). the ref
+                           (non-simd) fill and bundled blake2b, built single-
+                           threaded (-DARGON2_NO_THREADS). argon2 is complex and
+                           consensus-free, exactly the kind to vendor rather than
+                           roll. checked against a phc argon2id vector in
+                           test/test_argon2.c.
 
 each further primitive that lands here will be listed the same way: its upstream,
 the commit or version it came from, its license, and the vectors it is checked

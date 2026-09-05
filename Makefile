@@ -15,19 +15,25 @@ override CFLAGS += -Werror=implicit-function-declaration
 SECP_DIR = depends/secp256k1
 SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 
-CPPFLAGS += -Icrypto -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna
+# argon2 runs single-threaded (parallelism handled in one process), so its
+# thread abstraction is compiled out and no pthread is pulled in.
+CPPFLAGS += -Icrypto -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna \
+            -Icrypto/vendor/argon2 -DARGON2_NO_THREADS
 
 CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c \
            crypto/pbkdf2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
-           crypto/chacha20.c crypto/aead.c \
-           crypto/vendor/poly1305-donna/poly1305-donna.c
+           crypto/chacha20.c crypto/aead.c crypto/kdf.c \
+           crypto/vendor/poly1305-donna/poly1305-donna.c \
+           crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
+           crypto/vendor/argon2/encoding.c crypto/vendor/argon2/ref.c \
+           crypto/vendor/argon2/thread.c crypto/vendor/argon2/blake2/blake2b.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libdogewallet.a
 TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
         test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
-        test/test_address test/test_aead
+        test/test_address test/test_aead test/test_argon2
 
 all: $(LIB)
 
@@ -73,6 +79,14 @@ test/test_address: test/test_address.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_aead: test/test_aead.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_aead.o test/testutil.o $(LIB)
 
+test/test_argon2: test/test_argon2.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_argon2.o test/testutil.o $(LIB)
+
+# Vendored code trips warnings we do not police in upstreams: leave the code as
+# shipped and quiet only those objects.
+crypto/vendor/poly1305-donna/poly1305-donna.o: CFLAGS += -Wno-expansion-to-defined
+crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
@@ -88,6 +102,7 @@ check: $(TESTS)
 	./test/test_bip39
 	./test/test_address
 	./test/test_aead
+	./test/test_argon2
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:
