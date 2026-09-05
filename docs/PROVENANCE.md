@@ -44,6 +44,13 @@ auditable from this tree.
                                    over the wordlist below. english/ascii only,
                                    nfkd not applied. checked against the trezor
                                    vectors in test_bip39.c
+    crypto/chainparams.c/.h        dogecoin main/test/regtest version bytes and
+                                   coin type, from dogecoin core chainparams.cpp
+    crypto/address.c/.h            p2pkh/p2sh addresses and wif over base58check,
+                                   checked in test_address.c against libdogecoin-
+                                   generated wif/address pairs
+    crypto/bip44.c crypto/bip44.h  m/44'/coin'/account'/change/index over bip32,
+                                   checked to match the equivalent path string
 
 ## vendored
 
