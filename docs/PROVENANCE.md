@@ -51,6 +51,11 @@ auditable from this tree.
                                    generated wif/address pairs
     crypto/bip44.c crypto/bip44.h  m/44'/coin'/account'/change/index over bip32,
                                    checked to match the equivalent path string
+    crypto/chacha20.c/.h           chacha20 clean-room from rfc 8439
+    crypto/aead.c  crypto/aead.h   chacha20-poly1305 aead (rfc 8439) composing the
+                                   above with the vendored poly1305 below. all
+                                   checked in test/test_aead.c against the rfc
+                                   8439 keystream, poly1305 and aead vectors
 
 ## vendored
 
@@ -58,6 +63,13 @@ auditable from this tree.
                            array is checked in test/test_bip39.c to reproduce the
                            canonical file byte for byte, sha256
                            2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda.
+
+    crypto/vendor/poly1305-donna/   poly1305, andrew moon's poly1305-donna,
+                           commit e6ad6e091d30d7f4ec2d4f978be1fcfcbce72781,
+                           public domain (mit/unlicense per its readme). the
+                           130-bit field arithmetic is the error-prone part we
+                           do not hand-roll. exercised by the rfc 8439 poly1305
+                           and aead vectors in test/test_aead.c.
 
 each further primitive that lands here will be listed the same way: its upstream,
 the commit or version it came from, its license, and the vectors it is checked

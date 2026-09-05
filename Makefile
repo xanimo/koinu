@@ -15,17 +15,19 @@ override CFLAGS += -Werror=implicit-function-declaration
 SECP_DIR = depends/secp256k1
 SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 
-CPPFLAGS += -Icrypto -Iinclude -I$(SECP_DIR)/include
+CPPFLAGS += -Icrypto -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna
 
 CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c \
            crypto/pbkdf2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
-           crypto/chainparams.c crypto/address.c crypto/bip44.c
+           crypto/chainparams.c crypto/address.c crypto/bip44.c \
+           crypto/chacha20.c crypto/aead.c \
+           crypto/vendor/poly1305-donna/poly1305-donna.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libdogewallet.a
 TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
         test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
-        test/test_address
+        test/test_address test/test_aead
 
 all: $(LIB)
 
@@ -68,6 +70,9 @@ test/test_bip39: test/test_bip39.o test/testutil.o $(LIB)
 test/test_address: test/test_address.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_address.o test/testutil.o $(LIB) $(SECP_LIB)
 
+test/test_aead: test/test_aead.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_aead.o test/testutil.o $(LIB)
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
@@ -82,6 +87,7 @@ check: $(TESTS)
 	./test/test_bip32
 	./test/test_bip39
 	./test/test_address
+	./test/test_aead
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:
