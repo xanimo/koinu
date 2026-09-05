@@ -18,12 +18,12 @@ SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 CPPFLAGS += -Icrypto -Iinclude -I$(SECP_DIR)/include
 
 CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c \
-           crypto/pbkdf2.c crypto/base58.c crypto/ec.c crypto/bip32.c
+           crypto/pbkdf2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libdogewallet.a
 TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
-        test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32
+        test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39
 
 all: $(LIB)
 
@@ -60,6 +60,9 @@ test/test_ec: test/test_ec.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_bip32: test/test_bip32.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_bip32.o test/testutil.o $(LIB) $(SECP_LIB)
 
+test/test_bip39: test/test_bip39.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_bip39.o test/testutil.o $(LIB)
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
@@ -72,6 +75,7 @@ check: $(TESTS)
 	./test/test_base58
 	./test/test_ec
 	./test/test_bip32
+	./test/test_bip39
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:

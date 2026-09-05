@@ -40,9 +40,18 @@ auditable from this tree.
     crypto/bip32.c crypto/bip32.h  bip32 hd keys: master from seed, ckdpriv/pub,
                                    neuter, xprv/xpub, path parsing. checked
                                    against bip32 test vector 1 in test_bip32.c
+    crypto/bip39.c crypto/bip39.h  bip39 entropy<->mnemonic and mnemonic->seed
+                                   over the wordlist below. english/ascii only,
+                                   nfkd not applied. checked against the trezor
+                                   vectors in test_bip39.c
 
 ## vendored
 
-nothing yet. each primitive that lands here will be listed with its upstream,
-the commit or version it was taken from, its license, and the test vectors it is
-checked against, before anything is built on it.
+    crypto/wordlist_en.h   the official bip39 english wordlist, 2048 words. the
+                           array is checked in test/test_bip39.c to reproduce the
+                           canonical file byte for byte, sha256
+                           2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda.
+
+each further primitive that lands here will be listed the same way: its upstream,
+the commit or version it came from, its license, and the vectors it is checked
+against, before anything is built on it.
