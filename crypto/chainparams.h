@@ -18,6 +18,8 @@ typedef struct {
     uint8_t          wif;        /* SECRET_KEY     */
     dw_bip32_version bip32;      /* EXT_SECRET_KEY / EXT_PUBLIC_KEY */
     uint32_t         bip44_coin; /* SLIP-44 coin type */
+    uint32_t         magic;      /* p2p message-start bytes */
+    uint16_t         p2p_port;   /* default p2p port */
 } dw_chainparams;
 
 extern const dw_chainparams DW_DOGE_MAINNET;
