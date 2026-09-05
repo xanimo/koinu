@@ -13,11 +13,11 @@ CFLAGS   ?= -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter
 override CFLAGS += -Werror=implicit-function-declaration
 CPPFLAGS += -Icrypto -Iinclude
 
-CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c
+CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c crypto/ripemd160.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libdogewallet.a
-TESTS = test/test_rng test/test_sha2
+TESTS = test/test_rng test/test_sha2 test/test_ripemd160
 
 all: $(LIB)
 
@@ -30,12 +30,16 @@ test/test_rng: test/test_rng.o $(LIB)
 test/test_sha2: test/test_sha2.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_sha2.o test/testutil.o $(LIB)
 
+test/test_ripemd160: test/test_ripemd160.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_ripemd160.o test/testutil.o $(LIB)
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
 check: $(TESTS)
 	./test/test_rng
 	./test/test_sha2
+	./test/test_ripemd160
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:

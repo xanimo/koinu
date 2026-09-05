@@ -19,6 +19,10 @@ auditable from this tree.
                                    checked against the nist known-answer tests in
                                    test/test_sha2.c (empty, "abc", 1e6 x 'a',
                                    streamed, and double-sha256)
+    crypto/ripemd160.c             ripemd-160 clean-room from the dobbertin/
+    crypto/ripemd160.h             bosselaers/preneel spec, checked against its
+                                   published vectors in test/test_ripemd160.c,
+                                   plus hash160 against the bitcoin pubkey example
 
 ## vendored
 
