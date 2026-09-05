@@ -26,6 +26,9 @@ auditable from this tree.
     crypto/hmac.c  crypto/hmac.h   hmac-sha256 and hmac-sha512 (rfc 2104) over the
                                    sha-2 above, checked against the rfc 4231
                                    vectors in test/test_hmac.c
+    crypto/base58.c                base58 and base58check (double-sha256 checksum),
+    crypto/base58.h                checked in test/test_base58.c against bitcoin's
+                                   raw vectors and the classic address examples
     crypto/ec.c    crypto/ec.h     thin wrapper over the secp256k1 submodule:
                                    compressed keys, rfc6979 low-s ecdsa, and the
                                    bip32 tweak-adds. checked in test/test_ec.c

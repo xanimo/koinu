@@ -17,11 +17,13 @@ SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 
 CPPFLAGS += -Icrypto -Iinclude -I$(SECP_DIR)/include
 
-CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c crypto/ec.c
+CORE_SRC = crypto/rng.c crypto/mem.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c \
+           crypto/base58.c crypto/ec.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libdogewallet.a
-TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_ec
+TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
+        test/test_base58 test/test_ec
 
 all: $(LIB)
 
@@ -46,6 +48,9 @@ test/test_ripemd160: test/test_ripemd160.o test/testutil.o $(LIB)
 test/test_hmac: test/test_hmac.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_hmac.o test/testutil.o $(LIB)
 
+test/test_base58: test/test_base58.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_base58.o test/testutil.o $(LIB)
+
 test/test_ec: test/test_ec.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_ec.o test/testutil.o $(LIB) $(SECP_LIB)
 
@@ -57,6 +62,7 @@ check: $(TESTS)
 	./test/test_sha2
 	./test/test_ripemd160
 	./test/test_hmac
+	./test/test_base58
 	./test/test_ec
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
