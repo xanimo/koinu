@@ -23,6 +23,9 @@ auditable from this tree.
     crypto/ripemd160.h             bosselaers/preneel spec, checked against its
                                    published vectors in test/test_ripemd160.c,
                                    plus hash160 against the bitcoin pubkey example
+    crypto/hmac.c  crypto/hmac.h   hmac-sha256 and hmac-sha512 (rfc 2104) over the
+                                   sha-2 above, checked against the rfc 4231
+                                   vectors in test/test_hmac.c
 
 ## vendored
 
