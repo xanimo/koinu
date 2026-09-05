@@ -15,6 +15,10 @@ auditable from this tree.
 
     crypto/rng.c   crypto/rng.h    getrandom(2), /dev/urandom fallback, fails closed
     crypto/mem.c   crypto/mem.h    volatile zero, constant-time compare, mlock
+    crypto/sha2.c  crypto/sha2.h   sha-256/512 clean-room from fips 180-4,
+                                   checked against the nist known-answer tests in
+                                   test/test_sha2.c (empty, "abc", 1e6 x 'a',
+                                   streamed, and double-sha256)
 
 ## vendored
 
