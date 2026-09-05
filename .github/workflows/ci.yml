@@ -1,0 +1,22 @@
+# Builds the crypto core and runs its test, plain and again under address and
+# undefined-behaviour sanitizers. secp256k1 is checked out as a submodule so the
+# pin is exercised even though nothing links it yet.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: make check
+      - run: make asan
