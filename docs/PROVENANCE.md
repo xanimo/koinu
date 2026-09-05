@@ -59,6 +59,11 @@ auditable from this tree.
     crypto/kdf.c   crypto/kdf.h    argon2id wrapper over the vendored argon2 below,
                                    checked in test/test_argon2.c against a phc
                                    reference vector
+    crypto/keystore.c/.h           encrypted keystore: argon2id-stretched
+                                   passphrase, chacha20-poly1305 with the header
+                                   as aad, fail-closed open. checked in
+                                   test/test_keystore.c for round trip, wrong
+                                   passphrase, and tamper rejection
 
 ## vendored
 
