@@ -23,25 +23,16 @@ static void enc(const uint8_t *in, size_t n, const char *want, const char *name)
     }
 }
 
-static int from_hex(const char *h, uint8_t *out)
-{
-    size_t n = strlen(h) / 2;
-    for (size_t i = 0; i < n; i++) {
-        unsigned v; sscanf(h + i*2, "%2x", &v); out[i] = (uint8_t)v;
-    }
-    return (int)n;
-}
-
 int main(void)
 {
     uint8_t b[64];
     int n;
 
     /* raw base58 */
-    n = from_hex("61", b);            enc(b, n, "2g", "b58(61)");
-    n = from_hex("626262", b);        enc(b, n, "a3gV", "b58(626262)");
-    n = from_hex("636363", b);        enc(b, n, "aPEr", "b58(636363)");
-    n = from_hex("73696d706c792061206c6f6e6720737472696e67", b);
+    n = (int)dw_test_unhex("61", b);            enc(b, n, "2g", "b58(61)");
+    n = (int)dw_test_unhex("626262", b);        enc(b, n, "a3gV", "b58(626262)");
+    n = (int)dw_test_unhex("636363", b);        enc(b, n, "aPEr", "b58(636363)");
+    n = (int)dw_test_unhex("73696d706c792061206c6f6e6720737472696e67", b);
     enc(b, n, "2cFupjhnEsSn59qHXstmK2ffpLv2", "b58(\"simply a long string\")");
 
     /* raw round-trip, including a leading-zero byte -> leading '1' */
@@ -62,7 +53,7 @@ int main(void)
             { "00f54a5851e9372b87810a8e60cdd2e7cfd80b6e31", "1PMycacnJaSqwwJqjawXBErnLsZ7RkXUAs" },
         };
         for (int i = 0; i < 2; i++) {
-            uint8_t pay[21]; from_hex(v[i].hex, pay);
+            uint8_t pay[21]; dw_test_unhex(v[i].hex, pay);
             char out[64];
             size_t r = dw_base58check_encode(pay, sizeof pay, out, sizeof out);
             if (!r || strcmp(out, v[i].addr) != 0) {

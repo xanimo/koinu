@@ -8,8 +8,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Hex-encode (n) bytes into (out), which must hold 2*n+1 chars including NUL. */
-void dw_test_hex(const uint8_t *b, size_t n, char *out);
+/* Decode a hex literal into (out), returning the byte length (strlen(hex)/2).
+   Aborts the process on malformed hex, since that is a bug in the test itself. */
+size_t dw_test_unhex(const char *hex, uint8_t *out);
 
 /* Compare (got,n) against the hex string (want). On mismatch, prints a labelled
    diff and records a failure. Returns 1 on match, 0 otherwise. */

@@ -10,20 +10,13 @@
 #include <stdio.h>
 #include <string.h>
 
-static int from_hex(const char *h, uint8_t *out)
-{
-    size_t n = strlen(h) / 2;
-    for (size_t i = 0; i < n; i++) { unsigned v; sscanf(h + i*2, "%2x", &v); out[i] = (uint8_t)v; }
-    return (int)n;
-}
-
 int main(void)
 {
     /* ChaCha20 keystream block, RFC 8439 section 2.3.2 */
     {
         uint8_t key[32], nonce[12], blk[64];
-        from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key);
-        from_hex("000000090000004a00000000", nonce);
+        dw_test_unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key);
+        dw_test_unhex("000000090000004a00000000", nonce);
         dw_chacha20_block(key, 1, nonce, blk);
         dw_test_check("chacha20 block", blk, 64,
             "10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4e"
@@ -33,7 +26,7 @@ int main(void)
     /* Poly1305, RFC 8439 section 2.5.2 */
     {
         uint8_t key[32]; uint8_t mac[16];
-        from_hex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b", key);
+        dw_test_unhex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b", key);
         const char *m = "Cryptographic Forum Research Group";
         poly1305_context ctx;
         poly1305_init(&ctx, key);
@@ -45,9 +38,9 @@ int main(void)
     /* ChaCha20-Poly1305 AEAD, RFC 8439 section 2.8.2 */
     {
         uint8_t key[32], nonce[12], aad[12];
-        from_hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", key);
-        from_hex("070000004041424344454647", nonce);
-        int aadlen = from_hex("50515253c0c1c2c3c4c5c6c7", aad);
+        dw_test_unhex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", key);
+        dw_test_unhex("070000004041424344454647", nonce);
+        int aadlen = dw_test_unhex("50515253c0c1c2c3c4c5c6c7", aad);
         const char *pt = "Ladies and Gentlemen of the class of '99: If I could offer you only "
                          "one tip for the future, sunscreen would be it.";
         size_t ptlen = strlen(pt);

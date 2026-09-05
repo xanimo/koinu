@@ -15,17 +15,10 @@
 
 static int fails = 0;
 
-static int from_hex(const char *h, uint8_t *out)
-{
-    size_t n = strlen(h) / 2;
-    for (size_t i = 0; i < n; i++) { unsigned v; sscanf(h + i*2, "%2x", &v); out[i] = (uint8_t)v; }
-    return (int)n;
-}
-
 static void vector(const char *ent_hex, const char *mnemonic, const char *seed_hex)
 {
     uint8_t ent[32];
-    int elen = from_hex(ent_hex, ent);
+    int elen = (int)dw_test_unhex(ent_hex, ent);
 
     char m[DW_BIP39_MNEMONIC_MAX];
     if (!dw_bip39_from_entropy(ent, elen, m, sizeof m) || strcmp(m, mnemonic) != 0) {

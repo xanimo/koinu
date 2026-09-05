@@ -15,6 +15,11 @@ auditable from this tree.
 
     crypto/rng.c   crypto/rng.h    getrandom(2), /dev/urandom fallback, fails closed
     crypto/mem.c   crypto/mem.h    volatile zero, constant-time compare, mlock
+    crypto/hex.c   crypto/hex.h    hex encode/decode, the one place the library
+                                   and tests share for hex handling
+    crypto/tx.c    crypto/tx.h     legacy tx build, sighash_all and p2pkh signing.
+                                   test/test_tx.c reproduces a libdogecoin-signed
+                                   spend byte-for-byte and verifies the signature
     crypto/sha2.c  crypto/sha2.h   sha-256/512 clean-room from fips 180-4,
                                    checked against the nist known-answer tests in
                                    test/test_sha2.c (empty, "abc", 1e6 x 'a',
