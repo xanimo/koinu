@@ -26,6 +26,9 @@ auditable from this tree.
     crypto/hmac.c  crypto/hmac.h   hmac-sha256 and hmac-sha512 (rfc 2104) over the
                                    sha-2 above, checked against the rfc 4231
                                    vectors in test/test_hmac.c
+    crypto/pbkdf2.c                pbkdf2-hmac-sha512 (rfc 8018), checked in
+    crypto/pbkdf2.h                test/test_pbkdf2.c against a one-round identity
+                                   and the canonical bip39 mnemonic-to-seed vector
     crypto/base58.c                base58 and base58check (double-sha256 checksum),
     crypto/base58.h                checked in test/test_base58.c against bitcoin's
                                    raw vectors and the classic address examples
