@@ -34,6 +34,9 @@ auditable from this tree.
                                    bip32 tweak-adds. checked in test/test_ec.c
                                    against the G/2G vectors and private/public
                                    derivation agreement
+    crypto/bip32.c crypto/bip32.h  bip32 hd keys: master from seed, ckdpriv/pub,
+                                   neuter, xprv/xpub, path parsing. checked
+                                   against bip32 test vector 1 in test_bip32.c
 
 ## vendored
 
