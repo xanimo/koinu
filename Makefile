@@ -35,10 +35,13 @@ TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
         test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx
 
-all: $(LIB)
+all: $(LIB) kw
 
 $(LIB): $(CORE_OBJ)
 	$(AR) rcs $@ $^
+
+kw: cli/kw.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -o $@ cli/kw.o $(LIB) $(SECP_LIB)
 
 # The one submodule, built via its own autotools into a static lib. Only objects
 # that reference it (ec.o, pulled in by test_ec) need it at link time.
@@ -96,7 +99,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
-check: $(TESTS)
+check: $(TESTS) kw
 	./test/test_rng
 	./test/test_sha2
 	./test/test_ripemd160
@@ -111,6 +114,7 @@ check: $(TESTS)
 	./test/test_argon2
 	./test/test_keystore
 	./test/test_tx
+	./test/test_cli.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:
@@ -119,7 +123,7 @@ asan:
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw cli/*.o
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

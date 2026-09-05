@@ -19,3 +19,15 @@ ignores the return spends an all-zero key rather than uninitialised stack.
 a library core (libdogewallet.a) with a thin cli on top: the core owns the
 crypto, the keys and the wallet state, and the cli stays dumb. docs/PROVENANCE.md
 records the secp256k1 pin and where every vendored primitive came from.
+
+## kw
+
+the cli. the keystore holds the seed; the mnemonic is printed once and never
+stored, so it is the only backup.
+
+    kw new     --keystore w.ks               generate, seal, show the mnemonic
+    kw restore --keystore w.ks --mnemonic -  seal an existing mnemonic
+    kw address --keystore w.ks               derive m/44'/coin'/0'/0/index
+
+passphrases and mnemonics are read from a file (@path), stdin (-), or a no-echo
+prompt, never from argv. --testnet and --regtest switch networks.
