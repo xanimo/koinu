@@ -26,6 +26,11 @@ auditable from this tree.
     crypto/hmac.c  crypto/hmac.h   hmac-sha256 and hmac-sha512 (rfc 2104) over the
                                    sha-2 above, checked against the rfc 4231
                                    vectors in test/test_hmac.c
+    crypto/ec.c    crypto/ec.h     thin wrapper over the secp256k1 submodule:
+                                   compressed keys, rfc6979 low-s ecdsa, and the
+                                   bip32 tweak-adds. checked in test/test_ec.c
+                                   against the G/2G vectors and private/public
+                                   derivation agreement
 
 ## vendored
 
