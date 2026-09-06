@@ -20,11 +20,11 @@ SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 CPPFLAGS += -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna \
             -Icrypto/vendor/argon2 -DARGON2_NO_THREADS
 
-CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c \
+CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
            crypto/pbkdf2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c \
-           net/proto.c net/msg.c net/peer.c net/headers.c net/sync.c net/spv.c \
+           net/proto.c net/msg.c net/peer.c net/headers.c net/sync.c net/spv.c net/gcs.c \
            wallet/utxo.c \
            crypto/vendor/poly1305-donna/poly1305-donna.c \
            crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
@@ -33,11 +33,11 @@ CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libkw.a
-TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
+TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
         test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx \
         test/test_proto test/test_msg test/test_peer test/test_headers test/test_sync \
-        test/test_utxo test/test_spv
+        test/test_utxo test/test_spv test/test_gcs
 
 all: $(LIB) kw
 
@@ -64,6 +64,9 @@ test/test_ripemd160: test/test_ripemd160.o test/testutil.o $(LIB)
 
 test/test_hmac: test/test_hmac.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_hmac.o test/testutil.o $(LIB)
+
+test/test_siphash: test/test_siphash.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_siphash.o $(LIB)
 
 test/test_pbkdf2: test/test_pbkdf2.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_pbkdf2.o test/testutil.o $(LIB)
@@ -116,6 +119,9 @@ test/test_utxo: test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_spv: test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
 
+test/test_gcs: test/test_gcs.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_gcs.o test/testutil.o $(LIB)
+
 net_sync: test/net_sync.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_sync.o $(LIB)
 
@@ -140,6 +146,7 @@ check: $(TESTS) kw
 	./test/test_sha2
 	./test/test_ripemd160
 	./test/test_hmac
+	./test/test_siphash
 	./test/test_pbkdf2
 	./test/test_base58
 	./test/test_ec
@@ -157,6 +164,7 @@ check: $(TESTS) kw
 	./test/test_sync
 	./test/test_utxo
 	./test/test_spv
+	./test/test_gcs
 	./test/test_cli.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
