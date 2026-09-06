@@ -24,7 +24,7 @@ CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160
            crypto/pbkdf2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c \
-           net/proto.c net/msg.c \
+           net/proto.c net/msg.c net/peer.c \
            crypto/vendor/poly1305-donna/poly1305-donna.c \
            crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
            crypto/vendor/argon2/encoding.c crypto/vendor/argon2/ref.c \
@@ -35,7 +35,7 @@ LIB   = libdogewallet.a
 TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
         test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx \
-        test/test_proto test/test_msg
+        test/test_proto test/test_msg test/test_peer
 
 all: $(LIB) kw
 
@@ -99,6 +99,13 @@ test/test_proto: test/test_proto.o test/testutil.o $(LIB)
 test/test_msg: test/test_msg.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_msg.o test/testutil.o $(LIB)
 
+test/test_peer: test/test_peer.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_peer.o $(LIB)
+
+# live handshake tool, built on demand, not part of `make check`
+net_handshake: test/net_handshake.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/net_handshake.o $(LIB)
+
 # Vendored code trips warnings we do not police in upstreams: leave the code as
 # shipped and quiet only those objects.
 crypto/vendor/poly1305-donna/poly1305-donna.o: CFLAGS += -Wno-expansion-to-defined
@@ -124,6 +131,7 @@ check: $(TESTS) kw
 	./test/test_tx
 	./test/test_proto
 	./test/test_msg
+	./test/test_peer
 	./test/test_cli.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
@@ -133,7 +141,7 @@ asan:
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw cli/*.o
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw cli/*.o net_handshake
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
