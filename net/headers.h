@@ -3,9 +3,9 @@
  * Copyright (c) 2026 bluezr
  *
  * The block hash that links the chain is SHA256d of the 80-byte header, not the
- * scrypt PoW hash. AuxPoW-carrying headers (the merged-mining case) are not yet
- * parsed; kw_msg_headers_parse returns -1 on one. Regtest and pre-AuxPoW headers
- * parse fine. */
+ * scrypt PoW hash. AuxPoW-carrying headers (merged mining) are handled by
+ * skipping the AuxPoW blob after the 80-byte header, so the pure header still
+ * links the chain; the AuxPoW proof itself is not validated here. */
 
 #ifndef KOINU_HEADERS_H
 #define KOINU_HEADERS_H
@@ -37,8 +37,8 @@ size_t kw_msg_getheaders_build(uint32_t version,
                                const uint8_t hash_stop[32],
                                uint8_t *out, size_t outcap);
 
-/* Parse a headers payload into (out). Sets *nout. Returns 1 on success, 0 if
-   malformed or the count exceeds (maxout), -1 if any entry carries AuxPoW. */
+/* Parse a headers payload into (out), skipping any AuxPoW blob. Sets *nout.
+   Returns 1 on success, 0 if malformed or the count exceeds (maxout). */
 int kw_msg_headers_parse(const uint8_t *in, size_t len,
                          kw_block_header *out, size_t maxout, size_t *nout);
 
