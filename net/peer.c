@@ -5,6 +5,7 @@
 #include "peer.h"
 #include "proto.h"
 #include "msg.h"
+#include "socks5.h"
 #include "rng.h"
 #include "mem.h"
 
@@ -70,6 +71,16 @@ int kw_peer_connect(kw_peer *p, const kw_chainparams *cp,
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
 
+    if (!kw_peer_from_fd(p, cp->magic, fd)) { close(fd); return 0; }
+    return 1;
+}
+
+int kw_peer_connect_socks5(kw_peer *p, const kw_chainparams *cp,
+                           const char *host, int port, int timeout_sec,
+                           const char *proxy_host, int proxy_port)
+{
+    int fd = kw_socks5_connect(proxy_host, proxy_port, host, port, timeout_sec);
+    if (fd < 0) return 0;
     if (!kw_peer_from_fd(p, cp->magic, fd)) { close(fd); return 0; }
     return 1;
 }

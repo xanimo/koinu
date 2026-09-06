@@ -18,10 +18,11 @@ int main(int argc, char **argv)
 {
     const kw_chainparams *cp = &KW_DOGE_MAINNET;
     const char *host = "127.0.0.1";
-    int port = -1;
+    int port = -1, tor = 0;
     for (int i = 1, seen = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--testnet")) cp = &KW_DOGE_TESTNET;
         else if (!strcmp(argv[i], "--regtest")) cp = &KW_DOGE_REGTEST;
+        else if (!strcmp(argv[i], "--tor")) tor = 1;
         else if (argv[i][0] == '-') continue;
         else if (seen++ == 0) host = argv[i];
         else port = atoi(argv[i]);
@@ -29,7 +30,9 @@ int main(int argc, char **argv)
     if (port < 0) port = cp->p2p_port;
 
     kw_peer p;
-    if (!kw_peer_connect(&p, cp, host, port, 15)) { fprintf(stderr, "connect failed\n"); return 1; }
+    int ok = tor ? kw_peer_connect_socks5(&p, cp, host, port, 15, "127.0.0.1", 9050)
+                 : kw_peer_connect(&p, cp, host, port, 15);
+    if (!ok) { fprintf(stderr, "connect failed\n"); return 1; }
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "handshake failed\n"); kw_peer_close(&p); return 1; }
     printf("handshake ok, peer height %d\n", p.peer_height);
 

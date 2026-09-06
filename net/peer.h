@@ -31,6 +31,12 @@ int  kw_peer_from_fd(kw_peer *p, uint32_t magic, int fd);
 int  kw_peer_connect(kw_peer *p, const kw_chainparams *cp,
                      const char *host, int port, int timeout_sec);
 
+/* Connect to (host:port) through a SOCKS5 proxy (Tor). (host) may be a name,
+   including a .onion, resolved by the proxy. Returns 1. */
+int  kw_peer_connect_socks5(kw_peer *p, const kw_chainparams *cp,
+                            const char *host, int port, int timeout_sec,
+                            const char *proxy_host, int proxy_port);
+
 /* Frame (cmd, payload) and write it. Returns 1 on success. */
 int  kw_peer_send(kw_peer *p, const char *cmd, const uint8_t *payload, size_t plen);
 

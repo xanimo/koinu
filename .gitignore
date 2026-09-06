@@ -18,6 +18,7 @@
 /test/test_proto
 /test/test_msg
 /test/test_peer
+/test/test_socks5
 /test/net_handshake
 /net_handshake
 /test/test_headers
