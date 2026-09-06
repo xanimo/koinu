@@ -72,4 +72,15 @@ int  kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
 /* Double-SHA256 of the serialization, internal byte order (reverse for display). */
 int  kw_tx_txid(const kw_tx *tx, uint8_t out[32]);
 
+/* Walk a legacy (non-segwit) serialized transaction, reporting each input's
+   prevout and each output. on_output receives this tx's txid (internal order),
+   so a scanner can form the created outpoint. Dogecoin chain transactions are
+   legacy, so txid is SHA256d over the whole tx. Returns the number of bytes
+   consumed (the tx length, so a caller can walk a block) or 0 if malformed. */
+size_t kw_tx_scan(const uint8_t *raw, size_t len, uint8_t txid[32],
+                  void (*on_input)(void *ctx, const uint8_t prev_txid[32], uint32_t vout),
+                  void (*on_output)(void *ctx, const uint8_t txid[32], uint32_t index,
+                                    uint64_t value, const uint8_t *spk, size_t spklen),
+                  void *ctx);
+
 #endif /* KOINU_TX_H */

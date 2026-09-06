@@ -166,3 +166,85 @@ int kw_tx_txid(const kw_tx *tx, uint8_t out[32])
     kw_secure_zero(buf, sizeof buf);
     return 1;
 }
+
+/* ── bounds-checked reader for scanning ──────────────────────── */
+typedef struct { const uint8_t *p; size_t len, off; int bad; } rd;
+
+static uint64_t rd_le(rd *r, int n)
+{
+    if (r->bad || r->off + (size_t)n > r->len) { r->bad = 1; return 0; }
+    uint64_t v = 0;
+    for (int i = 0; i < n; i++) v |= (uint64_t)r->p[r->off + i] << (8 * i);
+    r->off += (size_t)n;
+    return v;
+}
+static uint64_t rd_varint(rd *r)
+{
+    if (r->bad || r->off >= r->len) { r->bad = 1; return 0; }
+    uint8_t pfx = r->p[r->off++];
+    if (pfx < 0xfd) return pfx;
+    return rd_le(r, pfx == 0xfd ? 2 : pfx == 0xfe ? 4 : 8);
+}
+static void rd_skip(rd *r, uint64_t n)
+{
+    if (r->bad || n > (uint64_t)(r->len - r->off)) { r->bad = 1; return; }
+    r->off += (size_t)n;
+}
+/* a count can't exceed the bytes left, which also bounds its loop */
+static uint64_t rd_count(rd *r)
+{
+    uint64_t v = rd_varint(r);
+    if (v > (uint64_t)(r->len - r->off)) r->bad = 1;
+    return v;
+}
+
+/* One pass over a legacy tx. When (fire), reports inputs and outputs; (txid) is
+   only used for the output callback. */
+static void tx_walk(rd *r, int fire, const uint8_t txid[32],
+                    void (*on_in)(void *, const uint8_t[32], uint32_t),
+                    void (*on_out)(void *, const uint8_t[32], uint32_t, uint64_t,
+                                   const uint8_t *, size_t),
+                    void *ctx)
+{
+    rd_skip(r, 4);                            /* version */
+    uint64_t nin = rd_count(r);
+    for (uint64_t i = 0; i < nin && !r->bad; i++) {
+        if (r->off + 36 > r->len) { r->bad = 1; break; }
+        const uint8_t *prev = r->p + r->off;
+        r->off += 32;
+        uint32_t vout = (uint32_t)rd_le(r, 4);
+        if (fire && on_in) on_in(ctx, prev, vout);
+        rd_skip(r, rd_count(r));             /* scriptSig */
+        rd_skip(r, 4);                        /* sequence */
+    }
+    uint64_t nout = rd_count(r);
+    for (uint64_t i = 0; i < nout && !r->bad; i++) {
+        uint64_t value = rd_le(r, 8);
+        uint64_t sl = rd_count(r);
+        if (r->bad) break;
+        const uint8_t *spk = r->p + r->off;
+        rd_skip(r, sl);
+        if (fire && on_out && !r->bad) on_out(ctx, txid, (uint32_t)i, value, spk, (size_t)sl);
+    }
+    rd_skip(r, 4);                            /* locktime */
+}
+
+size_t kw_tx_scan(const uint8_t *raw, size_t len, uint8_t txid[32],
+                  void (*on_input)(void *, const uint8_t[32], uint32_t),
+                  void (*on_output)(void *, const uint8_t[32], uint32_t, uint64_t,
+                                    const uint8_t *, size_t),
+                  void *ctx)
+{
+    rd r1 = { raw, len, 0, 0 };
+    tx_walk(&r1, 0, NULL, NULL, NULL, NULL);  /* length + validity pass */
+    if (r1.bad) return 0;
+    size_t consumed = r1.off;
+
+    uint8_t id[32];
+    kw_hash256(raw, consumed, id);
+    if (txid) memcpy(txid, id, 32);
+
+    rd r2 = { raw, consumed, 0, 0 };
+    tx_walk(&r2, 1, id, on_input, on_output, ctx);  /* reporting pass */
+    return consumed;
+}
