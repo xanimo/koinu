@@ -33,7 +33,7 @@ int main(void)
     /* sign / verify round trip, and rejection of a tampered hash */
     uint8_t sk[32], pk[33], h[32], sig[KW_EC_SIG_DER_MAX];
     size_t siglen = 0;
-    kw_sha256("koinu ec seckey", 20, sk);
+    kw_sha256("koinu ec seckey", 15, sk);
     if (!kw_ec_seckey_verify(sk)) { fprintf(stderr, "FAIL: derived sk invalid\n"); return 1; }
     kw_ec_pubkey(sk, pk);
     kw_sha256("a message to sign", 17, h);
