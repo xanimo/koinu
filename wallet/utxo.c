@@ -4,7 +4,9 @@
 
 #include "utxo.h"
 #include "tx.h"
+#include "hex.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -81,8 +83,8 @@ static void utxo_remove(kw_utxoset *us, const uint8_t txid[32], uint32_t vout)
     }
 }
 
-static int utxo_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
-                    uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen)
+int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
+                   uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen)
 {
     if (spklen > KW_SPK_MAX) return 0;
     if (us->count == us->cap) {
@@ -119,7 +121,7 @@ static void on_output(void *vc, const uint8_t txid[32], uint32_t index,
 {
     struct apply_ctx *c = (struct apply_ctx *)vc;
     if (spklen <= KW_SPK_MAX && kw_watchset_has(c->ws, spk, spklen))
-        if (!utxo_add(c->us, txid, index, value, c->height, spk, spklen)) c->ok = 0;
+        if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen)) c->ok = 0;
 }
 
 int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,
@@ -128,4 +130,45 @@ int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,
     struct apply_ctx c = { us, ws, height, 1 };
     if (kw_tx_scan(rawtx, len, NULL, on_input, on_output, &c) == 0) return 0;
     return c.ok;
+}
+
+/* ── persistence ─────────────────────────────────────────────── */
+int kw_utxoset_save(const kw_utxoset *us, const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return 0;
+    fprintf(f, "# koinu utxo set v1\n");
+    int ok = 1;
+    for (size_t i = 0; i < us->count && ok; i++) {
+        const kw_utxo *u = &us->u[i];
+        char txid[65], spk[2 * KW_SPK_MAX + 1];
+        if (!kw_hex_encode(u->txid, 32, txid, sizeof txid) ||
+            !kw_hex_encode(u->spk, u->spklen, spk, sizeof spk)) { ok = 0; break; }
+        if (fprintf(f, "%s %u %llu %u %s\n", txid, u->vout,
+                    (unsigned long long)u->value, u->height, spk) < 0) ok = 0;
+    }
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+int kw_utxoset_load(kw_utxoset *us, const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[4 + 2 * KW_SPK_MAX + 128];
+    int ok = 1;
+    while (ok && fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char txidhex[128], spkhex[2 * KW_SPK_MAX + 1];
+        unsigned vout, height; unsigned long long value;
+        if (sscanf(line, "%127s %u %llu %u %s", txidhex, &vout, &value, &height, spkhex) != 5) { ok = 0; break; }
+        uint8_t txid[32], spk[KW_SPK_MAX];
+        size_t spklen = strlen(spkhex) / 2;
+        if (strlen(txidhex) != 64 || spklen == 0 || spklen > KW_SPK_MAX ||
+            !kw_hex_decode(txidhex, 64, txid, 32) ||
+            !kw_hex_decode(spkhex, strlen(spkhex), spk, spklen)) { ok = 0; break; }
+        if (!kw_utxoset_add(us, txid, vout, value, height, spk, spklen)) { ok = 0; break; }
+    }
+    fclose(f);
+    return ok;
 }

@@ -95,8 +95,24 @@ int main(void)
     /* a malformed (truncated) transaction is rejected. */
     if (kw_utxoset_apply_tx(&us, &ws, cb, cblen - 5, 4)) { fprintf(stderr, "FAIL: truncated accepted\n"); return 1; }
 
+    /* save and reload preserves the set exactly. */
+    {
+        const char *tmp = "test_utxo_roundtrip.tmp";
+        if (!kw_utxoset_save(&us, tmp)) { fprintf(stderr, "FAIL: save\n"); return 1; }
+        kw_utxoset us2; kw_utxoset_init(&us2);
+        if (!kw_utxoset_load(&us2, tmp)) { fprintf(stderr, "FAIL: load\n"); return 1; }
+        if (kw_utxoset_count(&us2) != kw_utxoset_count(&us) ||
+            kw_utxoset_balance(&us2) != kw_utxoset_balance(&us)) { fprintf(stderr, "FAIL: roundtrip totals\n"); return 1; }
+        const kw_utxo *a = &us.u[0], *b = &us2.u[0];
+        if (memcmp(a->txid, b->txid, 32) || a->vout != b->vout || a->value != b->value ||
+            a->height != b->height || a->spklen != b->spklen ||
+            memcmp(a->spk, b->spk, a->spklen)) { fprintf(stderr, "FAIL: roundtrip fields\n"); return 1; }
+        kw_utxoset_free(&us2);
+        remove(tmp);
+    }
+
     kw_utxoset_free(&us);
     kw_watchset_free(&ws);
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation rejected\n");
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation, save/load\n");
     return 0;
 }

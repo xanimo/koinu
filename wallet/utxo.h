@@ -41,6 +41,16 @@ void     kw_utxoset_free(kw_utxoset *us);
 size_t   kw_utxoset_count(const kw_utxoset *us);
 uint64_t kw_utxoset_balance(const kw_utxoset *us);
 
+/* Insert one UTXO. Returns 1, or 0 on a too-long script or out of memory. */
+int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
+                   uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen);
+
+/* Persist the set as text, one "txid vout value height spk" line per UTXO (txid
+   and spk hex, internal byte order). Load appends onto (us). Return 1, or 0 on
+   an i/o or format error. */
+int kw_utxoset_save(const kw_utxoset *us, const char *path);
+int kw_utxoset_load(kw_utxoset *us, const char *path);
+
 /* Apply one transaction at (height): remove UTXOs it spends, add outputs paying
    a watched script. Returns 1, or 0 if the transaction is malformed. */
 int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,
