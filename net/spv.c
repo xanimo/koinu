@@ -67,30 +67,34 @@ int kw_block_scan(const uint8_t *msg, size_t len,
 }
 
 /* ── live driver ─────────────────────────────────────────────── */
+int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
+                       kw_utxoset *us, const kw_watchset *ws, uint32_t height)
+{
+    uint8_t body[64];
+    size_t bn = kw_msg_getdata_blocks_build((const uint8_t (*)[32])hash, 1, body, sizeof body);
+    if (!bn || !kw_peer_send(p, "getdata", body, bn)) return 0;
+
+    char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
+    int got = 0;
+    while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
+        if (!strcmp(cmd, "block")) { got = 1; break; }
+        if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+    }
+    if (!got) return 0;
+
+    /* the block we asked for, not some other one */
+    kw_block_header hdr;
+    if (!kw_block_header_parse(pl, pn, &hdr) || memcmp(hdr.hash, hash, 32) != 0) return 0;
+
+    return kw_block_scan(pl, pn, us, ws, height);
+}
+
 long kw_spv_sync_blocks(kw_peer *p, const kw_headerstore *s,
                         kw_utxoset *us, const kw_watchset *ws, uint32_t base_height)
 {
     long scanned = 0;
     for (size_t h = 0; h < s->count; h++) {
-        uint8_t body[64];
-        size_t bn = kw_msg_getdata_blocks_build((const uint8_t (*)[32])s->h[h].hash, 1,
-                                                body, sizeof body);
-        if (!bn || !kw_peer_send(p, "getdata", body, bn)) return -1;
-
-        char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-        int got = 0, r;
-        while ((r = kw_peer_recv(p, cmd, &pl, &pn)) == 1) {
-            if (!strcmp(cmd, "block")) { got = 1; break; }
-            if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
-        }
-        if (!got) return -1;
-
-        /* the block we asked for, not some other one */
-        kw_block_header hdr;
-        if (!kw_block_header_parse(pl, pn, &hdr) ||
-            memcmp(hdr.hash, s->h[h].hash, 32) != 0) return -1;
-
-        if (!kw_block_scan(pl, pn, us, ws, base_height + (uint32_t)h)) return -1;
+        if (!kw_spv_fetch_block(p, s->h[h].hash, us, ws, base_height + (uint32_t)h)) return -1;
         scanned++;
     }
     return scanned;

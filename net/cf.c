@@ -1,0 +1,118 @@
+/* koinu.dog - BIP157 compact-filter sync
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 bluezr */
+
+#include "cf.h"
+#include "gcs.h"
+#include "spv.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+size_t kw_msg_getcfilters_build(uint8_t type, uint32_t start_height,
+                                const uint8_t stop_hash[32], uint8_t *out, size_t outcap)
+{
+    if (outcap < 1 + 4 + 32) return 0;
+    out[0] = type;
+    for (int i = 0; i < 4; i++) out[1 + i] = (uint8_t)(start_height >> (8 * i));
+    memcpy(out + 5, stop_hash, 32);
+    return 1 + 4 + 32;
+}
+
+int kw_msg_cfilter_parse(const uint8_t *payload, size_t len,
+                         uint8_t *type, uint8_t block_hash[32],
+                         const uint8_t **filter, size_t *flen)
+{
+    if (len < 1 + 32 + 1) return 0;
+    *type = payload[0];
+    memcpy(block_hash, payload + 1, 32);
+
+    size_t off = 33;
+    uint8_t pfx = payload[off++];
+    uint64_t n;
+    if (pfx < 0xfd) n = pfx;
+    else {
+        int k = pfx == 0xfd ? 2 : pfx == 0xfe ? 4 : 8;
+        if (off + (size_t)k > len) return 0;
+        n = 0;
+        for (int i = 0; i < k; i++) n |= (uint64_t)payload[off + i] << (8 * i);
+        off += (size_t)k;
+    }
+    if (n > (uint64_t)(len - off)) return 0;
+    *filter = payload + off;
+    *flen = (size_t)n;
+    return 1;
+}
+
+long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
+                kw_utxoset *us, const kw_watchset *ws, uint32_t base_height)
+{
+    if (s->count == 0) return 0;
+
+    kw_gcs_item *items = NULL;
+    if (ws->count) {
+        items = (kw_gcs_item *)malloc(ws->count * sizeof *items);
+        if (!items) return -1;
+        for (size_t i = 0; i < ws->count; i++) {
+            items[i].script = ws->w[i].spk;
+            items[i].len = ws->w[i].len;
+        }
+    }
+
+    size_t *matched = NULL, nm = 0, capm = 0;
+    int err = 0;
+    const size_t CHUNK = 1000;                 /* BIP157 caps a request at 1000 */
+
+    for (size_t s0 = 0; s0 < s->count && !err; s0 += CHUNK) {
+        size_t s1 = s0 + CHUNK;
+        if (s1 > s->count) s1 = s->count;
+
+        uint8_t body[37];
+        size_t bn = kw_msg_getcfilters_build(KW_CF_TYPE_BASIC, base_height + (uint32_t)s0,
+                                             s->h[s1 - 1].hash, body, sizeof body);
+        if (!bn || !kw_peer_send(p, "getcfilters", body, bn)) { err = 1; break; }
+
+        for (size_t k = s0; k < s1 && !err; k++) {
+            char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
+            int got = 0;
+            while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
+                if (!strcmp(cmd, "cfilter")) { got = 1; break; }
+                if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+            }
+            if (!got) { err = 1; break; }
+
+            uint8_t type, bh[32]; const uint8_t *filt; size_t flen;
+            if (!kw_msg_cfilter_parse(pl, pn, &type, bh, &filt, &flen)) { err = 1; break; }
+            /* filters arrive in height order; each must be the block we expect */
+            if (type != KW_CF_TYPE_BASIC || memcmp(bh, s->h[k].hash, 32) != 0) { err = 1; break; }
+
+            int m = ws->count ? kw_gcs_match_any(filt, flen, bh, items, ws->count) : 0;
+            if (m < 0) { err = 1; break; }
+            if (m == 1) {
+                if (nm == capm) {
+                    size_t nc = capm ? capm * 2 : 16;
+                    size_t *t = (size_t *)realloc(matched, nc * sizeof *t);
+                    if (!t) { err = 1; break; }
+                    matched = t; capm = nc;
+                }
+                matched[nm++] = k;
+            }
+        }
+    }
+
+    long scanned = -1;
+    if (!err) {
+        scanned = 0;
+        for (size_t i = 0; i < nm; i++) {
+            size_t k = matched[i];
+            if (!kw_spv_fetch_block(p, s->h[k].hash, us, ws, base_height + (uint32_t)k)) {
+                scanned = -1; break;
+            }
+            scanned++;
+        }
+    }
+
+    free(items);
+    free(matched);
+    return scanned;
+}

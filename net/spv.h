@@ -29,6 +29,11 @@ size_t kw_msg_getdata_blocks_build(const uint8_t (*hashes)[32], size_t n,
 int kw_block_scan(const uint8_t *msg, size_t len,
                   kw_utxoset *us, const kw_watchset *ws, uint32_t height);
 
+/* Download one block by hash over (p), verify it matches, and scan it into (us)
+   at (height). Returns 1 on success, 0 on error. Shared by both backends. */
+int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
+                       kw_utxoset *us, const kw_watchset *ws, uint32_t height);
+
 /* Download and scan every block in the header store over (p), applying to (us).
    The store holds a contiguous chain; (base_height) is the block height of its
    first entry (1 for a from-scratch sync, since genesis is not stored), used to
