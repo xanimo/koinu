@@ -1,9 +1,9 @@
-/* dogewallet - Dogecoin network parameters
+/* koinu.dog - Dogecoin network parameters
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
-#ifndef DOGEWALLET_CHAINPARAMS_H
-#define DOGEWALLET_CHAINPARAMS_H
+#ifndef KOINU_CHAINPARAMS_H
+#define KOINU_CHAINPARAMS_H
 
 #include <stdint.h>
 
@@ -16,14 +16,14 @@ typedef struct {
     uint8_t          p2pkh;      /* PUBKEY_ADDRESS */
     uint8_t          p2sh;       /* SCRIPT_ADDRESS */
     uint8_t          wif;        /* SECRET_KEY     */
-    dw_bip32_version bip32;      /* EXT_SECRET_KEY / EXT_PUBLIC_KEY */
+    kw_bip32_version bip32;      /* EXT_SECRET_KEY / EXT_PUBLIC_KEY */
     uint32_t         bip44_coin; /* SLIP-44 coin type */
     uint32_t         magic;      /* p2p message-start bytes */
     uint16_t         p2p_port;   /* default p2p port */
-} dw_chainparams;
+} kw_chainparams;
 
-extern const dw_chainparams DW_DOGE_MAINNET;
-extern const dw_chainparams DW_DOGE_TESTNET;
-extern const dw_chainparams DW_DOGE_REGTEST;
+extern const kw_chainparams KW_DOGE_MAINNET;
+extern const kw_chainparams KW_DOGE_TESTNET;
+extern const kw_chainparams KW_DOGE_REGTEST;
 
-#endif /* DOGEWALLET_CHAINPARAMS_H */
+#endif /* KOINU_CHAINPARAMS_H */

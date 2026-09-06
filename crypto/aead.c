@@ -1,4 +1,4 @@
-/* dogewallet - ChaCha20-Poly1305 AEAD (RFC 8439)
+/* koinu.dog - ChaCha20-Poly1305 AEAD (RFC 8439)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -26,7 +26,7 @@ static void tag_compute(const uint8_t key[32], const uint8_t nonce[12],
                         uint8_t tag[16])
 {
     uint8_t block0[64], polykey[32];
-    dw_chacha20_block(key, 0, nonce, block0);
+    kw_chacha20_block(key, 0, nonce, block0);
     memcpy(polykey, block0, 32);
 
     static const uint8_t zeros[16] = {0};
@@ -42,35 +42,35 @@ static void tag_compute(const uint8_t key[32], const uint8_t nonce[12],
     poly1305_update(&ctx, lens, sizeof lens);
     poly1305_finish(&ctx, tag);
 
-    dw_secure_zero(block0, sizeof block0);
-    dw_secure_zero(polykey, sizeof polykey);
+    kw_secure_zero(block0, sizeof block0);
+    kw_secure_zero(polykey, sizeof polykey);
 }
 
-void dw_chacha20poly1305_encrypt(const uint8_t key[DW_AEAD_KEY],
-                                 const uint8_t nonce[DW_AEAD_NONCE],
+void kw_chacha20poly1305_encrypt(const uint8_t key[KW_AEAD_KEY],
+                                 const uint8_t nonce[KW_AEAD_NONCE],
                                  const uint8_t *aad, size_t aadlen,
                                  const uint8_t *pt, size_t ptlen,
-                                 uint8_t *ct, uint8_t tag[DW_AEAD_TAG])
+                                 uint8_t *ct, uint8_t tag[KW_AEAD_TAG])
 {
-    dw_chacha20_xor(key, 1, nonce, pt, ptlen, ct);
+    kw_chacha20_xor(key, 1, nonce, pt, ptlen, ct);
     tag_compute(key, nonce, aad, aadlen, ct, ptlen, tag);
 }
 
-int dw_chacha20poly1305_decrypt(const uint8_t key[DW_AEAD_KEY],
-                                const uint8_t nonce[DW_AEAD_NONCE],
+int kw_chacha20poly1305_decrypt(const uint8_t key[KW_AEAD_KEY],
+                                const uint8_t nonce[KW_AEAD_NONCE],
                                 const uint8_t *aad, size_t aadlen,
                                 const uint8_t *ct, size_t ctlen,
-                                const uint8_t tag[DW_AEAD_TAG],
+                                const uint8_t tag[KW_AEAD_TAG],
                                 uint8_t *pt)
 {
-    uint8_t want[DW_AEAD_TAG];
+    uint8_t want[KW_AEAD_TAG];
     tag_compute(key, nonce, aad, aadlen, ct, ctlen, want);
-    if (dw_memeq_ct(want, tag, DW_AEAD_TAG) != 0) {
-        dw_secure_zero(want, sizeof want);
-        if (pt) dw_secure_zero(pt, ctlen);   /* never expose unauthenticated data */
+    if (kw_memeq_ct(want, tag, KW_AEAD_TAG) != 0) {
+        kw_secure_zero(want, sizeof want);
+        if (pt) kw_secure_zero(pt, ctlen);   /* never expose unauthenticated data */
         return 0;
     }
-    dw_secure_zero(want, sizeof want);
-    dw_chacha20_xor(key, 1, nonce, ct, ctlen, pt);
+    kw_secure_zero(want, sizeof want);
+    kw_chacha20_xor(key, 1, nonce, ct, ctlen, pt);
     return 1;
 }

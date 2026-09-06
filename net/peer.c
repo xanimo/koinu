@@ -1,4 +1,4 @@
-/* dogewallet - p2p peer connection and handshake
+/* koinu.dog - p2p peer connection and handshake
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 #define RBUF_INIT 8192
-#define RBUF_MAX  (DW_MSG_HDR + DW_MSG_MAX_PAYLOAD)
+#define RBUF_MAX  (KW_MSG_HDR + KW_MSG_MAX_PAYLOAD)
 
 static uint32_t get_le32(const uint8_t *p)
 {
@@ -40,7 +40,7 @@ static int ensure_cap(uint8_t **buf, size_t *cap, size_t need)
     return 1;
 }
 
-int dw_peer_from_fd(dw_peer *p, uint32_t magic, int fd)
+int kw_peer_from_fd(kw_peer *p, uint32_t magic, int fd)
 {
     memset(p, 0, sizeof *p);
     p->fd = fd;
@@ -51,7 +51,7 @@ int dw_peer_from_fd(dw_peer *p, uint32_t magic, int fd)
     return 1;
 }
 
-int dw_peer_connect(dw_peer *p, const dw_chainparams *cp,
+int kw_peer_connect(kw_peer *p, const kw_chainparams *cp,
                     const char *host, int port, int timeout_sec)
 {
     struct sockaddr_in sa;
@@ -70,7 +70,7 @@ int dw_peer_connect(dw_peer *p, const dw_chainparams *cp,
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
 
-    if (!dw_peer_from_fd(p, cp->magic, fd)) { close(fd); return 0; }
+    if (!kw_peer_from_fd(p, cp->magic, fd)) { close(fd); return 0; }
     return 1;
 }
 
@@ -85,24 +85,24 @@ static int write_all(int fd, const uint8_t *b, size_t n)
     return 1;
 }
 
-int dw_peer_send(dw_peer *p, const char *cmd, const uint8_t *payload, size_t plen)
+int kw_peer_send(kw_peer *p, const char *cmd, const uint8_t *payload, size_t plen)
 {
-    uint8_t stackbuf[DW_MSG_HDR + 512];
+    uint8_t stackbuf[KW_MSG_HDR + 512];
     uint8_t *buf = stackbuf;
-    size_t need = DW_MSG_HDR + plen;
+    size_t need = KW_MSG_HDR + plen;
     if (need > sizeof stackbuf) { buf = (uint8_t *)malloc(need); if (!buf) return 0; }
 
-    size_t n = dw_msg_serialize(p->magic, cmd, payload, plen, buf, need);
+    size_t n = kw_msg_serialize(p->magic, cmd, payload, plen, buf, need);
     int ok = n && write_all(p->fd, buf, n);
     if (buf != stackbuf) free(buf);
     return ok;
 }
 
-int dw_peer_recv(dw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen)
+int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen)
 {
     for (;;) {
         const uint8_t *pl = NULL; size_t pn = 0;
-        int c = dw_msg_parse(p->magic, p->rbuf, p->rlen, cmd, &pl, &pn);
+        int c = kw_msg_parse(p->magic, p->rbuf, p->rlen, cmd, &pl, &pn);
         if (c < 0) return -1;
         if (c > 0) {
             if (!ensure_cap(&p->msg, &p->mcap, pn ? pn : 1)) return -1;
@@ -114,9 +114,9 @@ int dw_peer_recv(dw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
             return 1;
         }
         /* need more: grow to the announced frame size, or by a chunk */
-        if (p->rlen >= DW_MSG_HDR) {
+        if (p->rlen >= KW_MSG_HDR) {
             uint32_t l = get_le32(p->rbuf + 16);
-            if (l <= DW_MSG_MAX_PAYLOAD && !ensure_cap(&p->rbuf, &p->rcap, DW_MSG_HDR + l)) return -1;
+            if (l <= KW_MSG_MAX_PAYLOAD && !ensure_cap(&p->rbuf, &p->rcap, KW_MSG_HDR + l)) return -1;
         }
         if (p->rlen == p->rcap && !ensure_cap(&p->rbuf, &p->rcap, p->rcap * 2)) return -1;
 
@@ -127,50 +127,50 @@ int dw_peer_recv(dw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
     }
 }
 
-int dw_peer_handshake(dw_peer *p, int32_t start_height)
+int kw_peer_handshake(kw_peer *p, int32_t start_height)
 {
-    dw_msg_version v;
+    kw_msg_version v;
     memset(&v, 0, sizeof v);
-    v.version = DW_PROTOCOL_VERSION;
+    v.version = KW_PROTOCOL_VERSION;
     v.services = 0;
     v.timestamp = (int64_t)time(NULL);
-    dw_netaddr_ipv4(v.recv_ip, 0, 0, 0, 0);
-    dw_netaddr_ipv4(v.from_ip, 0, 0, 0, 0);
+    kw_netaddr_ipv4(v.recv_ip, 0, 0, 0, 0);
+    kw_netaddr_ipv4(v.from_ip, 0, 0, 0, 0);
     uint8_t nb[8];
-    if (!dw_random_bytes(nb, sizeof nb)) return 0;
+    if (!kw_random_bytes(nb, sizeof nb)) return 0;
     for (int i = 0; i < 8; i++) v.nonce |= (uint64_t)nb[i] << (8 * i);
-    v.user_agent = "/dogewallet:0.1/";
+    v.user_agent = "/koinu:0.1/";
     v.start_height = start_height;
     v.relay = 0;                       /* no tx relay: a light client filters */
 
     uint8_t body[256];
-    size_t bl = dw_msg_version_build(&v, body, sizeof body);
-    if (!bl || !dw_peer_send(p, "version", body, bl)) return 0;
+    size_t bl = kw_msg_version_build(&v, body, sizeof body);
+    if (!bl || !kw_peer_send(p, "version", body, bl)) return 0;
 
     int got_version = 0, got_verack = 0;
     while (!got_verack) {
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-        if (dw_peer_recv(p, cmd, &pl, &pn) != 1) return 0;
+        if (kw_peer_recv(p, cmd, &pl, &pn) != 1) return 0;
 
         if (!strcmp(cmd, "version")) {
-            dw_msg_version pv; char ua[256];
-            if (dw_msg_version_parse(pl, pn, &pv, ua, sizeof ua)) {
+            kw_msg_version pv; char ua[256];
+            if (kw_msg_version_parse(pl, pn, &pv, ua, sizeof ua)) {
                 p->peer_version = pv.version;
                 p->peer_height = pv.start_height;
             }
             got_version = 1;
-            if (!dw_peer_send(p, "verack", NULL, 0)) return 0;
+            if (!kw_peer_send(p, "verack", NULL, 0)) return 0;
         } else if (!strcmp(cmd, "verack")) {
             got_verack = 1;
         } else if (!strcmp(cmd, "ping")) {
-            dw_peer_send(p, "pong", pl, pn);
+            kw_peer_send(p, "pong", pl, pn);
         }
         /* sendheaders, sendcmpct, feefilter, addr, etc: ignored during setup */
     }
     return got_version && got_verack;
 }
 
-void dw_peer_close(dw_peer *p)
+void kw_peer_close(kw_peer *p)
 {
     if (p->fd >= 0) close(p->fd);
     free(p->rbuf);

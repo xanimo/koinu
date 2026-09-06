@@ -1,4 +1,4 @@
-/* dogewallet - BIP39 mnemonics (English)
+/* koinu.dog - BIP39 mnemonics (English)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -38,7 +38,7 @@ static int word_index(const char *w, size_t len)
     int lo = 0, hi = 2047;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
-        const char *m = DW_BIP39_WORDLIST_EN[mid];
+        const char *m = KW_BIP39_WORDLIST_EN[mid];
         int c = strncmp(w, m, len);
         if (c == 0 && m[len] != '\0') c = -1;   /* w is a prefix of m */
         if (c == 0) return mid;
@@ -49,7 +49,7 @@ static int word_index(const char *w, size_t len)
 
 static int valid_entlen(size_t n) { return n==16||n==20||n==24||n==28||n==32; }
 
-size_t dw_bip39_from_entropy(const uint8_t *ent, size_t entlen, char *out, size_t outcap)
+size_t kw_bip39_from_entropy(const uint8_t *ent, size_t entlen, char *out, size_t outcap)
 {
     if (!valid_entlen(entlen)) return 0;
     int cs_bits = (int)(entlen / 4);          /* ENT/32 */
@@ -57,32 +57,32 @@ size_t dw_bip39_from_entropy(const uint8_t *ent, size_t entlen, char *out, size_
 
     uint8_t buf[33];
     memcpy(buf, ent, entlen);
-    uint8_t h[DW_SHA256_LEN];
-    dw_sha256(ent, entlen, h);
+    uint8_t h[KW_SHA256_LEN];
+    kw_sha256(ent, entlen, h);
     buf[entlen] = h[0];                        /* only the top cs_bits are read */
 
     size_t k = 0;
     for (size_t i = 0; i < words; i++) {
         uint32_t idx = get_bits(buf, i * 11, 11);
-        const char *w = DW_BIP39_WORDLIST_EN[idx];
+        const char *w = KW_BIP39_WORDLIST_EN[idx];
         size_t wl = strlen(w);
-        if (k + wl + (i ? 1 : 0) + 1 > outcap) { dw_secure_zero(buf, sizeof buf); return 0; }
+        if (k + wl + (i ? 1 : 0) + 1 > outcap) { kw_secure_zero(buf, sizeof buf); return 0; }
         if (i) out[k++] = ' ';
         memcpy(out + k, w, wl); k += wl;
     }
     out[k] = '\0';
-    dw_secure_zero(buf, sizeof buf);
-    dw_secure_zero(h, sizeof h);
+    kw_secure_zero(buf, sizeof buf);
+    kw_secure_zero(h, sizeof h);
     return k;
 }
 
-size_t dw_bip39_generate(size_t entlen, char *out, size_t outcap)
+size_t kw_bip39_generate(size_t entlen, char *out, size_t outcap)
 {
     if (!valid_entlen(entlen)) return 0;
     uint8_t ent[32];
-    if (!dw_random_bytes(ent, entlen)) return 0;
-    size_t n = dw_bip39_from_entropy(ent, entlen, out, outcap);
-    dw_secure_zero(ent, sizeof ent);
+    if (!kw_random_bytes(ent, entlen)) return 0;
+    size_t n = kw_bip39_from_entropy(ent, entlen, out, outcap);
+    kw_secure_zero(ent, sizeof ent);
     return n;
 }
 
@@ -124,8 +124,8 @@ static int decode(const char *mnemonic, uint8_t *ent_out, size_t entcap, size_t 
     memset(buf, 0, sizeof buf);
     for (size_t i = 0; i < words; i++) put_bits(buf, i * 11, 11, idx[i]);
 
-    uint8_t h[DW_SHA256_LEN];
-    dw_sha256(buf, entlen, h);
+    uint8_t h[KW_SHA256_LEN];
+    kw_sha256(buf, entlen, h);
     uint32_t want = get_bits(h, 0, cs_bits);
     uint32_t got  = get_bits(buf, ent_bits, cs_bits);
     int ok = (want == got);
@@ -136,22 +136,22 @@ static int decode(const char *mnemonic, uint8_t *ent_out, size_t entcap, size_t 
     }
     if (ok && entlen_out) *entlen_out = entlen;
 
-    dw_secure_zero(buf, sizeof buf);
-    dw_secure_zero(h, sizeof h);
+    kw_secure_zero(buf, sizeof buf);
+    kw_secure_zero(h, sizeof h);
     return ok;
 }
 
-int dw_bip39_check(const char *mnemonic)
+int kw_bip39_check(const char *mnemonic)
 {
     return decode(mnemonic, NULL, 0, NULL);
 }
 
-int dw_bip39_to_entropy(const char *mnemonic, uint8_t *out, size_t outcap, size_t *outlen)
+int kw_bip39_to_entropy(const char *mnemonic, uint8_t *out, size_t outcap, size_t *outlen)
 {
     return decode(mnemonic, out, outcap, outlen);
 }
 
-int dw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[DW_BIP39_SEED_LEN])
+int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[KW_BIP39_SEED_LEN])
 {
     if (!passphrase) passphrase = "";
     size_t plen = strlen(passphrase);
@@ -161,9 +161,9 @@ int dw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[
     memcpy(salt, "mnemonic", 8);
     memcpy(salt + 8, passphrase, plen);
 
-    int ok = dw_pbkdf2_hmac_sha512((const uint8_t *)mnemonic, strlen(mnemonic),
-                                   salt, saltlen, 2048, seed, DW_BIP39_SEED_LEN);
-    dw_secure_zero(salt, saltlen);
+    int ok = kw_pbkdf2_hmac_sha512((const uint8_t *)mnemonic, strlen(mnemonic),
+                                   salt, saltlen, 2048, seed, KW_BIP39_SEED_LEN);
+    kw_secure_zero(salt, saltlen);
     free(salt);
     return ok;
 }

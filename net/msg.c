@@ -1,4 +1,4 @@
-/* dogewallet - p2p message bodies (handshake)
+/* koinu.dog - p2p message bodies (handshake)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -60,14 +60,14 @@ static uint64_t r_varint(R *r)
     return r_le(r, 8);
 }
 
-void dw_netaddr_ipv4(uint8_t out[16], uint8_t a, uint8_t b, uint8_t c, uint8_t d)
+void kw_netaddr_ipv4(uint8_t out[16], uint8_t a, uint8_t b, uint8_t c, uint8_t d)
 {
     memset(out, 0, 16);
     out[10] = 0xff; out[11] = 0xff;
     out[12] = a; out[13] = b; out[14] = c; out[15] = d;
 }
 
-size_t dw_msg_version_build(const dw_msg_version *v, uint8_t *out, size_t outcap)
+size_t kw_msg_version_build(const kw_msg_version *v, uint8_t *out, size_t outcap)
 {
     W w = { out, outcap, 0, 1 };
     w_le(&w, (uint64_t)(uint32_t)v->version, 4);
@@ -82,7 +82,7 @@ size_t dw_msg_version_build(const dw_msg_version *v, uint8_t *out, size_t outcap
     return w.ok ? w.len : 0;
 }
 
-int dw_msg_version_parse(const uint8_t *in, size_t len, dw_msg_version *v,
+int kw_msg_version_parse(const uint8_t *in, size_t len, kw_msg_version *v,
                          char *ua, size_t uacap)
 {
     R r = { in, len, 0, 0 };
@@ -107,14 +107,14 @@ int dw_msg_version_parse(const uint8_t *in, size_t len, dw_msg_version *v,
     return r.bad ? 0 : 1;
 }
 
-size_t dw_msg_ping_build(uint64_t nonce, uint8_t *out, size_t outcap)
+size_t kw_msg_ping_build(uint64_t nonce, uint8_t *out, size_t outcap)
 {
     W w = { out, outcap, 0, 1 };
     w_le(&w, nonce, 8);
     return w.ok ? w.len : 0;
 }
 
-int dw_msg_ping_parse(const uint8_t *in, size_t len, uint64_t *nonce)
+int kw_msg_ping_parse(const uint8_t *in, size_t len, uint64_t *nonce)
 {
     R r = { in, len, 0, 0 };
     uint64_t n = r_le(&r, 8);

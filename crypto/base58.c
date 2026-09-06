@@ -1,4 +1,4 @@
-/* dogewallet - base58 and base58check
+/* koinu.dog - base58 and base58check
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -14,17 +14,17 @@
 
 static const char *B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-#define DW_B58_MAX_BYTES 256
-#define DW_B58_MAX_DIGITS 512   /* > DW_B58_MAX_BYTES * log(256)/log(58) */
+#define KW_B58_MAX_BYTES 256
+#define KW_B58_MAX_DIGITS 512   /* > KW_B58_MAX_BYTES * log(256)/log(58) */
 
-size_t dw_base58_encode(const uint8_t *in, size_t inlen, char *out, size_t outcap)
+size_t kw_base58_encode(const uint8_t *in, size_t inlen, char *out, size_t outcap)
 {
-    if (inlen > DW_B58_MAX_BYTES) return 0;
+    if (inlen > KW_B58_MAX_BYTES) return 0;
 
     size_t zeros = 0;
     while (zeros < inlen && in[zeros] == 0) zeros++;
 
-    uint8_t digits[DW_B58_MAX_DIGITS];
+    uint8_t digits[KW_B58_MAX_DIGITS];
     size_t size = (inlen - zeros) * 138 / 100 + 1;
     if (size > sizeof digits) return 0;
     memset(digits, 0, size);
@@ -51,15 +51,15 @@ size_t dw_base58_encode(const uint8_t *in, size_t inlen, char *out, size_t outca
     return k;
 }
 
-int dw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen)
+int kw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen)
 {
     size_t inlen = strlen(in);
-    if (inlen > DW_B58_MAX_DIGITS) return 0;
+    if (inlen > KW_B58_MAX_DIGITS) return 0;
 
     size_t zeros = 0;
     while (in[zeros] == '1') zeros++;
 
-    uint8_t bytes[DW_B58_MAX_DIGITS];
+    uint8_t bytes[KW_B58_MAX_DIGITS];
     size_t size = inlen * 733 / 1000 + 1;   /* log(58)/log(256) ~ 0.733 */
     if (size > sizeof bytes) return 0;
     memset(bytes, 0, size);
@@ -89,32 +89,32 @@ int dw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen
     return 1;
 }
 
-size_t dw_base58check_encode(const uint8_t *payload, size_t len, char *out, size_t outcap)
+size_t kw_base58check_encode(const uint8_t *payload, size_t len, char *out, size_t outcap)
 {
-    if (len > DW_B58_MAX_BYTES - 4) return 0;
-    uint8_t buf[DW_B58_MAX_BYTES];
+    if (len > KW_B58_MAX_BYTES - 4) return 0;
+    uint8_t buf[KW_B58_MAX_BYTES];
     memcpy(buf, payload, len);
-    uint8_t chk[DW_SHA256_LEN];
-    dw_hash256(payload, len, chk);
+    uint8_t chk[KW_SHA256_LEN];
+    kw_hash256(payload, len, chk);
     memcpy(buf + len, chk, 4);
-    size_t n = dw_base58_encode(buf, len + 4, out, outcap);
-    dw_secure_zero(buf, sizeof buf);
+    size_t n = kw_base58_encode(buf, len + 4, out, outcap);
+    kw_secure_zero(buf, sizeof buf);
     return n;
 }
 
-int dw_base58check_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen)
+int kw_base58check_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen)
 {
-    uint8_t buf[DW_B58_MAX_BYTES];
+    uint8_t buf[KW_B58_MAX_BYTES];
     size_t n = 0;
-    if (!dw_base58_decode(in, buf, sizeof buf, &n)) return 0;
+    if (!kw_base58_decode(in, buf, sizeof buf, &n)) return 0;
     if (n < 4) return 0;
     size_t plen = n - 4;
-    uint8_t chk[DW_SHA256_LEN];
-    dw_hash256(buf, plen, chk);
-    if (dw_memeq_ct(chk, buf + plen, 4) != 0) { dw_secure_zero(buf, sizeof buf); return 0; }
-    if (plen > outcap) { dw_secure_zero(buf, sizeof buf); return 0; }
+    uint8_t chk[KW_SHA256_LEN];
+    kw_hash256(buf, plen, chk);
+    if (kw_memeq_ct(chk, buf + plen, 4) != 0) { kw_secure_zero(buf, sizeof buf); return 0; }
+    if (plen > outcap) { kw_secure_zero(buf, sizeof buf); return 0; }
     memcpy(out, buf, plen);
     *outlen = plen;
-    dw_secure_zero(buf, sizeof buf);
+    kw_secure_zero(buf, sizeof buf);
     return 1;
 }

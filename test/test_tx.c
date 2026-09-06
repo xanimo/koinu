@@ -1,4 +1,4 @@
-/* dogewallet - transaction signing test
+/* koinu.dog - transaction signing test
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -18,17 +18,17 @@
 
 int main(void)
 {
-    if (!dw_ec_start()) { fprintf(stderr, "FAIL ec_start\n"); return 1; }
+    if (!kw_ec_start()) { fprintf(stderr, "FAIL ec_start\n"); return 1; }
 
     /* the mainnet key whose address anchors test_address */
     uint8_t sk[32], pub[33], h160[20];
     int comp; uint8_t ver;
-    if (!dw_wif_decode("QPbCXTPCJU3NRPLGbVYjXRYw1WcFFQ6apxiUNRP4bSDQCojDfLpv", sk, &comp, &ver)) {
+    if (!kw_wif_decode("QPbCXTPCJU3NRPLGbVYjXRYw1WcFFQ6apxiUNRP4bSDQCojDfLpv", sk, &comp, &ver)) {
         fprintf(stderr, "FAIL wif\n"); return 1;
     }
-    dw_ec_pubkey(sk, pub);
-    dw_hash160(pub, 33, h160);
-    char h160hex[41]; dw_hex_encode(h160, 20, h160hex, sizeof h160hex);
+    kw_ec_pubkey(sk, pub);
+    kw_hash160(pub, 33, h160);
+    char h160hex[41]; kw_hex_encode(h160, 20, h160hex, sizeof h160hex);
     if (strcmp(h160hex, "0e2e16cdd3940acc48f784ee26779709dcd72273") != 0) {
         fprintf(stderr, "FAIL hash160 %s\n", h160hex); return 1;
     }
@@ -36,18 +36,18 @@ int main(void)
     uint8_t spk[25];
     spk[0]=0x76; spk[1]=0xa9; spk[2]=0x14; memcpy(spk+3, h160, 20); spk[23]=0x88; spk[24]=0xac;
 
-    dw_tx tx;
-    dw_tx_init(&tx);
-    if (!dw_tx_add_input(&tx, "0000000000000000000000000000000000000000000000000000000000000001", 0)) {
+    kw_tx tx;
+    kw_tx_init(&tx);
+    if (!kw_tx_add_input(&tx, "0000000000000000000000000000000000000000000000000000000000000001", 0)) {
         fprintf(stderr, "FAIL add_input\n"); return 1;
     }
-    if (!dw_tx_add_output_p2pkh(&tx, 100000000ULL, h160)) { fprintf(stderr, "FAIL add_output\n"); return 1; }
-    if (!dw_tx_sign_p2pkh(&tx, 0, sk, spk, sizeof spk)) { fprintf(stderr, "FAIL sign\n"); return 1; }
+    if (!kw_tx_add_output_p2pkh(&tx, 100000000ULL, h160)) { fprintf(stderr, "FAIL add_output\n"); return 1; }
+    if (!kw_tx_sign_p2pkh(&tx, 0, sk, spk, sizeof spk)) { fprintf(stderr, "FAIL sign\n"); return 1; }
 
     uint8_t raw[1024];
-    size_t n = dw_tx_serialize(&tx, raw, sizeof raw);
+    size_t n = kw_tx_serialize(&tx, raw, sizeof raw);
     if (!n) { fprintf(stderr, "FAIL serialize\n"); return 1; }
-    char got[2048]; dw_hex_encode(raw, n, got, sizeof got);
+    char got[2048]; kw_hex_encode(raw, n, got, sizeof got);
 
     const char *want =
         "01000000010100000000000000000000000000000000000000000000000000000000000000"
@@ -63,12 +63,12 @@ int main(void)
 
     /* independently: the sighash our signature commits to must verify */
     uint8_t h[32];
-    if (!dw_tx_sighash(&tx, 0, spk, sizeof spk, DW_SIGHASH_ALL, h)) { fprintf(stderr, "FAIL sighash\n"); return 1; }
+    if (!kw_tx_sighash(&tx, 0, spk, sizeof spk, KW_SIGHASH_ALL, h)) { fprintf(stderr, "FAIL sighash\n"); return 1; }
     const uint8_t *ss = tx.vin[0].script;
     size_t derlen = ss[0] - 1;                 /* strip the trailing hashtype byte */
-    if (!dw_ec_verify(pub, h, ss + 1, derlen)) { fprintf(stderr, "FAIL signature does not verify\n"); return 1; }
+    if (!kw_ec_verify(pub, h, ss + 1, derlen)) { fprintf(stderr, "FAIL signature does not verify\n"); return 1; }
 
-    dw_ec_stop();
+    kw_ec_stop();
     printf("tx ok: p2pkh spend matches libdogecoin byte-for-byte, signature verifies\n");
     return 0;
 }

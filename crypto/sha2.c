@@ -1,4 +1,4 @@
-/* dogewallet - SHA-256 and SHA-512 (FIPS 180-4)
+/* koinu.dog - SHA-256 and SHA-512 (FIPS 180-4)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -31,7 +31,7 @@ static const uint32_t K256[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-void dw_sha256_init(dw_sha256_ctx *c)
+void kw_sha256_init(kw_sha256_ctx *c)
 {
     c->h[0] = 0x6a09e667; c->h[1] = 0xbb67ae85;
     c->h[2] = 0x3c6ef372; c->h[3] = 0xa54ff53a;
@@ -41,7 +41,7 @@ void dw_sha256_init(dw_sha256_ctx *c)
     c->n = 0;
 }
 
-static void sha256_block(dw_sha256_ctx *c, const uint8_t *p)
+static void sha256_block(kw_sha256_ctx *c, const uint8_t *p)
 {
     uint32_t w[64];
     for (int i = 0; i < 16; i++)
@@ -65,57 +65,57 @@ static void sha256_block(dw_sha256_ctx *c, const uint8_t *p)
     }
     c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
     c->h[4] += e; c->h[5] += f; c->h[6] += g;  c->h[7] += hh;
-    dw_secure_zero(w, sizeof w);
+    kw_secure_zero(w, sizeof w);
 }
 
-void dw_sha256_update(dw_sha256_ctx *c, const void *data, size_t len)
+void kw_sha256_update(kw_sha256_ctx *c, const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
     c->bits += (uint64_t)len * 8;
     if (c->n) {
-        size_t take = DW_SHA256_BLOCK - c->n;
+        size_t take = KW_SHA256_BLOCK - c->n;
         if (take > len) take = len;
         memcpy(c->buf + c->n, p, take);
         c->n += take; p += take; len -= take;
-        if (c->n == DW_SHA256_BLOCK) { sha256_block(c, c->buf); c->n = 0; }
+        if (c->n == KW_SHA256_BLOCK) { sha256_block(c, c->buf); c->n = 0; }
     }
-    while (len >= DW_SHA256_BLOCK) { sha256_block(c, p); p += DW_SHA256_BLOCK; len -= DW_SHA256_BLOCK; }
+    while (len >= KW_SHA256_BLOCK) { sha256_block(c, p); p += KW_SHA256_BLOCK; len -= KW_SHA256_BLOCK; }
     if (len) { memcpy(c->buf, p, len); c->n = len; }
 }
 
-void dw_sha256_final(dw_sha256_ctx *c, uint8_t out[DW_SHA256_LEN])
+void kw_sha256_final(kw_sha256_ctx *c, uint8_t out[KW_SHA256_LEN])
 {
     uint64_t bits = c->bits;
     uint8_t pad = 0x80;
-    dw_sha256_update(c, &pad, 1);
+    kw_sha256_update(c, &pad, 1);
     uint8_t zero = 0;
-    while (c->n != 56) dw_sha256_update(c, &zero, 1);
+    while (c->n != 56) kw_sha256_update(c, &zero, 1);
     uint8_t lenbe[8];
     for (int i = 0; i < 8; i++) lenbe[i] = (uint8_t)(bits >> (56 - 8*i));
-    dw_sha256_update(c, lenbe, 8);
+    kw_sha256_update(c, lenbe, 8);
     for (int i = 0; i < 8; i++) {
         out[i*4]   = (uint8_t)(c->h[i] >> 24);
         out[i*4+1] = (uint8_t)(c->h[i] >> 16);
         out[i*4+2] = (uint8_t)(c->h[i] >> 8);
         out[i*4+3] = (uint8_t)(c->h[i]);
     }
-    dw_secure_zero(c, sizeof *c);
+    kw_secure_zero(c, sizeof *c);
 }
 
-void dw_sha256(const void *data, size_t len, uint8_t out[DW_SHA256_LEN])
+void kw_sha256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN])
 {
-    dw_sha256_ctx c;
-    dw_sha256_init(&c);
-    dw_sha256_update(&c, data, len);
-    dw_sha256_final(&c, out);
+    kw_sha256_ctx c;
+    kw_sha256_init(&c);
+    kw_sha256_update(&c, data, len);
+    kw_sha256_final(&c, out);
 }
 
-void dw_hash256(const void *data, size_t len, uint8_t out[DW_SHA256_LEN])
+void kw_hash256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN])
 {
-    uint8_t t[DW_SHA256_LEN];
-    dw_sha256(data, len, t);
-    dw_sha256(t, sizeof t, out);
-    dw_secure_zero(t, sizeof t);
+    uint8_t t[KW_SHA256_LEN];
+    kw_sha256(data, len, t);
+    kw_sha256(t, sizeof t, out);
+    kw_secure_zero(t, sizeof t);
 }
 
 /* ── SHA-512 ─────────────────────────────────────────────────── */
@@ -143,7 +143,7 @@ static const uint64_t K512[80] = {
     0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL, 0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL
 };
 
-void dw_sha512_init(dw_sha512_ctx *c)
+void kw_sha512_init(kw_sha512_ctx *c)
 {
     c->h[0] = 0x6a09e667f3bcc908ULL; c->h[1] = 0xbb67ae8584caa73bULL;
     c->h[2] = 0x3c6ef372fe94f82bULL; c->h[3] = 0xa54ff53a5f1d36f1ULL;
@@ -153,7 +153,7 @@ void dw_sha512_init(dw_sha512_ctx *c)
     c->n = 0;
 }
 
-static void sha512_block(dw_sha512_ctx *c, const uint8_t *p)
+static void sha512_block(kw_sha512_ctx *c, const uint8_t *p)
 {
     uint64_t w[80];
     for (int i = 0; i < 16; i++) {
@@ -178,46 +178,46 @@ static void sha512_block(dw_sha512_ctx *c, const uint8_t *p)
     }
     c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
     c->h[4] += e; c->h[5] += f; c->h[6] += g;  c->h[7] += hh;
-    dw_secure_zero(w, sizeof w);
+    kw_secure_zero(w, sizeof w);
 }
 
-void dw_sha512_update(dw_sha512_ctx *c, const void *data, size_t len)
+void kw_sha512_update(kw_sha512_ctx *c, const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
     uint64_t add = (uint64_t)len * 8;
     if ((c->bits_lo += add) < add) c->bits_hi++;
     if (c->n) {
-        size_t take = DW_SHA512_BLOCK - c->n;
+        size_t take = KW_SHA512_BLOCK - c->n;
         if (take > len) take = len;
         memcpy(c->buf + c->n, p, take);
         c->n += take; p += take; len -= take;
-        if (c->n == DW_SHA512_BLOCK) { sha512_block(c, c->buf); c->n = 0; }
+        if (c->n == KW_SHA512_BLOCK) { sha512_block(c, c->buf); c->n = 0; }
     }
-    while (len >= DW_SHA512_BLOCK) { sha512_block(c, p); p += DW_SHA512_BLOCK; len -= DW_SHA512_BLOCK; }
+    while (len >= KW_SHA512_BLOCK) { sha512_block(c, p); p += KW_SHA512_BLOCK; len -= KW_SHA512_BLOCK; }
     if (len) { memcpy(c->buf, p, len); c->n = len; }
 }
 
-void dw_sha512_final(dw_sha512_ctx *c, uint8_t out[DW_SHA512_LEN])
+void kw_sha512_final(kw_sha512_ctx *c, uint8_t out[KW_SHA512_LEN])
 {
     uint64_t hi = c->bits_hi, lo = c->bits_lo;
     uint8_t pad = 0x80;
-    dw_sha512_update(c, &pad, 1);
+    kw_sha512_update(c, &pad, 1);
     uint8_t zero = 0;
-    while (c->n != 112) dw_sha512_update(c, &zero, 1);
+    while (c->n != 112) kw_sha512_update(c, &zero, 1);
     uint8_t lenbe[16];
     for (int i = 0; i < 8; i++) lenbe[i]   = (uint8_t)(hi >> (56 - 8*i));
     for (int i = 0; i < 8; i++) lenbe[8+i] = (uint8_t)(lo >> (56 - 8*i));
-    dw_sha512_update(c, lenbe, 16);
+    kw_sha512_update(c, lenbe, 16);
     for (int i = 0; i < 8; i++)
         for (int j = 0; j < 8; j++)
             out[i*8 + j] = (uint8_t)(c->h[i] >> (56 - 8*j));
-    dw_secure_zero(c, sizeof *c);
+    kw_secure_zero(c, sizeof *c);
 }
 
-void dw_sha512(const void *data, size_t len, uint8_t out[DW_SHA512_LEN])
+void kw_sha512(const void *data, size_t len, uint8_t out[KW_SHA512_LEN])
 {
-    dw_sha512_ctx c;
-    dw_sha512_init(&c);
-    dw_sha512_update(&c, data, len);
-    dw_sha512_final(&c, out);
+    kw_sha512_ctx c;
+    kw_sha512_init(&c);
+    kw_sha512_update(&c, data, len);
+    kw_sha512_final(&c, out);
 }

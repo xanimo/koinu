@@ -1,4 +1,4 @@
-# dogewallet - a minimal, security-conscious dogecoin light wallet.
+# koinu.dog - a minimal, security-conscious dogecoin light wallet.
 #
 # secp256k1 is the only submodule; everything in crypto/ is frozen, either
 # vendored from a named upstream at a named commit or written here, and owned
@@ -31,7 +31,7 @@ CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160
            crypto/vendor/argon2/thread.c crypto/vendor/argon2/blake2/blake2b.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
-LIB   = libdogewallet.a
+LIB   = libkw.a
 TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac \
         test/test_pbkdf2 test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx \

@@ -1,4 +1,4 @@
-/* dogewallet - dogecoin p2p message framing
+/* koinu.dog - dogecoin p2p message framing
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -7,21 +7,21 @@
  * double-SHA256. Serialization only here; the transport and the message bodies
  * build on top. */
 
-#ifndef DOGEWALLET_PROTO_H
-#define DOGEWALLET_PROTO_H
+#ifndef KOINU_PROTO_H
+#define KOINU_PROTO_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#define DW_MSG_HDR         24
-#define DW_MSG_CMD         12
-#define DW_MSG_MAX_PAYLOAD (32u * 1024u * 1024u)   /* refuse absurd frames */
+#define KW_MSG_HDR         24
+#define KW_MSG_CMD         12
+#define KW_MSG_MAX_PAYLOAD (32u * 1024u * 1024u)   /* refuse absurd frames */
 
 /* Frame a message into (out): 24-byte header plus payload. (cmd) is an ASCII
    command up to 12 bytes. Returns the total length (24 + plen), or 0 if the
    command is too long or (out) cannot hold it. (payload) may be NULL when plen
    is 0. */
-size_t dw_msg_serialize(uint32_t magic, const char *cmd,
+size_t kw_msg_serialize(uint32_t magic, const char *cmd,
                         const uint8_t *payload, size_t plen,
                         uint8_t *out, size_t outcap);
 
@@ -31,7 +31,7 @@ size_t dw_msg_serialize(uint32_t magic, const char *cmd,
       0  buffer does not yet hold a full message (read more),
      -1  wrong magic, oversize length, or a checksum mismatch.
    cmd must have room for 13 bytes. */
-int dw_msg_parse(uint32_t magic, const uint8_t *buf, size_t buflen,
+int kw_msg_parse(uint32_t magic, const uint8_t *buf, size_t buflen,
                  char cmd[13], const uint8_t **payload, size_t *plen);
 
-#endif /* DOGEWALLET_PROTO_H */
+#endif /* KOINU_PROTO_H */

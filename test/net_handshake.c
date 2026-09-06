@@ -1,4 +1,4 @@
-/* dogewallet - live handshake tool (not part of `make check`)
+/* koinu.dog - live handshake tool (not part of `make check`)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -15,13 +15,13 @@
 
 int main(int argc, char **argv)
 {
-    const dw_chainparams *cp = &DW_DOGE_MAINNET;
+    const kw_chainparams *cp = &KW_DOGE_MAINNET;
     const char *host = "127.0.0.1";
     int port = -1;
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--testnet")) cp = &DW_DOGE_TESTNET;
-        else if (!strcmp(argv[i], "--regtest")) cp = &DW_DOGE_REGTEST;
+        if (!strcmp(argv[i], "--testnet")) cp = &KW_DOGE_TESTNET;
+        else if (!strcmp(argv[i], "--regtest")) cp = &KW_DOGE_REGTEST;
         else if (argv[i][0] != '-' && host == NULL) host = argv[i];
         else if (argv[i][0] != '-' && port < 0) { /* first non-flag is host */
             host = argv[i];
@@ -35,18 +35,18 @@ int main(int argc, char **argv)
     }
     if (port < 0) port = cp->p2p_port;
 
-    dw_peer p;
-    if (!dw_peer_connect(&p, cp, host, port, 10)) {
+    kw_peer p;
+    if (!kw_peer_connect(&p, cp, host, port, 10)) {
         fprintf(stderr, "connect to %s:%d failed\n", host, port);
         return 1;
     }
-    if (!dw_peer_handshake(&p, 0)) {
+    if (!kw_peer_handshake(&p, 0)) {
         fprintf(stderr, "handshake failed\n");
-        dw_peer_close(&p);
+        kw_peer_close(&p);
         return 1;
     }
     printf("handshake ok with %s:%d  peer version %d, height %d\n",
            host, port, p.peer_version, p.peer_height);
-    dw_peer_close(&p);
+    kw_peer_close(&p);
     return 0;
 }

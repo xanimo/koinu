@@ -1,4 +1,4 @@
-/* dogewallet - RIPEMD-160
+/* koinu.dog - RIPEMD-160
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -56,7 +56,7 @@ static const uint8_t SR[80] = {
 static const uint32_t KL[5] = { 0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e };
 static const uint32_t KR[5] = { 0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000 };
 
-void dw_ripemd160_init(dw_ripemd160_ctx *c)
+void kw_ripemd160_init(kw_ripemd160_ctx *c)
 {
     c->h[0] = 0x67452301; c->h[1] = 0xefcdab89; c->h[2] = 0x98badcfe;
     c->h[3] = 0x10325476; c->h[4] = 0xc3d2e1f0;
@@ -64,7 +64,7 @@ void dw_ripemd160_init(dw_ripemd160_ctx *c)
     c->n = 0;
 }
 
-static void ripemd160_block(dw_ripemd160_ctx *c, const uint8_t *p)
+static void ripemd160_block(kw_ripemd160_ctx *c, const uint8_t *p)
 {
     uint32_t x[16];
     for (int i = 0; i < 16; i++)
@@ -89,55 +89,55 @@ static void ripemd160_block(dw_ripemd160_ctx *c, const uint8_t *p)
     c->h[4] = c->h[0] + bl + cr;
     c->h[0] = t;
 
-    dw_secure_zero(x, sizeof x);
+    kw_secure_zero(x, sizeof x);
 }
 
-void dw_ripemd160_update(dw_ripemd160_ctx *c, const void *data, size_t len)
+void kw_ripemd160_update(kw_ripemd160_ctx *c, const void *data, size_t len)
 {
     const uint8_t *p = (const uint8_t *)data;
     c->bits += (uint64_t)len * 8;
     if (c->n) {
-        size_t take = DW_RIPEMD160_BLOCK - c->n;
+        size_t take = KW_RIPEMD160_BLOCK - c->n;
         if (take > len) take = len;
         memcpy(c->buf + c->n, p, take);
         c->n += take; p += take; len -= take;
-        if (c->n == DW_RIPEMD160_BLOCK) { ripemd160_block(c, c->buf); c->n = 0; }
+        if (c->n == KW_RIPEMD160_BLOCK) { ripemd160_block(c, c->buf); c->n = 0; }
     }
-    while (len >= DW_RIPEMD160_BLOCK) { ripemd160_block(c, p); p += DW_RIPEMD160_BLOCK; len -= DW_RIPEMD160_BLOCK; }
+    while (len >= KW_RIPEMD160_BLOCK) { ripemd160_block(c, p); p += KW_RIPEMD160_BLOCK; len -= KW_RIPEMD160_BLOCK; }
     if (len) { memcpy(c->buf, p, len); c->n = len; }
 }
 
-void dw_ripemd160_final(dw_ripemd160_ctx *c, uint8_t out[DW_RIPEMD160_LEN])
+void kw_ripemd160_final(kw_ripemd160_ctx *c, uint8_t out[KW_RIPEMD160_LEN])
 {
     uint64_t bits = c->bits;
     uint8_t pad = 0x80;
-    dw_ripemd160_update(c, &pad, 1);
+    kw_ripemd160_update(c, &pad, 1);
     uint8_t zero = 0;
-    while (c->n != 56) dw_ripemd160_update(c, &zero, 1);
+    while (c->n != 56) kw_ripemd160_update(c, &zero, 1);
     uint8_t lenle[8];
     for (int i = 0; i < 8; i++) lenle[i] = (uint8_t)(bits >> (8 * i));  /* little-endian */
-    dw_ripemd160_update(c, lenle, 8);
+    kw_ripemd160_update(c, lenle, 8);
     for (int i = 0; i < 5; i++) {
         out[i*4]   = (uint8_t)(c->h[i]);
         out[i*4+1] = (uint8_t)(c->h[i] >> 8);
         out[i*4+2] = (uint8_t)(c->h[i] >> 16);
         out[i*4+3] = (uint8_t)(c->h[i] >> 24);
     }
-    dw_secure_zero(c, sizeof *c);
+    kw_secure_zero(c, sizeof *c);
 }
 
-void dw_ripemd160(const void *data, size_t len, uint8_t out[DW_RIPEMD160_LEN])
+void kw_ripemd160(const void *data, size_t len, uint8_t out[KW_RIPEMD160_LEN])
 {
-    dw_ripemd160_ctx c;
-    dw_ripemd160_init(&c);
-    dw_ripemd160_update(&c, data, len);
-    dw_ripemd160_final(&c, out);
+    kw_ripemd160_ctx c;
+    kw_ripemd160_init(&c);
+    kw_ripemd160_update(&c, data, len);
+    kw_ripemd160_final(&c, out);
 }
 
-void dw_hash160(const void *data, size_t len, uint8_t out[DW_RIPEMD160_LEN])
+void kw_hash160(const void *data, size_t len, uint8_t out[KW_RIPEMD160_LEN])
 {
-    uint8_t sha[DW_SHA256_LEN];
-    dw_sha256(data, len, sha);
-    dw_ripemd160(sha, sizeof sha, out);
-    dw_secure_zero(sha, sizeof sha);
+    uint8_t sha[KW_SHA256_LEN];
+    kw_sha256(data, len, sha);
+    kw_ripemd160(sha, sizeof sha, out);
+    kw_secure_zero(sha, sizeof sha);
 }

@@ -1,4 +1,4 @@
-/* dogewallet - address, WIF and BIP44 tests
+/* koinu.dog - address, WIF and BIP44 tests
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -17,22 +17,22 @@
 
 static int fails = 0;
 
-static void wif_vector(const dw_chainparams *cp, const char *wif, const char *want_addr)
+static void wif_vector(const kw_chainparams *cp, const char *wif, const char *want_addr)
 {
     uint8_t sk[32], pub[33];
     int comp = 0; uint8_t ver = 0;
-    if (!dw_wif_decode(wif, sk, &comp, &ver)) { fprintf(stderr, "FAIL wif decode %s\n", wif); fails++; return; }
+    if (!kw_wif_decode(wif, sk, &comp, &ver)) { fprintf(stderr, "FAIL wif decode %s\n", wif); fails++; return; }
     if (!comp || ver != cp->wif) { fprintf(stderr, "FAIL wif flags %s (comp=%d ver=%02x)\n", wif, comp, ver); fails++; return; }
-    if (!dw_ec_pubkey(sk, pub)) { fprintf(stderr, "FAIL pubkey %s\n", wif); fails++; return; }
+    if (!kw_ec_pubkey(sk, pub)) { fprintf(stderr, "FAIL pubkey %s\n", wif); fails++; return; }
 
     char addr[64];
-    if (!dw_address_p2pkh(pub, cp->p2pkh, addr, sizeof addr) || strcmp(addr, want_addr) != 0) {
+    if (!kw_address_p2pkh(pub, cp->p2pkh, addr, sizeof addr) || strcmp(addr, want_addr) != 0) {
         fprintf(stderr, "FAIL address\n  got  %s\n  want %s\n", addr, want_addr);
         fails++;
     }
 
     char back[64];
-    if (!dw_wif_encode(sk, comp, ver, back, sizeof back) || strcmp(back, wif) != 0) {
+    if (!kw_wif_encode(sk, comp, ver, back, sizeof back) || strcmp(back, wif) != 0) {
         fprintf(stderr, "FAIL wif round trip\n  got  %s\n  want %s\n", back, wif);
         fails++;
     }
@@ -40,51 +40,51 @@ static void wif_vector(const dw_chainparams *cp, const char *wif, const char *wa
 
 int main(void)
 {
-    if (!dw_ec_start()) { fprintf(stderr, "FAIL ec_start\n"); return 1; }
+    if (!kw_ec_start()) { fprintf(stderr, "FAIL ec_start\n"); return 1; }
 
     /* Dogecoin version bytes: mainnet 'D...' address / 'Q...' compressed wif,
        regtest 'm|n...' address / 'c...' wif. Pairs from libdogecoin. */
-    wif_vector(&DW_DOGE_MAINNET,
+    wif_vector(&KW_DOGE_MAINNET,
                "QPbCXTPCJU3NRPLGbVYjXRYw1WcFFQ6apxiUNRP4bSDQCojDfLpv",
                "D6S5DGaNNQukDhEDArJGU8oSsS3NXvmUZp");
-    wif_vector(&DW_DOGE_REGTEST,
+    wif_vector(&KW_DOGE_REGTEST,
                "cT8FYeVkW6SpnqMDtmST5tNfiXFP4ktJS5LjtBWaZUfUFETf373z",
                "mfnQc5a91y5NLYN1CY4QBXqguKM1NPyBf3");
 
     /* Dogecoin extended keys are dgpv.../dgub..., not xprv/xpub. */
     uint8_t seed[64];
-    dw_bip39_to_seed("abandon abandon abandon abandon abandon abandon abandon abandon "
+    kw_bip39_to_seed("abandon abandon abandon abandon abandon abandon abandon abandon "
                      "abandon abandon abandon about", "", seed);
-    dw_bip32_key master, mpub;
-    if (!dw_bip32_from_seed(seed, sizeof seed, DW_DOGE_MAINNET.bip32, &master)) {
+    kw_bip32_key master, mpub;
+    if (!kw_bip32_from_seed(seed, sizeof seed, KW_DOGE_MAINNET.bip32, &master)) {
         fprintf(stderr, "FAIL from_seed\n"); return 1;
     }
-    dw_bip32_neuter(&master, &mpub);
+    kw_bip32_neuter(&master, &mpub);
     {
         char s[128];
-        dw_bip32_serialize(&master, s, sizeof s);
+        kw_bip32_serialize(&master, s, sizeof s);
         if (strncmp(s, "dgpv", 4) != 0) { fprintf(stderr, "FAIL master not dgpv: %s\n", s); fails++; }
-        dw_bip32_serialize(&mpub, s, sizeof s);
+        kw_bip32_serialize(&mpub, s, sizeof s);
         if (strncmp(s, "dgub", 4) != 0) { fprintf(stderr, "FAIL master pub not dgub: %s\n", s); fails++; }
     }
 
     /* BIP44 helper must match the equivalent path string, and yield a 'D' address. */
-    dw_bip32_key a, b;
-    if (!dw_bip44_derive(&master, 3, 0, 0, 0, &a)) { fprintf(stderr, "FAIL bip44 derive\n"); return 1; }
-    if (!dw_bip32_derive_path(&master, "m/44'/3'/0'/0/0", &b)) { fprintf(stderr, "FAIL path derive\n"); return 1; }
+    kw_bip32_key a, b;
+    if (!kw_bip44_derive(&master, 3, 0, 0, 0, &a)) { fprintf(stderr, "FAIL bip44 derive\n"); return 1; }
+    if (!kw_bip32_derive_path(&master, "m/44'/3'/0'/0/0", &b)) { fprintf(stderr, "FAIL path derive\n"); return 1; }
     {
         char sa[128], sb[128];
-        dw_bip32_serialize(&a, sa, sizeof sa);
-        dw_bip32_serialize(&b, sb, sizeof sb);
+        kw_bip32_serialize(&a, sa, sizeof sa);
+        kw_bip32_serialize(&b, sb, sizeof sb);
         if (strcmp(sa, sb) != 0) { fprintf(stderr, "FAIL bip44 != path\n  %s\n  %s\n", sa, sb); fails++; }
 
         uint8_t pub[33]; char addr[64];
-        dw_bip32_pubkey(&a, pub);
-        dw_address_p2pkh(pub, DW_DOGE_MAINNET.p2pkh, addr, sizeof addr);
+        kw_bip32_pubkey(&a, pub);
+        kw_address_p2pkh(pub, KW_DOGE_MAINNET.p2pkh, addr, sizeof addr);
         if (addr[0] != 'D') { fprintf(stderr, "FAIL bip44 address not 'D': %s\n", addr); fails++; }
     }
 
-    dw_ec_stop();
+    kw_ec_stop();
     if (fails) { fprintf(stderr, "%d address/bip44 failure(s)\n", fails); return 1; }
     printf("address ok: dogecoin wif/p2pkh vectors, dgpv/dgub prefixes, bip44 path agreement\n");
     return 0;

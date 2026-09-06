@@ -1,4 +1,4 @@
-/* dogewallet - ChaCha20 (RFC 8439)
+/* koinu.dog - ChaCha20 (RFC 8439)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -24,8 +24,8 @@ static uint32_t rd_le32(const uint8_t *p)
     s[a]+=s[b]; s[d]^=s[a]; s[d]=rotl(s[d], 8); \
     s[c]+=s[d]; s[b]^=s[c]; s[b]=rotl(s[b], 7)
 
-void dw_chacha20_block(const uint8_t key[DW_CHACHA20_KEY], uint32_t counter,
-                       const uint8_t nonce[DW_CHACHA20_NONCE], uint8_t out[64])
+void kw_chacha20_block(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
+                       const uint8_t nonce[KW_CHACHA20_NONCE], uint8_t out[64])
 {
     uint32_t s[16], w[16];
     s[0] = 0x61707865; s[1] = 0x3320646e; s[2] = 0x79622d32; s[3] = 0x6b206574;
@@ -43,22 +43,22 @@ void dw_chacha20_block(const uint8_t key[DW_CHACHA20_KEY], uint32_t counter,
         out[4*i] = (uint8_t)v; out[4*i+1] = (uint8_t)(v >> 8);
         out[4*i+2] = (uint8_t)(v >> 16); out[4*i+3] = (uint8_t)(v >> 24);
     }
-    dw_secure_zero(w, sizeof w);
-    dw_secure_zero(s, sizeof s);
+    kw_secure_zero(w, sizeof w);
+    kw_secure_zero(s, sizeof s);
 }
 
-void dw_chacha20_xor(const uint8_t key[DW_CHACHA20_KEY], uint32_t counter,
-                     const uint8_t nonce[DW_CHACHA20_NONCE],
+void kw_chacha20_xor(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
+                     const uint8_t nonce[KW_CHACHA20_NONCE],
                      const uint8_t *in, size_t len, uint8_t *out)
 {
     uint8_t ks[64];
     size_t off = 0;
     while (off < len) {
-        dw_chacha20_block(key, counter, nonce, ks);
+        kw_chacha20_block(key, counter, nonce, ks);
         size_t n = len - off < 64 ? len - off : 64;
         for (size_t i = 0; i < n; i++) out[off + i] = in[off + i] ^ ks[i];
         off += n;
         counter++;
     }
-    dw_secure_zero(ks, sizeof ks);
+    kw_secure_zero(ks, sizeof ks);
 }

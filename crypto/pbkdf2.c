@@ -1,4 +1,4 @@
-/* dogewallet - PBKDF2-HMAC-SHA512 (RFC 8018)
+/* koinu.dog - PBKDF2-HMAC-SHA512 (RFC 8018)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -13,9 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HLEN DW_SHA512_LEN   /* 64 */
+#define HLEN KW_SHA512_LEN   /* 64 */
 
-int dw_pbkdf2_hmac_sha512(const uint8_t *pass, size_t passlen,
+int kw_pbkdf2_hmac_sha512(const uint8_t *pass, size_t passlen,
                           const uint8_t *salt, size_t saltlen,
                           uint32_t iterations,
                           uint8_t *out, size_t outlen)
@@ -38,10 +38,10 @@ int dw_pbkdf2_hmac_sha512(const uint8_t *pass, size_t passlen,
         scratch[saltlen + 2] = (uint8_t)(block >> 8);
         scratch[saltlen + 3] = (uint8_t)(block);
 
-        dw_hmac_sha512(pass, passlen, scratch, saltlen + 4, U);
+        kw_hmac_sha512(pass, passlen, scratch, saltlen + 4, U);
         memcpy(T, U, HLEN);
         for (uint32_t j = 1; j < iterations; j++) {
-            dw_hmac_sha512(pass, passlen, U, HLEN, U);
+            kw_hmac_sha512(pass, passlen, U, HLEN, U);
             for (size_t k = 0; k < HLEN; k++) T[k] ^= U[k];
         }
 
@@ -51,9 +51,9 @@ int dw_pbkdf2_hmac_sha512(const uint8_t *pass, size_t passlen,
         block++;
     }
 
-    dw_secure_zero(U, sizeof U);
-    dw_secure_zero(T, sizeof T);
-    dw_secure_zero(scratch, saltlen + 4);
+    kw_secure_zero(U, sizeof U);
+    kw_secure_zero(T, sizeof T);
+    kw_secure_zero(scratch, saltlen + 4);
     free(scratch);
     return 1;
 }

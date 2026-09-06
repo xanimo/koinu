@@ -1,4 +1,4 @@
-/* dogewallet - transaction building, legacy sighash, P2PKH signing
+/* koinu.dog - transaction building, legacy sighash, P2PKH signing
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -30,21 +30,21 @@ static void w_varint(wr *w, uint64_t v)
     else { w_u8(w, 0xff); w_u64(w, v); }
 }
 
-void dw_tx_init(dw_tx *tx)
+void kw_tx_init(kw_tx *tx)
 {
     memset(tx, 0, sizeof *tx);
     tx->version = 1;
     tx->locktime = 0;
 }
 
-int dw_tx_add_input(dw_tx *tx, const char *txid_hex, uint32_t vout)
+int kw_tx_add_input(kw_tx *tx, const char *txid_hex, uint32_t vout)
 {
-    if (tx->nin >= DW_TX_MAX_IN) return 0;
+    if (tx->nin >= KW_TX_MAX_IN) return 0;
     if (strlen(txid_hex) != 64) return 0;
     uint8_t disp[32];
-    if (!dw_hex_decode(txid_hex, 64, disp, 32)) return 0;
+    if (!kw_hex_decode(txid_hex, 64, disp, 32)) return 0;
 
-    dw_txin *in = &tx->vin[tx->nin];
+    kw_txin *in = &tx->vin[tx->nin];
     memset(in, 0, sizeof *in);
     for (int i = 0; i < 32; i++) in->prevout[i] = disp[31 - i];   /* display -> internal */
     in->vout = vout;
@@ -54,10 +54,10 @@ int dw_tx_add_input(dw_tx *tx, const char *txid_hex, uint32_t vout)
     return 1;
 }
 
-int dw_tx_add_output(dw_tx *tx, uint64_t value, const uint8_t *script, size_t scriptlen)
+int kw_tx_add_output(kw_tx *tx, uint64_t value, const uint8_t *script, size_t scriptlen)
 {
-    if (tx->nout >= DW_TX_MAX_OUT || scriptlen > DW_TX_SCRIPT_MAX) return 0;
-    dw_txout *o = &tx->vout[tx->nout];
+    if (tx->nout >= KW_TX_MAX_OUT || scriptlen > KW_TX_SCRIPT_MAX) return 0;
+    kw_txout *o = &tx->vout[tx->nout];
     o->value = value;
     memcpy(o->script, script, scriptlen);
     o->scriptlen = scriptlen;
@@ -65,18 +65,18 @@ int dw_tx_add_output(dw_tx *tx, uint64_t value, const uint8_t *script, size_t sc
     return 1;
 }
 
-int dw_tx_add_output_p2pkh(dw_tx *tx, uint64_t value, const uint8_t hash160[20])
+int kw_tx_add_output_p2pkh(kw_tx *tx, uint64_t value, const uint8_t hash160[20])
 {
     uint8_t spk[25];
     spk[0] = 0x76; spk[1] = 0xa9; spk[2] = 0x14;
     memcpy(spk + 3, hash160, 20);
     spk[23] = 0x88; spk[24] = 0xac;
-    return dw_tx_add_output(tx, value, spk, sizeof spk);
+    return kw_tx_add_output(tx, value, spk, sizeof spk);
 }
 
 /* Serialize. When sig_index >= 0, write it in signing form: input sig_index
    carries (subscript) as its scriptSig and every other input an empty one. */
-static size_t serialize_core(const dw_tx *tx, long sig_index,
+static size_t serialize_core(const kw_tx *tx, long sig_index,
                              const uint8_t *subscript, size_t sublen,
                              uint8_t *out, size_t outcap)
 {
@@ -84,7 +84,7 @@ static size_t serialize_core(const dw_tx *tx, long sig_index,
     w_u32(&w, tx->version);
     w_varint(&w, tx->nin);
     for (size_t i = 0; i < tx->nin; i++) {
-        const dw_txin *in = &tx->vin[i];
+        const kw_txin *in = &tx->vin[i];
         w_bytes(&w, in->prevout, 32);
         w_u32(&w, in->vout);
         if (sig_index < 0) {
@@ -108,61 +108,61 @@ static size_t serialize_core(const dw_tx *tx, long sig_index,
     return w.ok ? w.len : 0;
 }
 
-size_t dw_tx_serialize(const dw_tx *tx, uint8_t *out, size_t outcap)
+size_t kw_tx_serialize(const kw_tx *tx, uint8_t *out, size_t outcap)
 {
     return serialize_core(tx, -1, NULL, 0, out, outcap);
 }
 
-int dw_tx_sighash(const dw_tx *tx, size_t index,
+int kw_tx_sighash(const kw_tx *tx, size_t index,
                   const uint8_t *subscript, size_t subscriptlen,
                   uint32_t hashtype, uint8_t out[32])
 {
-    if (index >= tx->nin || hashtype != DW_SIGHASH_ALL) return 0;
+    if (index >= tx->nin || hashtype != KW_SIGHASH_ALL) return 0;
     uint8_t buf[16384];
     size_t n = serialize_core(tx, (long)index, subscript, subscriptlen, buf, sizeof buf - 4);
     if (!n) return 0;
     buf[n++] = (uint8_t)hashtype; buf[n++] = 0; buf[n++] = 0; buf[n++] = 0;   /* hashtype LE32 */
-    dw_hash256(buf, n, out);
-    dw_secure_zero(buf, sizeof buf);
+    kw_hash256(buf, n, out);
+    kw_secure_zero(buf, sizeof buf);
     return 1;
 }
 
-int dw_tx_sign_p2pkh(dw_tx *tx, size_t index, const uint8_t sk[32],
+int kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
                      const uint8_t *prev_spk, size_t prev_spk_len)
 {
     if (index >= tx->nin) return 0;
 
     uint8_t hash[32];
-    if (!dw_tx_sighash(tx, index, prev_spk, prev_spk_len, DW_SIGHASH_ALL, hash)) return 0;
+    if (!kw_tx_sighash(tx, index, prev_spk, prev_spk_len, KW_SIGHASH_ALL, hash)) return 0;
 
-    uint8_t der[DW_EC_SIG_DER_MAX];
+    uint8_t der[KW_EC_SIG_DER_MAX];
     size_t derlen = 0;
-    if (!dw_ec_sign(sk, hash, der, &derlen)) return 0;
+    if (!kw_ec_sign(sk, hash, der, &derlen)) return 0;
     if (derlen + 1 > 75) return 0;                 /* must be a single-byte push */
 
     uint8_t pub[33];
-    if (!dw_ec_pubkey(sk, pub)) return 0;
+    if (!kw_ec_pubkey(sk, pub)) return 0;
 
     /* scriptSig = <sig||SIGHASH_ALL> <pubkey> */
-    dw_txin *in = &tx->vin[index];
+    kw_txin *in = &tx->vin[index];
     size_t k = 0;
     in->script[k++] = (uint8_t)(derlen + 1);
     memcpy(in->script + k, der, derlen); k += derlen;
-    in->script[k++] = DW_SIGHASH_ALL;
+    in->script[k++] = KW_SIGHASH_ALL;
     in->script[k++] = 33;
     memcpy(in->script + k, pub, 33); k += 33;
     in->scriptlen = k;
 
-    dw_secure_zero(hash, sizeof hash);
+    kw_secure_zero(hash, sizeof hash);
     return 1;
 }
 
-int dw_tx_txid(const dw_tx *tx, uint8_t out[32])
+int kw_tx_txid(const kw_tx *tx, uint8_t out[32])
 {
     uint8_t buf[16384];
-    size_t n = dw_tx_serialize(tx, buf, sizeof buf);
+    size_t n = kw_tx_serialize(tx, buf, sizeof buf);
     if (!n) return 0;
-    dw_hash256(buf, n, out);
-    dw_secure_zero(buf, sizeof buf);
+    kw_hash256(buf, n, out);
+    kw_secure_zero(buf, sizeof buf);
     return 1;
 }

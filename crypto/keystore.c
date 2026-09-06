@@ -1,4 +1,4 @@
-/* dogewallet - encrypted keystore
+/* koinu.dog - encrypted keystore
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -10,7 +10,7 @@
 
 #include <string.h>
 
-const dw_keystore_params DW_KEYSTORE_DEFAULT = { 3, 65536, 1 };
+const kw_keystore_params KW_KEYSTORE_DEFAULT = { 3, 65536, 1 };
 
 /* on-disk layout, all little-endian:
      0  magic "DWKS"
@@ -30,9 +30,9 @@ const dw_keystore_params DW_KEYSTORE_DEFAULT = { 3, 65536, 1 };
 #define KS_KDF_ARGON2ID 1
 #define KS_AEAD_CHACHA20POLY1305 1
 #define KS_SALT 16
-#define KS_NONCE DW_AEAD_NONCE
+#define KS_NONCE KW_AEAD_NONCE
 #define KS_HDR 52
-#define KS_TAG DW_AEAD_TAG
+#define KS_TAG KW_AEAD_TAG
 
 static void put_le32(uint8_t *o, uint32_t v)
 {
@@ -43,24 +43,24 @@ static uint32_t get_le32(const uint8_t *p)
     return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24;
 }
 
-size_t dw_keystore_sealed_size(size_t secretlen)
+size_t kw_keystore_sealed_size(size_t secretlen)
 {
     return KS_HDR + secretlen + KS_TAG;
 }
 
-size_t dw_keystore_seal(const uint8_t *secret, size_t secretlen,
+size_t kw_keystore_seal(const uint8_t *secret, size_t secretlen,
                         const char *passphrase,
-                        const dw_keystore_params *params,
+                        const kw_keystore_params *params,
                         uint8_t *out, size_t outcap)
 {
     if (!secret || !passphrase || !params) return 0;
-    if (secretlen == 0 || secretlen > DW_KEYSTORE_MAX_SECRET) return 0;
-    size_t total = dw_keystore_sealed_size(secretlen);
+    if (secretlen == 0 || secretlen > KW_KEYSTORE_MAX_SECRET) return 0;
+    size_t total = kw_keystore_sealed_size(secretlen);
     if (total > outcap) return 0;
 
     uint8_t salt[KS_SALT], nonce[KS_NONCE];
-    if (!dw_random_bytes(salt, sizeof salt))  return 0;
-    if (!dw_random_bytes(nonce, sizeof nonce)) return 0;
+    if (!kw_random_bytes(salt, sizeof salt))  return 0;
+    if (!kw_random_bytes(nonce, sizeof nonce)) return 0;
 
     out[0]=KS_MAGIC0; out[1]=KS_MAGIC1; out[2]=KS_MAGIC2; out[3]=KS_MAGIC3;
     out[4]=KS_VERSION; out[5]=KS_KDF_ARGON2ID; out[6]=KS_AEAD_CHACHA20POLY1305; out[7]=0;
@@ -71,25 +71,25 @@ size_t dw_keystore_seal(const uint8_t *secret, size_t secretlen,
     memcpy(out + 36, nonce, KS_NONCE);
     put_le32(out + 48, (uint32_t)secretlen);
 
-    uint8_t key[DW_AEAD_KEY];
-    if (!dw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
+    uint8_t key[KW_AEAD_KEY];
+    if (!kw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
                      salt, sizeof salt, params->t_cost, params->m_cost_kib,
                      params->parallelism, key, sizeof key)) {
-        dw_secure_zero(salt, sizeof salt); dw_secure_zero(nonce, sizeof nonce);
+        kw_secure_zero(salt, sizeof salt); kw_secure_zero(nonce, sizeof nonce);
         return 0;
     }
 
     /* header is the AAD, so version and kdf params are tamper-evident */
-    dw_chacha20poly1305_encrypt(key, nonce, out, KS_HDR, secret, secretlen,
+    kw_chacha20poly1305_encrypt(key, nonce, out, KS_HDR, secret, secretlen,
                                 out + KS_HDR, out + KS_HDR + secretlen);
 
-    dw_secure_zero(key, sizeof key);
-    dw_secure_zero(salt, sizeof salt);
-    dw_secure_zero(nonce, sizeof nonce);
+    kw_secure_zero(key, sizeof key);
+    kw_secure_zero(salt, sizeof salt);
+    kw_secure_zero(nonce, sizeof nonce);
     return total;
 }
 
-int dw_keystore_open(const uint8_t *blob, size_t bloblen,
+int kw_keystore_open(const uint8_t *blob, size_t bloblen,
                      const char *passphrase,
                      uint8_t *out, size_t outcap, size_t *secretlen)
 {
@@ -104,19 +104,19 @@ int dw_keystore_open(const uint8_t *blob, size_t bloblen,
     const uint8_t *salt = blob + 20;
     const uint8_t *nonce = blob + 36;
     uint32_t ctlen = get_le32(blob + 48);
-    if (ctlen == 0 || ctlen > DW_KEYSTORE_MAX_SECRET) return 0;
+    if (ctlen == 0 || ctlen > KW_KEYSTORE_MAX_SECRET) return 0;
     if (bloblen != (size_t)KS_HDR + ctlen + KS_TAG) return 0;
     if (ctlen > outcap) return 0;
 
-    uint8_t key[DW_AEAD_KEY];
-    if (!dw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
+    uint8_t key[KW_AEAD_KEY];
+    if (!kw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
                      salt, KS_SALT, t, m, p, key, sizeof key))
         return 0;
 
-    int ok = dw_chacha20poly1305_decrypt(key, nonce, blob, KS_HDR,
+    int ok = kw_chacha20poly1305_decrypt(key, nonce, blob, KS_HDR,
                                          blob + KS_HDR, ctlen,
                                          blob + KS_HDR + ctlen, out);
-    dw_secure_zero(key, sizeof key);
+    kw_secure_zero(key, sizeof key);
     if (!ok) return 0;
     if (secretlen) *secretlen = ctlen;
     return 1;

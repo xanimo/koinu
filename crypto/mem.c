@@ -1,4 +1,4 @@
-/* dogewallet - secure memory helpers
+/* koinu.dog - secure memory helpers
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -6,13 +6,13 @@
 
 #include <sys/mman.h>
 
-void dw_secure_zero(void *p, size_t n)
+void kw_secure_zero(void *p, size_t n)
 {
     volatile unsigned char *v = (volatile unsigned char *)p;
     while (n--) *v++ = 0;
 }
 
-int dw_memeq_ct(const void *a, const void *b, size_t n)
+int kw_memeq_ct(const void *a, const void *b, size_t n)
 {
     const unsigned char *x = (const unsigned char *)a;
     const unsigned char *y = (const unsigned char *)b;
@@ -21,5 +21,5 @@ int dw_memeq_ct(const void *a, const void *b, size_t n)
     return d;   /* 0 == equal */
 }
 
-int dw_mlock(void *p, size_t n)   { return mlock(p, n); }
-int dw_munlock(void *p, size_t n) { return munlock(p, n); }
+int kw_mlock(void *p, size_t n)   { return mlock(p, n); }
+int kw_munlock(void *p, size_t n) { return munlock(p, n); }

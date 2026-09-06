@@ -1,4 +1,4 @@
-/* dogewallet - hex encode/decode
+/* koinu.dog - hex encode/decode
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -12,7 +12,7 @@ static int hexval(char c)
     return -1;
 }
 
-size_t dw_hex_encode(const uint8_t *in, size_t inlen, char *out, size_t outcap)
+size_t kw_hex_encode(const uint8_t *in, size_t inlen, char *out, size_t outcap)
 {
     static const char *d = "0123456789abcdef";
     if (outcap < inlen * 2 + 1) return 0;
@@ -24,7 +24,7 @@ size_t dw_hex_encode(const uint8_t *in, size_t inlen, char *out, size_t outcap)
     return inlen * 2;
 }
 
-int dw_hex_decode(const char *hex, size_t hexlen, uint8_t *out, size_t outlen)
+int kw_hex_decode(const char *hex, size_t hexlen, uint8_t *out, size_t outlen)
 {
     if (hexlen != outlen * 2) return 0;
     for (size_t i = 0; i < outlen; i++) {

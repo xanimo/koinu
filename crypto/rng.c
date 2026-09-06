@@ -1,4 +1,4 @@
-/* dogewallet - cryptographically secure random bytes
+/* koinu.dog - cryptographically secure random bytes
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -31,7 +31,7 @@ static int urandom_fallback(uint8_t *buf, size_t len)
     return 1;
 }
 
-int dw_random_bytes(void *out, size_t len)
+int kw_random_bytes(void *out, size_t len)
 {
     uint8_t *buf = (uint8_t *)out;
     size_t off = 0;
@@ -44,7 +44,7 @@ int dw_random_bytes(void *out, size_t len)
         if (r < 0) {
             if (errno == EINTR) continue;
             if (errno == ENOSYS) break;        /* pre-3.17: try the device */
-            dw_secure_zero(out, len);
+            kw_secure_zero(out, len);
             return 0;
         }
         off += (size_t)r;
@@ -53,21 +53,21 @@ int dw_random_bytes(void *out, size_t len)
 #endif
 
     if (!urandom_fallback(buf + off, len - off)) {
-        dw_secure_zero(out, len);
+        kw_secure_zero(out, len);
         return 0;
     }
     return 1;
 }
 
-int dw_random_selftest(void)
+int kw_random_selftest(void)
 {
     uint8_t a[32], b[32];
-    if (!dw_random_bytes(a, sizeof a)) return 0;
-    if (!dw_random_bytes(b, sizeof b)) return 0;
+    if (!kw_random_bytes(a, sizeof a)) return 0;
+    if (!kw_random_bytes(b, sizeof b)) return 0;
 
     uint8_t zero = 0;
     for (size_t i = 0; i < sizeof a; i++) zero |= a[i];
     if (zero == 0) return 0;                    /* stuck at all-zero */
-    if (dw_memeq_ct(a, b, sizeof a) == 0) return 0;  /* two draws identical */
+    if (kw_memeq_ct(a, b, sizeof a) == 0) return 0;  /* two draws identical */
     return 1;
 }

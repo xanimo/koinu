@@ -1,9 +1,9 @@
-/* dogewallet - BIP44 account derivation
+/* koinu.dog - BIP44 account derivation
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
-#ifndef DOGEWALLET_BIP44_H
-#define DOGEWALLET_BIP44_H
+#ifndef KOINU_BIP44_H
+#define KOINU_BIP44_H
 
 #include <stdint.h>
 
@@ -12,8 +12,8 @@
 /* Derive m/44'/coin'/account'/change/index from a private master. change is 0
    for receiving and 1 for change addresses. Returns 1 on success, 0 if the
    master is not private or an index is unusable. */
-int dw_bip44_derive(const dw_bip32_key *master,
+int kw_bip44_derive(const kw_bip32_key *master,
                     uint32_t coin, uint32_t account, uint32_t change, uint32_t index,
-                    dw_bip32_key *out);
+                    kw_bip32_key *out);
 
-#endif /* DOGEWALLET_BIP44_H */
+#endif /* KOINU_BIP44_H */

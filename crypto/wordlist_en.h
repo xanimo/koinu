@@ -1,14 +1,14 @@
-/* dogewallet - BIP39 English wordlist
+/* koinu.dog - BIP39 English wordlist
  * SPDX-License-Identifier: MIT
  *
  * The official BIP39 english wordlist, 2048 words. Vendored verbatim; the
  * array is verified in test/test_bip39.c to reproduce the canonical file
  * whose sha256 is 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda. */
 
-#ifndef DOGEWALLET_WORDLIST_EN_H
-#define DOGEWALLET_WORDLIST_EN_H
+#ifndef KOINU_WORDLIST_EN_H
+#define KOINU_WORDLIST_EN_H
 
-static const char *const DW_BIP39_WORDLIST_EN[2048] = {
+static const char *const KW_BIP39_WORDLIST_EN[2048] = {
     "abandon",
     "ability",
     "able",
@@ -2059,4 +2059,4 @@ static const char *const DW_BIP39_WORDLIST_EN[2048] = {
     "zoo",
 };
 
-#endif /* DOGEWALLET_WORDLIST_EN_H */
+#endif /* KOINU_WORDLIST_EN_H */

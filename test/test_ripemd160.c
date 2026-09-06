@@ -1,4 +1,4 @@
-/* dogewallet - RIPEMD-160 known-answer tests
+/* koinu.dog - RIPEMD-160 known-answer tests
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
@@ -16,8 +16,8 @@
 static void rmd(const char *s, const char *want, const char *name)
 {
     uint8_t o[20];
-    dw_ripemd160(s, strlen(s), o);
-    dw_test_check(name, o, 20, want);
+    kw_ripemd160(s, strlen(s), o);
+    kw_test_check(name, o, 20, want);
 }
 
 int main(void)
@@ -39,12 +39,12 @@ int main(void)
 
     /* one million 'a', spanning many blocks */
     {
-        dw_ripemd160_ctx c; dw_ripemd160_init(&c);
+        kw_ripemd160_ctx c; kw_ripemd160_init(&c);
         char chunk[1000];
         memset(chunk, 'a', sizeof chunk);
-        for (int i = 0; i < 1000; i++) dw_ripemd160_update(&c, chunk, sizeof chunk);
-        dw_ripemd160_final(&c, o);
-        dw_test_check("rmd(1e6 x 'a')", o, 20,
+        for (int i = 0; i < 1000; i++) kw_ripemd160_update(&c, chunk, sizeof chunk);
+        kw_ripemd160_final(&c, o);
+        kw_test_check("rmd(1e6 x 'a')", o, 20,
             "52783243c1697bdbe16d37f97f68f08325dc1528");
     }
 
@@ -57,18 +57,18 @@ int main(void)
             0x88,0x7e,0x5b,0x23,0x52
         };
         uint8_t sha[32], man[20], got[20];
-        dw_sha256(pub, sizeof pub, sha);
-        dw_ripemd160(sha, sizeof sha, man);
-        dw_hash160(pub, sizeof pub, got);
+        kw_sha256(pub, sizeof pub, sha);
+        kw_ripemd160(sha, sizeof sha, man);
+        kw_hash160(pub, sizeof pub, got);
         if (memcmp(man, got, 20) != 0) {
             fprintf(stderr, "FAIL hash160 wiring differs from sha256+ripemd160\n");
             return 1;
         }
-        dw_test_check("hash160(compressed pubkey)", got, 20,
+        kw_test_check("hash160(compressed pubkey)", got, 20,
             "f54a5851e9372b87810a8e60cdd2e7cfd80b6e31");
     }
 
-    if (dw_test_fails()) { fprintf(stderr, "%d ripemd160 vector(s) failed\n", dw_test_fails()); return 1; }
+    if (kw_test_fails()) { fprintf(stderr, "%d ripemd160 vector(s) failed\n", kw_test_fails()); return 1; }
     printf("ripemd160 ok: spec vectors, 1e6-byte, and hash160 match\n");
     return 0;
 }

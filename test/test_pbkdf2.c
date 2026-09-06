@@ -1,4 +1,4 @@
-/* dogewallet - PBKDF2-HMAC-SHA512 tests
+/* koinu.dog - PBKDF2-HMAC-SHA512 tests
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -17,13 +17,13 @@ int main(void)
        the block indexing and assembly without needing an external vector. */
     {
         const char *p = "password", *s = "salt";
-        dw_pbkdf2_hmac_sha512((const uint8_t *)p, strlen(p),
+        kw_pbkdf2_hmac_sha512((const uint8_t *)p, strlen(p),
                               (const uint8_t *)s, strlen(s), 1, out, 64);
         uint8_t saltint[8];
         memcpy(saltint, s, 4);
         saltint[4] = 0; saltint[5] = 0; saltint[6] = 0; saltint[7] = 1;
         uint8_t direct[64];
-        dw_hmac_sha512((const uint8_t *)p, strlen(p), saltint, sizeof saltint, direct);
+        kw_hmac_sha512((const uint8_t *)p, strlen(p), saltint, sizeof saltint, direct);
         if (memcmp(out, direct, 64) != 0) {
             fprintf(stderr, "FAIL: c=1 does not match a direct hmac\n");
             return 1;
@@ -36,14 +36,14 @@ int main(void)
         const char *m = "abandon abandon abandon abandon abandon abandon abandon "
                         "abandon abandon abandon abandon about";
         const char *salt = "mnemonicTREZOR";
-        dw_pbkdf2_hmac_sha512((const uint8_t *)m, strlen(m),
+        kw_pbkdf2_hmac_sha512((const uint8_t *)m, strlen(m),
                               (const uint8_t *)salt, strlen(salt), 2048, out, 64);
-        dw_test_check("bip39 seed (abandon..about / TREZOR)", out, 64,
+        kw_test_check("bip39 seed (abandon..about / TREZOR)", out, 64,
             "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e5349553"
             "1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04");
     }
 
-    if (dw_test_fails()) { fprintf(stderr, "%d pbkdf2 case(s) failed\n", dw_test_fails()); return 1; }
+    if (kw_test_fails()) { fprintf(stderr, "%d pbkdf2 case(s) failed\n", kw_test_fails()); return 1; }
     printf("pbkdf2 ok: c=1 equals direct hmac, and the bip39 2048-round seed matches\n");
     return 0;
 }
