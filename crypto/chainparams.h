@@ -18,8 +18,9 @@ typedef struct {
     uint8_t          wif;        /* SECRET_KEY     */
     kw_bip32_version bip32;      /* EXT_SECRET_KEY / EXT_PUBLIC_KEY */
     uint32_t         bip44_coin; /* SLIP-44 coin type */
-    uint32_t         magic;      /* p2p message-start bytes */
+    uint32_t         magic;      /* p2p message-start bytes, little-endian */
     uint16_t         p2p_port;   /* default p2p port */
+    const char      *genesis;    /* genesis block hash, display (reversed) hex */
 } kw_chainparams;
 
 extern const kw_chainparams KW_DOGE_MAINNET;

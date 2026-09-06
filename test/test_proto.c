@@ -54,6 +54,17 @@ int main(void)
         fprintf(stderr, "FAIL: missing payload not reported as incomplete\n"); return 1;
     }
 
-    printf("proto ok: verack vector, ping round trip, magic/checksum/partial handling\n");
+    /* the message-start bytes must go out in Dogecoin's wire order, not
+       byte-reversed: testnet fc c1 b7 dc, regtest fa bf b5 da */
+    n = kw_msg_serialize(KW_DOGE_TESTNET.magic, "verack", NULL, 0, out, sizeof out);
+    if (out[0]!=0xfc || out[1]!=0xc1 || out[2]!=0xb7 || out[3]!=0xdc) {
+        fprintf(stderr, "FAIL: testnet magic bytes\n"); return 1;
+    }
+    n = kw_msg_serialize(KW_DOGE_REGTEST.magic, "verack", NULL, 0, out, sizeof out);
+    if (out[0]!=0xfa || out[1]!=0xbf || out[2]!=0xb5 || out[3]!=0xda) {
+        fprintf(stderr, "FAIL: regtest magic bytes\n"); return 1;
+    }
+
+    printf("proto ok: verack vector, ping round trip, magic order, checksum/partial handling\n");
     return 0;
 }
