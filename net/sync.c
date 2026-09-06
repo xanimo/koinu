@@ -6,8 +6,11 @@
 #include "msg.h"
 #include "hex.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+int kw_net_verbose = 0;
 
 long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp)
 {
@@ -53,6 +56,7 @@ long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp)
             if (!kw_headerstore_append(s, &batch[i])) { free(batch); return -1; }
             total++;
         }
+        if (kw_net_verbose) fprintf(stderr, "[headers] %ld synced\n", total);
     }
 
     free(batch);

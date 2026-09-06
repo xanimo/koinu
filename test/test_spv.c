@@ -13,7 +13,10 @@
 #include "testutil.h"
 #include "hex.h"
 
+#include "auxpow_block_vector.h"
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *BLOCK_RAW =
@@ -114,6 +117,32 @@ int main(void)
         kw_utxoset_free(&us); kw_watchset_free(&ws);
     }
 
-    printf("spv ok: getdata inv, real block scan (coinbase to A), truncation, intra-block spend\n");
+    /* a real mainnet AuxPoW block: its merged-mining blob sits between the header
+       and the tx count, so the scan must skip it to reach the transactions. */
+    {
+        size_t hexlen = strlen(KW_AUXPOW_BLOCK_RAW);
+        uint8_t *blk = (uint8_t *)malloc(hexlen / 2);
+        if (!blk) { fprintf(stderr, "FAIL: alloc\n"); return 1; }
+        int blen = kw_test_unhex(KW_AUXPOW_BLOCK_RAW, blk);
+        if (blen <= 0) { fprintf(stderr, "FAIL: auxpow block hex\n"); return 1; }
+
+        uint8_t spk[64];
+        int spklen = kw_test_unhex(KW_AUXPOW_BLOCK_SPK, spk);
+        kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, (size_t)spklen);
+        kw_utxoset us; kw_utxoset_init(&us);
+
+        if (!kw_block_scan(blk, (size_t)blen, &us, &ws, KW_AUXPOW_BLOCK_HEIGHT)) {
+            fprintf(stderr, "FAIL: scan auxpow block\n"); return 1;
+        }
+        if (kw_utxoset_count(&us) != 1 || kw_utxoset_balance(&us) != KW_AUXPOW_BLOCK_VALUE) {
+            fprintf(stderr, "FAIL: auxpow block value (count %zu bal %llu)\n",
+                kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us)); return 1;
+        }
+        if (us.u[0].height != KW_AUXPOW_BLOCK_HEIGHT) { fprintf(stderr, "FAIL: auxpow height\n"); return 1; }
+
+        kw_utxoset_free(&us); kw_watchset_free(&ws); free(blk);
+    }
+
+    printf("spv ok: getdata inv, real block scan, auxpow-block skip, truncation, intra-block spend\n");
     return 0;
 }

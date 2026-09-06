@@ -5,7 +5,9 @@
 #include "cf.h"
 #include "gcs.h"
 #include "spv.h"
+#include "sync.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -96,8 +98,13 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                     matched = t; capm = nc;
                 }
                 matched[nm++] = k;
+                if (kw_net_verbose)
+                    fprintf(stderr, "[cf] match at height %u\n", base_height + (uint32_t)k);
             }
         }
+        if (kw_net_verbose)
+            fprintf(stderr, "[cf] checked %zu/%zu filters, %zu matched\n",
+                    s1, s->count, nm);
     }
 
     long scanned = -1;

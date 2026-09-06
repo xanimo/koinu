@@ -23,3 +23,10 @@
 /test/test_headers
 /test/test_sync
 /net_sync
+/net_spv
+/net_cf
+/test/test_siphash
+/test/test_utxo
+/test/test_spv
+/test/test_gcs
+/test/test_cf

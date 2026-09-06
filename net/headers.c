@@ -139,6 +139,15 @@ static void skip_auxpow(R *r)
     r_skip(r, KW_HEADER_LEN);            /* parentBlock (pure header) */
 }
 
+int kw_auxpow_skip(const uint8_t *in, size_t len, size_t *off)
+{
+    R r = { in, len, *off, 0 };
+    skip_auxpow(&r);
+    if (r.bad) return 0;
+    *off = r.off;
+    return 1;
+}
+
 int kw_msg_headers_parse(const uint8_t *in, size_t len,
                          kw_block_header *out, size_t maxout, size_t *nout)
 {

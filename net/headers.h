@@ -42,6 +42,11 @@ size_t kw_msg_getheaders_build(uint32_t version,
 int kw_msg_headers_parse(const uint8_t *in, size_t len,
                          kw_block_header *out, size_t maxout, size_t *nout);
 
+/* Skip a CAuxPow blob at (in + *off), advancing *off past it. Used to step over
+   the merged-mining data an AuxPoW block carries between its 80-byte header and
+   its transaction count. Returns 1, or 0 if malformed. */
+int kw_auxpow_skip(const uint8_t *in, size_t len, size_t *off);
+
 /* An append-only header chain: each header must link to the current tip. */
 typedef struct { kw_block_header *h; size_t count, cap; } kw_headerstore;
 

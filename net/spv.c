@@ -52,7 +52,12 @@ int kw_block_scan(const uint8_t *msg, size_t len,
                   kw_utxoset *us, const kw_watchset *ws, uint32_t height)
 {
     if (len < KW_HEADER_LEN + 1) return 0;
+    uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
+                       (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
     size_t off = KW_HEADER_LEN;
+    /* an AuxPoW block carries merged-mining data between the header and the tx
+       count, exactly as the headers stream does */
+    if ((version & KW_BLOCK_VERSION_AUXPOW) && !kw_auxpow_skip(msg, len, &off)) return 0;
     int bad = 0;
     uint64_t ntx = rd_varint(msg, len, &off, &bad);
     if (bad || ntx > (uint64_t)len) return 0;      /* each tx is >= 1 byte */
