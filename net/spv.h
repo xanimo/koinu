@@ -29,10 +29,25 @@ size_t kw_msg_getdata_blocks_build(const uint8_t (*hashes)[32], size_t n,
 int kw_block_scan(const uint8_t *msg, size_t len,
                   kw_utxoset *us, const kw_watchset *ws, uint32_t height);
 
+/* Download one block by hash over (p) and verify it matches. On success returns
+   1 with (payload)/(plen) pointing at peer-owned storage valid until the next
+   recv. */
+int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
+                     const uint8_t **payload, size_t *plen);
+
 /* Download one block by hash over (p), verify it matches, and scan it into (us)
    at (height). Returns 1 on success, 0 on error. Shared by both backends. */
 int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
                        kw_utxoset *us, const kw_watchset *ws, uint32_t height);
+
+/* Whether a block creates or spends one specific outpoint (txid,vout). */
+typedef struct { int created; uint64_t created_value; int spent; } kw_outpoint_status;
+
+/* Scan a block message for (txid,vout): set st->created (with created_value) if
+   an output at that outpoint exists, and st->spent if an input consumes it.
+   Returns 1, or 0 if malformed. */
+int kw_block_find_outpoint(const uint8_t *msg, size_t len,
+                           const uint8_t txid[32], uint32_t vout, kw_outpoint_status *st);
 
 /* Download and scan every block in the header store over (p), applying to (us).
    The store holds a contiguous chain; (base_height) is the block height of its

@@ -24,6 +24,7 @@
 #include "sync.h"
 #include "spv.h"
 #include "cf.h"
+#include "cfstore.h"
 #include "utxo.h"
 
 #include <fcntl.h>
@@ -51,7 +52,7 @@ static void usage(void)
       "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB]\n"
       "  height   --node HOST [--port N] [--tor]\n"
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
-      "           [--port N] [--tor] [--cf|--spv]\n"
+      "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor]\n"
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
@@ -402,7 +403,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_headerstore s; headers_open(&s, headers_path);
     nh = kw_sync_headers(&p, &s, cp);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
-    if (headers_path) kw_headerstore_save(&s, headers_path);
+    if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
 
     /* gap-limit: rescan with a growing range until `gap` unused addresses trail
        the highest used one. headers are synced once; only the scan repeats. */
@@ -772,7 +773,7 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
         kw_headerstore s; headers_open(&s, headers_path);
         long nh = kw_sync_headers(&p, &s, cp);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
-        if (headers_path) kw_headerstore_save(&s, headers_path);
+        if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
         const kw_block_header *tip = kw_headerstore_tip(&s);
         char d[65] = "(none)";
         if (tip) { uint8_t r[32]; for (int i = 0; i < 32; i++) r[i] = tip->hash[31 - i]; kw_hex_encode(r, 32, d, sizeof d); }
@@ -792,7 +793,7 @@ out:
    claimed height. */
 static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const char *outpoint_arg,
                         const char *node, int port, int tor, int use_cf,
-                        const char *headers_path, const char *filters_path)
+                        const char *headers_path, const char *filters_path, long since)
 {
     if (!watch_arg || !outpoint_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -826,13 +827,47 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     kw_utxoset us; int have_us = 0;
     size_t tipheight = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
+
+    kw_headerstore s; headers_open(&s, headers_path);
+    long nh = kw_sync_headers(&p, &s, cp);
+    if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
+    if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);   /* only if it grew */
+    tipheight = s.count;
+
+    if (since >= 0) {
+        /* range: test filters over [since, tip] and report the outpoint's
+           creation and spend seen there. requires the filter cache. */
+        if (!use_cf || !filters_path) { fprintf(stderr, "kw: --since requires --cf and --filters\n"); kw_headerstore_free(&s); goto out; }
+        if (kw_cfstore_sync(&p, &s, filters_path, 1) < 0) { fprintf(stderr, "kw: filter sync failed\n"); kw_headerstore_free(&s); goto out; }
+
+        kw_gcs_item it = { spk, spklen };
+        uint32_t *heights = (uint32_t *)malloc((s.count ? s.count : 1) * sizeof *heights);
+        if (!heights) { kw_headerstore_free(&s); goto out; }
+        long nm = kw_cfstore_match_range(filters_path, &s, 1, (uint32_t)since, &it, 1, heights, s.count);
+        long created_h = -1, spent_h = -1; uint64_t value = 0;
+        for (long i = 0; i < nm; i++) {
+            uint32_t h = heights[i];
+            const uint8_t *pl = NULL; size_t pn = 0;
+            kw_outpoint_status st = { 0, 0, 0 };
+            if (!kw_spv_get_block(&p, s.h[h - 1].hash, &pl, &pn) ||
+                !kw_block_find_outpoint(pl, pn, txint, vout, &st)) { nm = -1; break; }
+            if (st.created) { created_h = (long)h; value = st.created_value; }
+            if (st.spent) spent_h = (long)h;
+        }
+        free(heights);
+        kw_headerstore_free(&s);
+        if (nm < 0) { fprintf(stderr, "kw: filter/block scan failed\n"); goto out; }
+
+        if (spent_h >= 0) { printf("spent at height %ld depth %ld\n", spent_h, (long)tipheight - spent_h + 1); rc = 3; }
+        else if (created_h >= 0) { printf("unspent height %ld depth %ld value %llu koinu\n",
+                                          created_h, (long)tipheight - created_h + 1, (unsigned long long)value); rc = 0; }
+        else { printf("not seen since %ld\n", since); rc = 4; }
+        goto out;
+    }
+
+    /* full scan: build the utxo set from the whole chain and test membership */
+    kw_utxoset_init(&us); have_us = 1;
     {
-        kw_headerstore s; headers_open(&s, headers_path);
-        long nh = kw_sync_headers(&p, &s, cp);
-        if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
-        if (headers_path) kw_headerstore_save(&s, headers_path);
-        tipheight = s.count;
-        kw_utxoset_init(&us); have_us = 1;
         long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
                 : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
         kw_headerstore_free(&s);
@@ -940,6 +975,7 @@ int main(int argc, char **argv)
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *filters_arg = NULL;
+    long since = -1;
     const char *inputs[KW_TX_MAX_IN];
 
     for (int i = 1; i < argc; i++) {
@@ -971,6 +1007,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--outpoint"))   outpoint_arg = NEXT();
         else if (!strcmp(a, "--headers"))    headers_arg = NEXT();
         else if (!strcmp(a, "--filters"))    filters_arg = NEXT();
+        else if (!strcmp(a, "--since"))    { const char *v = NEXT(); since = v ? atol(v) : -1; }
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
@@ -990,7 +1027,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg);
-    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg);
+    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
     else { usage(); rc = 2; }
     kw_ec_stop();

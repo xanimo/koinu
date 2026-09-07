@@ -47,11 +47,21 @@ int main(void)
     kw_gcs_item bit = { bogus, sizeof bogus };
     if (kw_cfstore_match(tmp, NULL, 0, &bit, 1, heights, 8) != 0) { fprintf(stderr, "FAIL: false positive\n"); return 1; }
 
+    /* range: from height 1 skips index 0, so b's element matches at 1 and a's
+       does not (it lives at index 0, before the range) */
+    uint8_t eb[4096];
+    int ebl = kw_test_unhex(b->elems[0], eb);
+    kw_gcs_item bt = { eb, (size_t)ebl };
+    long r = kw_cfstore_match_range(tmp, NULL, 0, 1, &bt, 1, heights, 8);
+    if (r < 1 || heights[0] != 1) { fprintf(stderr, "FAIL: range match b (r=%ld)\n", r); return 1; }
+    if (kw_cfstore_match_range(tmp, NULL, 0, 1, &it, 1, heights, 8) != 0) { fprintf(stderr, "FAIL: range skipped a\n"); return 1; }
+
     /* a corrupt tag is rejected */
     FILE *f = fopen(tmp, "r+b"); if (f) { fputc('X', f); fclose(f); }
     if (kw_cfstore_count(tmp) != -1) { fprintf(stderr, "FAIL: corrupt tag accepted\n"); return 1; }
     remove(tmp);
+    remove("test_cfstore.tmp.idx");
 
-    printf("cfstore ok: append, count, local match hit and miss, corrupt tag rejected\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected\n");
     return 0;
 }

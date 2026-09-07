@@ -71,9 +71,47 @@ int kw_block_scan(const uint8_t *msg, size_t len,
     return 1;
 }
 
+/* ── targeted outpoint scan ──────────────────────────────────── */
+struct fo_ctx { const uint8_t *txid; uint32_t vout; int created; uint64_t value; int spent; };
+
+static void fo_on_input(void *v, const uint8_t prev[32], uint32_t vout)
+{
+    struct fo_ctx *c = (struct fo_ctx *)v;
+    if (vout == c->vout && memcmp(prev, c->txid, 32) == 0) c->spent = 1;
+}
+static void fo_on_output(void *v, const uint8_t txid[32], uint32_t index,
+                         uint64_t value, const uint8_t *spk, size_t spklen)
+{
+    (void)spk; (void)spklen;
+    struct fo_ctx *c = (struct fo_ctx *)v;
+    if (index == c->vout && memcmp(txid, c->txid, 32) == 0) { c->created = 1; c->value = value; }
+}
+
+int kw_block_find_outpoint(const uint8_t *msg, size_t len,
+                           const uint8_t txid[32], uint32_t vout, kw_outpoint_status *st)
+{
+    if (len < KW_HEADER_LEN + 1) return 0;
+    uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
+                       (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
+    size_t off = KW_HEADER_LEN;
+    if ((version & KW_BLOCK_VERSION_AUXPOW) && !kw_auxpow_skip(msg, len, &off)) return 0;
+    int bad = 0;
+    uint64_t ntx = rd_varint(msg, len, &off, &bad);
+    if (bad || ntx > (uint64_t)len) return 0;
+
+    struct fo_ctx c = { txid, vout, 0, 0, 0 };
+    for (uint64_t i = 0; i < ntx; i++) {
+        size_t consumed = kw_tx_scan(msg + off, len - off, NULL, fo_on_input, fo_on_output, &c);
+        if (!consumed) return 0;
+        off += consumed;
+    }
+    st->created = c.created; st->created_value = c.value; st->spent = c.spent;
+    return 1;
+}
+
 /* ── live driver ─────────────────────────────────────────────── */
-int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
-                       kw_utxoset *us, const kw_watchset *ws, uint32_t height)
+int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
+                     const uint8_t **payload, size_t *plen)
 {
     uint8_t body[64];
     size_t bn = kw_msg_getdata_blocks_build((const uint8_t (*)[32])hash, 1, body, sizeof body);
@@ -90,7 +128,15 @@ int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
     /* the block we asked for, not some other one */
     kw_block_header hdr;
     if (!kw_block_header_parse(pl, pn, &hdr) || memcmp(hdr.hash, hash, 32) != 0) return 0;
+    *payload = pl; *plen = pn;
+    return 1;
+}
 
+int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
+                       kw_utxoset *us, const kw_watchset *ws, uint32_t height)
+{
+    const uint8_t *pl = NULL; size_t pn = 0;
+    if (!kw_spv_get_block(p, hash, &pl, &pn)) return 0;
     return kw_block_scan(pl, pn, us, ws, height);
 }
 

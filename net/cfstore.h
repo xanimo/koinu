@@ -37,4 +37,11 @@ long kw_cfstore_match(const char *path, const kw_headerstore *s, uint32_t base_h
                       const kw_gcs_item *items, size_t nitems,
                       uint32_t *heights, size_t cap);
 
+/* Same, but only over blocks at height >= (from_height), seeking there through a
+   <path>.idx height index (rebuilt when stale). For a from_height near the tip
+   this touches only the tail of the cache. Returns the match count or -1. */
+long kw_cfstore_match_range(const char *path, const kw_headerstore *s, uint32_t base_height,
+                            uint32_t from_height, const kw_gcs_item *items, size_t nitems,
+                            uint32_t *heights, size_t cap);
+
 #endif /* KOINU_CFSTORE_H */

@@ -4,12 +4,16 @@
 
 #include "cfstore.h"
 #include "cf.h"
+#include "sync.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char KW_CF_MAGIC[4] = { 'K', 'W', 'F', '1' };
+
+static int  ensure_index(const char *path);
+static long index_count(const char *path);
 
 static int wr_varint(FILE *f, uint64_t v)
 {
@@ -70,7 +74,15 @@ long kw_cfstore_count(const char *path)
 long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                      uint32_t base_height)
 {
-    long have = kw_cfstore_count(path);
+    /* count via the index (O(1)) rather than streaming the whole cache */
+    long have;
+    FILE *tf = fopen(path, "rb");
+    if (!tf) have = 0;                                       /* no cache yet */
+    else {
+        fclose(tf);
+        if (!ensure_index(path)) return -1;                 /* present but corrupt */
+        have = index_count(path);
+    }
     if (have < 0 || (size_t)have > s->count) return -1;      /* corrupt or ahead of headers */
     if ((size_t)have == s->count) return (long)s->count;
 
@@ -98,21 +110,135 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
             if (type != KW_CF_TYPE_BASIC || memcmp(bh, s->h[k].hash, 32) != 0) return -1;
             if (!kw_cfstore_append(path, bh, filt, flen)) return -1;
         }
+        if (kw_net_verbose) fprintf(stderr, "[cf] cached %zu/%zu filters\n", s1, s->count);
     }
     return (long)s->count;
 }
 
-long kw_cfstore_match(const char *path, const kw_headerstore *s, uint32_t base_height,
-                      const kw_gcs_item *items, size_t nitems,
-                      uint32_t *heights, size_t cap)
+/* Write entry offsets to (of), starting at cache position (from) and updating
+   the 8-byte header to (csize) at the end. (cf) is positioned at (from). */
+static int index_write_from(FILE *cf, FILE *of, long from, long csize)
 {
+    int ok = 1;
+    long pos = from;
+    for (;;) {
+        uint8_t h[32];
+        size_t r = fread(h, 1, 32, cf);
+        if (r == 0) break;
+        if (r != 32) { ok = 0; break; }
+        uint64_t fl;
+        if (!rd_varint(cf, &fl) || fseek(cf, (long)fl, SEEK_CUR) != 0) { ok = 0; break; }
+        uint8_t ob[8];
+        for (int i = 0; i < 8; i++) ob[i] = (uint8_t)((uint64_t)pos >> (8 * i));
+        if (fwrite(ob, 1, 8, of) != 8) { ok = 0; break; }
+        pos = ftell(cf);
+    }
+    if (ok) {
+        uint8_t hd[8];
+        for (int i = 0; i < 8; i++) hd[i] = (uint8_t)((uint64_t)csize >> (8 * i));
+        if (fseek(of, 0, SEEK_SET) != 0 || fwrite(hd, 1, 8, of) != 8) ok = 0;
+    }
+    return ok;
+}
+
+/* Build or extend the <path>.idx height index: an 8-byte cache size then a
+   uint64 file offset per entry. Current when the stored size equals the cache's;
+   since the cache is append-only, a grown cache only needs its new tail indexed
+   rather than a full rebuild. Returns 1/0. */
+static int ensure_index(const char *path)
+{
+    char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
+
+    FILE *cf = fopen(path, "rb");
+    if (!cf) return 0;
+    if (fseek(cf, 0, SEEK_END) != 0) { fclose(cf); return 0; }
+    long csize = ftell(cf);
+
+    long stored = -1;
+    FILE *xf = fopen(ip, "rb");
+    if (xf) {
+        uint8_t hd[8];
+        if (fread(hd, 1, 8, xf) == 8) { stored = 0; for (int i = 0; i < 8; i++) stored |= (long)hd[i] << (8 * i); }
+        fclose(xf);
+    }
+    if (stored == csize) { fclose(cf); return 1; }                 /* current */
+
+    /* append-only: extend from the previously indexed end */
+    if (stored > 4 && stored < csize) {
+        FILE *of = fopen(ip, "r+b");
+        if (of && fseek(cf, stored, SEEK_SET) == 0 && fseek(of, 0, SEEK_END) == 0) {
+            int ok = index_write_from(cf, of, stored, csize);
+            if (fclose(of) != 0) ok = 0;
+            fclose(cf);
+            if (ok) return 1;
+            cf = fopen(path, "rb");                                /* extend failed: fall to rebuild */
+            if (!cf) return 0;
+        } else if (of) fclose(of);
+    }
+
+    /* full rebuild */
+    if (fseek(cf, 0, SEEK_SET) != 0) { fclose(cf); return 0; }
+    char m[4];
+    if (fread(m, 1, 4, cf) != 4 || memcmp(m, KW_CF_MAGIC, 4) != 0) { fclose(cf); return 0; }
+    FILE *of = fopen(ip, "wb");
+    if (!of) { fclose(cf); return 0; }
+    uint8_t hd0[8] = {0};
+    int ok = fwrite(hd0, 1, 8, of) == 8;                           /* placeholder header */
+    if (ok) ok = index_write_from(cf, of, 4, csize);
+    if (fclose(of) != 0) ok = 0;
+    fclose(cf);
+    return ok;
+}
+
+/* Read the file offset of entry (idx) from the index; -1 if unavailable. */
+static long index_offset(const char *path, size_t idx)
+{
+    char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
+    FILE *xf = fopen(ip, "rb");
+    if (!xf) return -1;
+    long r = -1;
+    if (fseek(xf, (long)(8 + idx * 8), SEEK_SET) == 0) {
+        uint8_t ob[8];
+        if (fread(ob, 1, 8, xf) == 8) {
+            uint64_t v = 0;
+            for (int i = 0; i < 8; i++) v |= (uint64_t)ob[i] << (8 * i);
+            r = (long)v;
+        }
+    }
+    fclose(xf);
+    return r;
+}
+
+static long index_count(const char *path)
+{
+    char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
+    FILE *xf = fopen(ip, "rb");
+    if (!xf) return -1;
+    long sz = (fseek(xf, 0, SEEK_END) == 0) ? ftell(xf) : -1;
+    fclose(xf);
+    return sz < 8 ? -1 : (sz - 8) / 8;
+}
+
+long kw_cfstore_match_range(const char *path, const kw_headerstore *s, uint32_t base_height,
+                            uint32_t from_height, const kw_gcs_item *items, size_t nitems,
+                            uint32_t *heights, size_t cap)
+{
+    if (!ensure_index(path)) return -1;
+    long cnt = index_count(path);
+    if (cnt < 0) return -1;
+
+    size_t start = (from_height > base_height) ? (size_t)(from_height - base_height) : 0;
+    if (start >= (size_t)cnt) return 0;              /* range past the tip */
+
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
-    char m[4];
-    if (fread(m, 1, 4, f) != 4 || memcmp(m, KW_CF_MAGIC, 4) != 0) { fclose(f); return -1; }
+    if (start > 0) {
+        long o = index_offset(path, start);
+        if (o < 0 || fseek(f, o, SEEK_SET) != 0) { fclose(f); return -1; }
+    } else if (fseek(f, 4, SEEK_SET) != 0) { fclose(f); return -1; }   /* past the tag */
 
     uint8_t *buf = NULL; size_t bcap = 0;
-    long n = 0; size_t idx = 0;
+    long n = 0; size_t idx = start;
     for (;;) {
         uint8_t h[32];
         size_t r = fread(h, 1, 32, f);
@@ -132,4 +258,11 @@ long kw_cfstore_match(const char *path, const kw_headerstore *s, uint32_t base_h
     free(buf);
     fclose(f);
     return n;
+}
+
+long kw_cfstore_match(const char *path, const kw_headerstore *s, uint32_t base_height,
+                      const kw_gcs_item *items, size_t nitems,
+                      uint32_t *heights, size_t cap)
+{
+    return kw_cfstore_match_range(path, s, base_height, base_height, items, nitems, heights, cap);
 }

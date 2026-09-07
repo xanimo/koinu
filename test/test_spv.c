@@ -143,6 +143,27 @@ int main(void)
         kw_utxoset_free(&us); kw_watchset_free(&ws); free(blk);
     }
 
-    printf("spv ok: getdata inv, real block scan, auxpow-block skip, truncation, intra-block spend\n");
+    /* find_outpoint on the real auxpow block: it creates DGYr's vout 0 and
+       spends nothing of it. */
+    {
+        size_t hexlen = strlen(KW_AUXPOW_BLOCK_RAW);
+        uint8_t *blk = (uint8_t *)malloc(hexlen / 2);
+        int blen = kw_test_unhex(KW_AUXPOW_BLOCK_RAW, blk);
+        uint8_t tdisp[32], tint[32];
+        kw_test_unhex("6e0eefe21280e22aa55fa1709a890516a06e29be89a2e505c4f303f97c10c0b3", tdisp);
+        for (int i = 0; i < 32; i++) tint[i] = tdisp[31 - i];
+
+        kw_outpoint_status st = { 0, 0, 0 };
+        if (!kw_block_find_outpoint(blk, (size_t)blen, tint, 0, &st) ||
+            !st.created || st.created_value != KW_AUXPOW_BLOCK_VALUE || st.spent) {
+            fprintf(stderr, "FAIL: find_outpoint created\n"); return 1;
+        }
+        kw_outpoint_status st2 = { 0, 0, 0 };            /* wrong vout: not created */
+        kw_block_find_outpoint(blk, (size_t)blen, tint, 9, &st2);
+        if (st2.created || st2.spent) { fprintf(stderr, "FAIL: find_outpoint bogus vout\n"); return 1; }
+        free(blk);
+    }
+
+    printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint\n");
     return 0;
 }
