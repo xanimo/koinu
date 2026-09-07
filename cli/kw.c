@@ -48,6 +48,9 @@ static void usage(void)
       "           [--gap N] [--utxos PATH] [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
       "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
       "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB]\n"
+      "  height   --node HOST [--port N] [--tor]\n"
+      "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
+      "           [--port N] [--tor] [--cf|--spv]\n"
       "\n"
       "  scan watches the first --gap receive and change addresses, syncs from\n"
       "  --node (compact filters by default, --spv for full blocks), and writes the\n"
@@ -730,6 +733,107 @@ out:
     return rc;
 }
 
+/* Print the peer's tip height and hash. Header sync only; no keystore. The store
+   holds blocks 1..count, so the tip height is the count. */
+static int cmd_height(const kw_chainparams *cp, const char *node, int port, int tor)
+{
+    if (!node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+    kw_net_verbose = 1;
+    kw_peer p;
+    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+                   : kw_peer_connect(&p, cp, node, port, 15);
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); return 1; }
+
+    int rc = 1;
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
+    {
+        kw_headerstore s; kw_headerstore_init(&s);
+        long nh = kw_sync_headers(&p, &s, cp);
+        if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
+        const kw_block_header *tip = kw_headerstore_tip(&s);
+        char d[65] = "(none)";
+        if (tip) { uint8_t r[32]; for (int i = 0; i < 32; i++) r[i] = tip->hash[31 - i]; kw_hex_encode(r, 32, d, sizeof d); }
+        printf("height %zu\ntip %s\n", s.count, d);
+        kw_headerstore_free(&s);
+        rc = 0;
+    }
+out:
+    kw_peer_close(&p);
+    return rc;
+}
+
+/* Report the confirmation status of an outpoint the caller names, watching the
+   script it pays. Exits 0 if the outpoint is unspent (printing depth), 3 if it
+   is not in the unspent set (unconfirmed or already spent), 1 on error. Lets a
+   caller confirm a funding output to its own depth policy without trusting a
+   claimed height. */
+static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const char *outpoint_arg,
+                        const char *node, int port, int tor, int use_cf)
+{
+    if (!watch_arg || !outpoint_arg || !node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+
+    uint8_t spk[64]; size_t spklen = 0;
+    if (addr_to_spk(cp, watch_arg, spk, &spklen)) { /* an address */ }
+    else {
+        size_t hl = strlen(watch_arg);
+        if (hl < 2 || hl > 128 || hl % 2 || !kw_hex_decode(watch_arg, hl, spk, hl / 2)) {
+            fprintf(stderr, "kw: --watch must be an address or scriptPubKey hex\n"); return 1;
+        }
+        spklen = hl / 2;
+    }
+
+    char ob[128]; snprintf(ob, sizeof ob, "%s", outpoint_arg);
+    char *ts = strtok(ob, ":"), *vs = strtok(NULL, ":");
+    if (!ts || !vs || strlen(ts) != 64) { fprintf(stderr, "kw: --outpoint wants TXID:VOUT\n"); return 1; }
+    uint8_t txdisp[32], txint[32];
+    if (!kw_hex_decode(ts, 64, txdisp, 32)) { fprintf(stderr, "kw: bad txid\n"); return 1; }
+    for (int i = 0; i < 32; i++) txint[i] = txdisp[31 - i];
+    uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
+
+    kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
+    kw_net_verbose = 1;
+    kw_peer p;
+    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+                   : kw_peer_connect(&p, cp, node, port, 15);
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); return 1; }
+
+    int rc = 1;
+    kw_utxoset us; int have_us = 0;
+    size_t tipheight = 0;
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
+    {
+        kw_headerstore s; kw_headerstore_init(&s);
+        long nh = kw_sync_headers(&p, &s, cp);
+        if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
+        tipheight = s.count;
+        kw_utxoset_init(&us); have_us = 1;
+        long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        kw_headerstore_free(&s);
+        if (nb < 0) { fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block"); goto out; }
+    }
+    {
+        const kw_utxo *found = NULL;
+        for (size_t u = 0; u < us.count; u++)
+            if (us.u[u].vout == vout && memcmp(us.u[u].txid, txint, 32) == 0) { found = &us.u[u]; break; }
+        if (found) {
+            long depth = (long)tipheight - (long)found->height + 1;
+            printf("unspent height %u depth %ld value %llu koinu\n",
+                   found->height, depth, (unsigned long long)found->value);
+            rc = 0;
+        } else {
+            printf("not found (unconfirmed or already spent)\n");
+            rc = 3;
+        }
+    }
+out:
+    if (have_us) kw_utxoset_free(&us);
+    kw_peer_close(&p);
+    kw_watchset_free(&ws);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0;
@@ -738,6 +842,7 @@ int main(int argc, char **argv)
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
+    const char *watch_arg = NULL, *outpoint_arg = NULL;
     const char *inputs[KW_TX_MAX_IN];
 
     for (int i = 1; i < argc; i++) {
@@ -765,6 +870,8 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--gap"))      { const char *v = NEXT(); gap = v ? atoi(v) : 100; }
         else if (!strcmp(a, "--utxos"))      utxos_arg = NEXT();
         else if (!strcmp(a, "--wif"))        wif_arg = NEXT();
+        else if (!strcmp(a, "--watch"))      watch_arg = NEXT();
+        else if (!strcmp(a, "--outpoint"))   outpoint_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
@@ -782,6 +889,8 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
+    else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor);
+    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;
