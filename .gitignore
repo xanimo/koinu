@@ -31,3 +31,4 @@
 /test/test_spv
 /test/test_gcs
 /test/test_cf
+/test/test_cfstore

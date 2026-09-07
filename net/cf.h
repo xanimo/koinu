@@ -39,4 +39,11 @@ int kw_msg_cfilter_parse(const uint8_t *payload, size_t len,
 long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                 kw_utxoset *us, const kw_watchset *ws, uint32_t base_height);
 
+/* Same, but backed by the on-disk filter cache at (filters_path): fetch only the
+   filters not yet cached, match locally, then download and scan the matching
+   blocks. Returns blocks scanned, or -1. */
+long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
+                       kw_utxoset *us, const kw_watchset *ws, uint32_t base_height,
+                       const char *filters_path);
+
 #endif /* KOINU_CF_H */

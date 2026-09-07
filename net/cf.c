@@ -6,6 +6,7 @@
 #include "gcs.h"
 #include "spv.h"
 #include "sync.h"
+#include "cfstore.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,5 +122,35 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
 
     free(items);
     free(matched);
+    return scanned;
+}
+
+long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
+                       kw_utxoset *us, const kw_watchset *ws, uint32_t base_height,
+                       const char *filters_path)
+{
+    if (kw_cfstore_sync(p, s, filters_path, base_height) < 0) return -1;
+    if (s->count == 0) return 0;
+
+    kw_gcs_item *items = NULL;
+    if (ws->count) {
+        items = (kw_gcs_item *)malloc(ws->count * sizeof *items);
+        if (!items) return -1;
+        for (size_t i = 0; i < ws->count; i++) { items[i].script = ws->w[i].spk; items[i].len = ws->w[i].len; }
+    }
+
+    uint32_t *heights = (uint32_t *)malloc(s->count * sizeof *heights);
+    if (!heights) { free(items); return -1; }
+    long nm = kw_cfstore_match(filters_path, s, base_height, items, ws->count, heights, s->count);
+    free(items);
+    if (nm < 0) { free(heights); return -1; }
+
+    long scanned = 0;
+    for (long i = 0; i < nm; i++) {
+        size_t idx = heights[i] - base_height;
+        if (!kw_spv_fetch_block(p, s->h[idx].hash, us, ws, heights[i])) { free(heights); return -1; }
+        scanned++;
+    }
+    free(heights);
     return scanned;
 }
