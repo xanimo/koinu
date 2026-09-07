@@ -145,6 +145,38 @@ int main(void)
         }
     }
 
-    printf("headers ok: genesis/1/2 hashes, headers parse, auxpow skip (legacy+segwit), store links, getheaders\n");
+    /* the on-disk cache round-trips the chain and rejects a broken link */
+    {
+        kw_headerstore ss;
+        kw_headerstore_init(&ss);
+        kw_headerstore_append(&ss, &hg); kw_headerstore_append(&ss, &h1); kw_headerstore_append(&ss, &h2);
+        const char *tmp = "test_headers_cache.tmp";
+        if (!kw_headerstore_save(&ss, tmp)) { fprintf(stderr, "FAIL: header save\n"); return 1; }
+        kw_headerstore_free(&ss);
+
+        kw_headerstore ld;
+        kw_headerstore_init(&ld);
+        if (!kw_headerstore_load(&ld, tmp)) { fprintf(stderr, "FAIL: header load\n"); return 1; }
+        if (ld.count != 3 || memcmp(kw_headerstore_tip(&ld)->hash, h2.hash, 32) != 0) {
+            fprintf(stderr, "FAIL: header cache tip\n"); return 1;
+        }
+        kw_headerstore_free(&ld);
+
+        /* a truncated file (odd trailing bytes) is rejected */
+        FILE *f = fopen(tmp, "ab"); if (f) { uint8_t junk[10] = {0}; fwrite(junk, 1, sizeof junk, f); fclose(f); }
+        kw_headerstore bad; kw_headerstore_init(&bad);
+        if (kw_headerstore_load(&bad, tmp)) { fprintf(stderr, "FAIL: corrupt cache accepted\n"); return 1; }
+        kw_headerstore_free(&bad);
+        remove(tmp);
+
+        /* a missing file loads as empty without error */
+        kw_headerstore none; kw_headerstore_init(&none);
+        if (!kw_headerstore_load(&none, "test_headers_nope.tmp") || none.count != 0) {
+            fprintf(stderr, "FAIL: missing cache\n"); return 1;
+        }
+        kw_headerstore_free(&none);
+    }
+
+    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache\n");
     return 0;
 }

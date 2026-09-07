@@ -6,6 +6,7 @@
 #include "sha2.h"
 #include "mem.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -203,4 +204,39 @@ void kw_headerstore_free(kw_headerstore *s)
 {
     free(s->h);
     s->h = NULL; s->count = s->cap = 0;
+}
+
+/* ── on-disk cache ───────────────────────────────────────────── */
+static const uint8_t KW_HDR_MAGIC[4] = { 'K', 'W', 'H', '1' };
+
+int kw_headerstore_save(const kw_headerstore *s, const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int ok = fwrite(KW_HDR_MAGIC, 1, 4, f) == 4;
+    for (size_t i = 0; i < s->count && ok; i++)
+        ok = fwrite(s->h[i].raw, 1, KW_HEADER_LEN, f) == KW_HEADER_LEN;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+int kw_headerstore_load(kw_headerstore *s, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;                         /* no cache is not an error */
+    uint8_t magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, KW_HDR_MAGIC, 4) != 0) { fclose(f); return 0; }
+
+    int ok = 1;
+    for (;;) {
+        uint8_t raw[KW_HEADER_LEN];
+        size_t r = fread(raw, 1, KW_HEADER_LEN, f);
+        if (r == 0) break;                    /* clean end */
+        if (r != KW_HEADER_LEN) { ok = 0; break; }
+        kw_block_header h;
+        kw_block_header_parse(raw, KW_HEADER_LEN, &h);
+        if (!kw_headerstore_append(s, &h)) { ok = 0; break; }   /* broken link */
+    }
+    fclose(f);
+    return ok;
 }

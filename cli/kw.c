@@ -52,6 +52,8 @@ static void usage(void)
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv]\n"
       "\n"
+      "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
+      "  a later run resumes from the stored tip instead of syncing from genesis.\n"
       "  scan watches the first --gap receive and change addresses, syncs from\n"
       "  --node (compact filters by default, --spv for full blocks), and writes the\n"
       "  utxo set to <keystore>.utxos. sign then selects inputs from it; with\n"
@@ -269,6 +271,18 @@ static void read_scan_meta(const char *utxos, int64_t *feerate, int *extent)
     fclose(f);
 }
 
+/* Init a header store, loading a cache from (path) if given so a sync resumes
+   from the stored tip. A corrupt cache is ignored, not fatal. */
+static void headers_open(kw_headerstore *s, const char *path)
+{
+    kw_headerstore_init(s);
+    if (path && !kw_headerstore_load(s, path)) {
+        fprintf(stderr, "kw: header cache %s is corrupt, ignoring\n", path);
+        kw_headerstore_free(s);
+        kw_headerstore_init(s);
+    }
+}
+
 /* seal a seed under a passphrase and write it, then print the first address */
 static int seal_and_report(const kw_chainparams *cp, const char *path,
                            const char *pass_arg, const uint8_t seed[64])
@@ -354,7 +368,7 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
    write the tracked utxo set to (utxos_path) for a later sign. */
 static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass_arg,
                     const char *node, int port, int tor, int use_cf, int gap,
-                    const char *utxos_path)
+                    const char *utxos_path, const char *headers_path)
 {
     if (!path || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -381,9 +395,10 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
 
-    kw_headerstore s; kw_headerstore_init(&s);
+    kw_headerstore s; headers_open(&s, headers_path);
     nh = kw_sync_headers(&p, &s, cp);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
+    if (headers_path) kw_headerstore_save(&s, headers_path);
 
     /* gap-limit: rescan with a growing range until `gap` unused addresses trail
        the highest used one. headers are synced once; only the scan repeats. */
@@ -735,7 +750,8 @@ out:
 
 /* Print the peer's tip height and hash. Header sync only; no keystore. The store
    holds blocks 1..count, so the tip height is the count. */
-static int cmd_height(const kw_chainparams *cp, const char *node, int port, int tor)
+static int cmd_height(const kw_chainparams *cp, const char *node, int port, int tor,
+                      const char *headers_path)
 {
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -748,9 +764,10 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     int rc = 1;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
-        kw_headerstore s; kw_headerstore_init(&s);
+        kw_headerstore s; headers_open(&s, headers_path);
         long nh = kw_sync_headers(&p, &s, cp);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
+        if (headers_path) kw_headerstore_save(&s, headers_path);
         const kw_block_header *tip = kw_headerstore_tip(&s);
         char d[65] = "(none)";
         if (tip) { uint8_t r[32]; for (int i = 0; i < 32; i++) r[i] = tip->hash[31 - i]; kw_hex_encode(r, 32, d, sizeof d); }
@@ -769,7 +786,7 @@ out:
    caller confirm a funding output to its own depth policy without trusting a
    claimed height. */
 static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const char *outpoint_arg,
-                        const char *node, int port, int tor, int use_cf)
+                        const char *node, int port, int tor, int use_cf, const char *headers_path)
 {
     if (!watch_arg || !outpoint_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -804,9 +821,10 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     size_t tipheight = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
-        kw_headerstore s; kw_headerstore_init(&s);
+        kw_headerstore s; headers_open(&s, headers_path);
         long nh = kw_sync_headers(&p, &s, cp);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
+        if (headers_path) kw_headerstore_save(&s, headers_path);
         tipheight = s.count;
         kw_utxoset_init(&us); have_us = 1;
         long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
@@ -842,7 +860,7 @@ int main(int argc, char **argv)
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
-    const char *watch_arg = NULL, *outpoint_arg = NULL;
+    const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL;
     const char *inputs[KW_TX_MAX_IN];
 
     for (int i = 1; i < argc; i++) {
@@ -872,6 +890,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--wif"))        wif_arg = NEXT();
         else if (!strcmp(a, "--watch"))      watch_arg = NEXT();
         else if (!strcmp(a, "--outpoint"))   outpoint_arg = NEXT();
+        else if (!strcmp(a, "--headers"))    headers_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
@@ -886,11 +905,11 @@ int main(int argc, char **argv)
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, words);
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index);
-    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg);
+    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
-    else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor);
-    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf);
+    else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg);
+    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;
