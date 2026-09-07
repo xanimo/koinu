@@ -19,6 +19,11 @@
 #include "hex.h"
 #include "ec.h"
 #include "mem.h"
+#include "peer.h"
+#include "sync.h"
+#include "spv.h"
+#include "cf.h"
+#include "utxo.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -36,9 +41,16 @@ static void usage(void)
       "  restore  --keystore PATH [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "                                          [--index N] [--change]\n"
-      "  sign     --keystore PATH [--passphrase @FILE|-] --fee DOGE\n"
-      "           --input TXID:VOUT:AMOUNT:INDEX ...  --to ADDR:AMOUNT\n"
-      "           [--change-to ADDR]\n"
+      "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
+      "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH]\n"
+      "  sign     --keystore PATH [--passphrase @FILE|-] --fee DOGE --to ADDR:AMOUNT\n"
+      "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
+      "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
+      "\n"
+      "  scan watches the first --gap receive and change addresses, syncs from\n"
+      "  --node (compact filters by default, --spv for full blocks), and writes the\n"
+      "  utxo set to <keystore>.utxos. sign then selects inputs from it; with\n"
+      "  --input it instead spends the named outpoints.\n"
       "\n"
       "  A passphrase or mnemonic is read from a file (@PATH), from stdin (-),\n"
       "  or prompted for; never from the command line, where ps could see it.\n"
@@ -193,6 +205,27 @@ static int read_keystore(const char *path, uint8_t *blob, size_t cap, size_t *n)
     return 1;
 }
 
+/* p2pkh scriptPubKey for a hash160 */
+static void h160_to_spk(const uint8_t h160[20], uint8_t spk[25])
+{
+    spk[0]=0x76; spk[1]=0xa9; spk[2]=0x14; memcpy(spk+3, h160, 20); spk[23]=0x88; spk[24]=0xac;
+}
+
+/* Open the keystore at (path) with the passphrase and recover the 64-byte seed. */
+static int open_seed(const char *path, const char *pass_arg, uint8_t seed[64])
+{
+    uint8_t blob[8192]; size_t n = 0;
+    if (!read_keystore(path, blob, sizeof blob, &n)) return 0;
+    char *pass = read_secret(pass_arg, "passphrase: ");
+    if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 0; }
+    size_t slen = 0;
+    int ok = kw_keystore_open(blob, n, pass, seed, 64, &slen);
+    secret_free(pass);
+    kw_secure_zero(blob, sizeof blob);
+    if (!ok || slen != 64) { fprintf(stderr, "kw: wrong passphrase or corrupt keystore\n"); return 0; }
+    return 1;
+}
+
 /* seal a seed under a passphrase and write it, then print the first address */
 static int seal_and_report(const kw_chainparams *cp, const char *path,
                            const char *pass_arg, const uint8_t seed[64])
@@ -274,71 +307,182 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
     return 0;
 }
 
-/* Offline signer: the operator supplies the outpoints to spend (a chain source
-   will supply them automatically once the light client tracks the utxo set).
-   Each input is owned by our key at m/44'/coin'/0'/0/INDEX. */
+/* Watch the first (gap) receive and change addresses, sync from (node), and
+   write the tracked utxo set to (utxos_path) for a later sign. */
+static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                    const char *node, int port, int tor, int use_cf, int gap,
+                    const char *utxos_path)
+{
+    if (!path || !node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+    char defpath[4096];
+    if (!utxos_path) { snprintf(defpath, sizeof defpath, "%s.utxos", path); utxos_path = defpath; }
+
+    uint8_t seed[64];
+    if (!open_seed(path, pass_arg, seed)) return 1;
+    kw_bip32_key master;
+    int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
+    kw_secure_zero(seed, sizeof seed);
+    if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
+
+    kw_watchset ws; kw_watchset_init(&ws);
+    for (int chg = 0; chg <= 1; chg++)
+        for (int i = 0; i < gap; i++) {
+            kw_bip32_key k;
+            if (kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &k)) {
+                uint8_t pub[33], h[20], spk[25];
+                kw_bip32_pubkey(&k, pub); kw_hash160(pub, 33, h); h160_to_spk(h, spk);
+                kw_watchset_add(&ws, spk, 25);
+            }
+            kw_secure_zero(&k, sizeof k);
+        }
+    kw_secure_zero(&master, sizeof master);
+
+    kw_net_verbose = 1;
+    kw_peer p;
+    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+                   : kw_peer_connect(&p, cp, node, port, 15);
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); return 1; }
+
+    int rc = 1;
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); }
+    else {
+        kw_headerstore s; kw_headerstore_init(&s);
+        long nh = kw_sync_headers(&p, &s, cp);
+        if (nh < 0) fprintf(stderr, "kw: header sync failed\n");
+        else {
+            kw_utxoset us; kw_utxoset_init(&us);
+            long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
+                             : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+            if (nb < 0) fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
+            else {
+                if (kw_utxoset_save(&us, utxos_path)) {
+                    printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
+                           nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
+                    printf("saved to %s\n", utxos_path);
+                    rc = 0;
+                } else fprintf(stderr, "kw: could not write %s\n", utxos_path);
+            }
+            kw_utxoset_free(&us);
+        }
+        kw_headerstore_free(&s);
+    }
+    kw_peer_close(&p);
+    kw_watchset_free(&ws);
+    return rc;
+}
+
+/* Signer. With --input, the operator names the outpoints (each owned by our key
+   at m/44'/coin'/0'/0/INDEX). Without, inputs are chosen from the tracked utxo
+   set written by scan, and each input's key is found by matching its script to
+   a derived address in the first (gap) receive and change addresses. */
 static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass_arg,
                     char **inputs, int ninputs, const char *to_arg,
-                    const char *fee_arg, const char *change_arg)
+                    const char *fee_arg, const char *change_arg,
+                    const char *utxos_path, int gap)
 {
-    if (!path || ninputs <= 0 || !to_arg || !fee_arg) { usage(); return 2; }
+    if (!path || !to_arg || !fee_arg) { usage(); return 2; }
 
-    uint8_t blob[8192]; size_t bn = 0;
-    if (!read_keystore(path, blob, sizeof blob, &bn)) return 1;
-    char *pass = read_secret(pass_arg, "passphrase: ");
-    if (!pass) return 1;
-    uint8_t seed[64]; size_t slen = 0;
-    int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
-    secret_free(pass);
-    kw_secure_zero(blob, sizeof blob);
-    if (!opened || slen != 64) { fprintf(stderr, "kw: wrong passphrase or corrupt keystore\n"); return 1; }
+    uint8_t seed[64];
+    if (!open_seed(path, pass_arg, seed)) return 1;
 
-    kw_bip32_key master, inkeys[KW_TX_MAX_IN];
+    kw_bip32_key master;
     int rc = 1;
     if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) { kw_secure_zero(seed, sizeof seed); return 1; }
 
     kw_tx tx;
     kw_tx_init(&tx);
+    kw_bip32_key inkeys[KW_TX_MAX_IN];
     uint8_t prevspk[KW_TX_MAX_IN][25];
+    int nin = 0;
     uint64_t total_in = 0;
 
-    for (int i = 0; i < ninputs; i++) {
-        char buf[160];
-        snprintf(buf, sizeof buf, "%s", inputs[i]);
-        char *txid = strtok(buf, ":"), *vs = strtok(NULL, ":");
-        char *as = strtok(NULL, ":"), *is = strtok(NULL, ":");
-        if (!txid || !vs || !as || !is || strlen(txid) != 64) {
-            fprintf(stderr, "kw: bad --input, want TXID:VOUT:AMOUNT:INDEX\n"); goto out;
+    kw_utxoset us; int have_us = 0;
+    kw_bip32_key *keymap = NULL; uint8_t (*h160map)[20] = NULL;
+
+    /* destination and fee up front, so auto selection knows the target */
+    char tob[160];
+    snprintf(tob, sizeof tob, "%s", to_arg);
+    char *daddr = strtok(tob, ":"), *dam = strtok(NULL, ":");
+    uint64_t send_amt = 0, fee = 0;
+    uint8_t dspk[25]; size_t dl = 0;
+    if (!daddr || !dam || !parse_doge(dam, &send_amt)) { fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
+    if (!addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); goto out; }
+    if (!parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+
+    if (ninputs > 0) {
+        /* manual: the operator names each outpoint and its key index */
+        for (int i = 0; i < ninputs; i++) {
+            char buf[160];
+            snprintf(buf, sizeof buf, "%s", inputs[i]);
+            char *txid = strtok(buf, ":"), *vs = strtok(NULL, ":");
+            char *as = strtok(NULL, ":"), *is = strtok(NULL, ":");
+            if (!txid || !vs || !as || !is || strlen(txid) != 64) {
+                fprintf(stderr, "kw: bad --input, want TXID:VOUT:AMOUNT:INDEX\n"); goto out;
+            }
+            uint64_t amt;
+            if (!parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
+            uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
+            uint32_t index = (uint32_t)strtoul(is, NULL, 10);
+            if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 0, index, &inkeys[nin])) {
+                fprintf(stderr, "kw: cannot derive input %d\n", i); goto out;
+            }
+            uint8_t pub[33], h[20];
+            kw_bip32_pubkey(&inkeys[nin], pub); kw_hash160(pub, 33, h);
+            h160_to_spk(h, prevspk[nin]);
+            if (!kw_tx_add_input(&tx, txid, vout)) { fprintf(stderr, "kw: too many inputs\n"); goto out; }
+            total_in += amt; nin++;
         }
-        uint64_t amt;
-        if (!parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
-        uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
-        uint32_t index = (uint32_t)strtoul(is, NULL, 10);
-        if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 0, index, &inkeys[i])) {
-            fprintf(stderr, "kw: cannot derive input %d\n", i); goto out;
+    } else {
+        /* auto: choose coins from the tracked utxo set, keyed by hash160 of the
+           first (gap) receive and change addresses */
+        char defpath[4096];
+        const char *up = utxos_path;
+        if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
+        kw_utxoset_init(&us); have_us = 1;
+        if (!kw_utxoset_load(&us, up)) { fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up); goto out; }
+
+        keymap = (kw_bip32_key *)malloc((size_t)(2 * gap) * sizeof *keymap);
+        h160map = malloc((size_t)(2 * gap) * 20);
+        if (!keymap || !h160map) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+        int m = 0;
+        for (int chg = 0; chg <= 1; chg++)
+            for (int i = 0; i < gap; i++) {
+                if (!kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &keymap[m])) continue;
+                uint8_t pub[33];
+                kw_bip32_pubkey(&keymap[m], pub); kw_hash160(pub, 33, h160map[m]);
+                m++;
+            }
+
+        uint64_t need = send_amt + fee;
+        for (size_t u = 0; u < us.count && total_in < need; u++) {
+            const kw_utxo *e = &us.u[u];
+            if (e->spklen != 25 || e->spk[0] != 0x76 || e->spk[1] != 0xa9 || e->spk[2] != 0x14 ||
+                e->spk[23] != 0x88 || e->spk[24] != 0xac) continue;     /* only p2pkh */
+            int j = -1;
+            for (int t = 0; t < m; t++) if (memcmp(h160map[t], e->spk + 3, 20) == 0) { j = t; break; }
+            if (j < 0) continue;                                        /* not ours within the gap */
+            if (nin >= KW_TX_MAX_IN) { fprintf(stderr, "kw: too many inputs, consolidate first\n"); goto out; }
+            char disphex[65]; uint8_t disp[32];
+            for (int b = 0; b < 32; b++) disp[b] = e->txid[31 - b];
+            kw_hex_encode(disp, 32, disphex, sizeof disphex);
+            if (!kw_tx_add_input(&tx, disphex, e->vout)) { fprintf(stderr, "kw: add input\n"); goto out; }
+            inkeys[nin] = keymap[j];
+            memcpy(prevspk[nin], e->spk, 25);
+            total_in += e->value; nin++;
         }
-        uint8_t pub[33], h[20];
-        kw_bip32_pubkey(&inkeys[i], pub);
-        kw_hash160(pub, 33, h);
-        prevspk[i][0]=0x76; prevspk[i][1]=0xa9; prevspk[i][2]=0x14;
-        memcpy(prevspk[i]+3, h, 20); prevspk[i][23]=0x88; prevspk[i][24]=0xac;
-        if (!kw_tx_add_input(&tx, txid, vout)) { fprintf(stderr, "kw: too many inputs\n"); goto out; }
-        total_in += amt;
+        if (total_in < need) {
+            fprintf(stderr, "kw: insufficient funds: have %llu, need %llu koinu\n",
+                    (unsigned long long)total_in, (unsigned long long)need);
+            goto out;
+        }
     }
 
-    {
-        char tob[160];
-        snprintf(tob, sizeof tob, "%s", to_arg);
-        char *daddr = strtok(tob, ":"), *dam = strtok(NULL, ":");
-        uint64_t send_amt;
-        if (!daddr || !dam || !parse_doge(dam, &send_amt)) { fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
-        uint8_t dspk[25]; size_t dl = 0;
-        if (!addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); goto out; }
-        if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+    if (nin == 0) { fprintf(stderr, "kw: no inputs\n"); goto out; }
+    if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+    if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
 
-        uint64_t fee;
-        if (!parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
-        if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
+    {
         uint64_t change = total_in - send_amt - fee;
         if (change >= KOINU_DUST) {
             uint8_t cspk[25]; size_t cl = 0;
@@ -349,7 +493,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, 0, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
                 uint8_t cpub[33], ch[20];
                 kw_bip32_pubkey(&ck, cpub); kw_hash160(cpub, 33, ch);
-                cspk[0]=0x76; cspk[1]=0xa9; cspk[2]=0x14; memcpy(cspk+3, ch, 20); cspk[23]=0x88; cspk[24]=0xac; cl = 25;
+                h160_to_spk(ch, cspk); cl = 25;
                 kw_secure_zero(&ck, sizeof ck);
             }
             if (!kw_tx_add_output(&tx, change, cspk, cl)) { fprintf(stderr, "kw: add change\n"); goto out; }
@@ -357,7 +501,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         /* change below the dust threshold is left to the miner as extra fee */
     }
 
-    for (int i = 0; i < ninputs; i++) {
+    for (int i = 0; i < nin; i++) {
         if (!kw_tx_sign_p2pkh(&tx, (size_t)i, inkeys[i].key + 1, prevspk[i], 25)) {
             fprintf(stderr, "kw: cannot sign input %d\n", i); goto out;
         }
@@ -379,6 +523,9 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         rc = 0;
     }
 out:
+    if (keymap) { kw_secure_zero(keymap, (size_t)(2 * gap) * sizeof *keymap); free(keymap); }
+    free(h160map);
+    if (have_us) kw_utxoset_free(&us);
     kw_secure_zero(seed, sizeof seed);
     kw_secure_zero(&master, sizeof master);
     kw_secure_zero(inkeys, sizeof inkeys);
@@ -388,9 +535,11 @@ out:
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0;
+    int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *change_arg = NULL;
+    const char *node = "127.0.0.1", *utxos_arg = NULL;
     const char *inputs[KW_TX_MAX_IN];
 
     for (int i = 1; i < argc; i++) {
@@ -409,12 +558,20 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--to"))         to_arg = NEXT();
         else if (!strcmp(a, "--fee"))        fee_arg = NEXT();
         else if (!strcmp(a, "--change-to"))  change_arg = NEXT();
+        else if (!strcmp(a, "--node"))       node = NEXT();
+        else if (!strcmp(a, "--port"))     { const char *v = NEXT(); port = v ? atoi(v) : -1; }
+        else if (!strcmp(a, "--tor"))        tor = 1;
+        else if (!strcmp(a, "--spv"))        use_cf = 0;
+        else if (!strcmp(a, "--cf"))         use_cf = 1;
+        else if (!strcmp(a, "--gap"))      { const char *v = NEXT(); gap = v ? atoi(v) : 100; }
+        else if (!strcmp(a, "--utxos"))      utxos_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
         #undef NEXT
     }
     if (!cmd) { usage(); return 2; }
+    if (gap < 1) gap = 1;
 
     kw_ec_start();
     const kw_chainparams *cp = chain_for(net);
@@ -422,7 +579,8 @@ int main(int argc, char **argv)
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, words);
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index);
-    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, change_arg);
+    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg);
+    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, change_arg, utxos_arg, gap);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;
