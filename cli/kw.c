@@ -46,6 +46,8 @@ static void usage(void)
       "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--change-to ADDR]\n"
       "           [--gap N] [--utxos PATH] [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
+      "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
+      "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB]\n"
       "\n"
       "  scan watches the first --gap receive and change addresses, syncs from\n"
       "  --node (compact filters by default, --spv for full blocks), and writes the\n"
@@ -627,6 +629,107 @@ out:
     return rc;
 }
 
+/* Sweep an external key: decode its WIF, scan the chain for its one address,
+   and spend every output it holds to --to, signed with that key. The key is not
+   added to the wallet; only the funds move. Compressed WIF only. */
+static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
+                     const char *node, int port, int tor, int use_cf,
+                     const char *fee_arg, const char *feerate_arg)
+{
+    if (!to_arg || !node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+
+    char *wif = read_secret(wif_arg, "wif: ");
+    if (!wif) { fprintf(stderr, "kw: no wif\n"); return 1; }
+    uint8_t pay[64]; size_t plen = 0;
+    int okdec = kw_base58check_decode(wif, pay, sizeof pay, &plen);
+    secret_free(wif);
+    if (!okdec) { fprintf(stderr, "kw: bad wif\n"); return 1; }
+    if (pay[0] != cp->wif) { fprintf(stderr, "kw: wif is for another network\n"); kw_secure_zero(pay, sizeof pay); return 1; }
+    if (plen == 33) { fprintf(stderr, "kw: uncompressed wif not supported\n"); kw_secure_zero(pay, sizeof pay); return 1; }
+    if (plen != 34 || pay[33] != 0x01) { fprintf(stderr, "kw: bad wif\n"); kw_secure_zero(pay, sizeof pay); return 1; }
+    uint8_t sk[32]; memcpy(sk, pay + 1, 32); kw_secure_zero(pay, sizeof pay);
+
+    uint8_t pub[33], h[20], spk[25];
+    if (!kw_ec_pubkey(sk, pub)) { fprintf(stderr, "kw: bad key\n"); kw_secure_zero(sk, sizeof sk); return 1; }
+    kw_hash160(pub, 33, h); h160_to_spk(h, spk);
+
+    uint8_t dspk[25]; size_t dl = 0;
+    char tob[160]; snprintf(tob, sizeof tob, "%s", to_arg);
+    char *daddr = strtok(tob, ":");
+    if (!daddr || !addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); kw_secure_zero(sk, sizeof sk); return 1; }
+
+    kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, 25);
+    kw_net_verbose = 1;
+    kw_peer p;
+    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+                   : kw_peer_connect(&p, cp, node, port, 15);
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); kw_secure_zero(sk, sizeof sk); return 1; }
+
+    int rc = 1;
+    kw_utxoset us; int have_us = 0;
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
+    {
+        kw_headerstore s; kw_headerstore_init(&s);
+        long nh = kw_sync_headers(&p, &s, cp);
+        if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
+        kw_utxoset_init(&us); have_us = 1;
+        long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        kw_headerstore_free(&s);
+        if (nb < 0) { fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block"); goto out; }
+    }
+    if (kw_utxoset_count(&us) == 0) { fprintf(stderr, "kw: nothing to sweep at that address\n"); goto out; }
+
+    {
+        uint64_t rate = KW_MIN_RELAY_FEE_PER_KB;
+        if (feerate_arg && !parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
+        if (!feerate_arg && p.peer_feerate > (int64_t)rate) rate = (uint64_t)p.peer_feerate;
+        int have_fixed = (fee_arg != NULL); uint64_t fixed = 0;
+        if (have_fixed && !parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+
+        kw_tx tx; kw_tx_init(&tx);
+        uint8_t prevspk[KW_TX_MAX_IN][25];
+        int nin = 0; uint64_t total_in = 0;
+        for (size_t u = 0; u < us.count && nin < KW_TX_MAX_IN; u++) {
+            const kw_utxo *e = &us.u[u];
+            if (e->spklen != 25) continue;
+            char disphex[65]; uint8_t disp[32];
+            for (int b = 0; b < 32; b++) disp[b] = e->txid[31 - b];
+            kw_hex_encode(disp, 32, disphex, sizeof disphex);
+            if (!kw_tx_add_input(&tx, disphex, e->vout)) break;
+            memcpy(prevspk[nin], e->spk, 25);
+            total_in += e->value; nin++;
+        }
+        if ((size_t)nin < us.count) fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
+
+        uint64_t fee = have_fixed ? fixed : est_fee(nin, 1, rate);
+        if (total_in <= fee || total_in - fee < KOINU_DUST) { fprintf(stderr, "kw: balance too small to sweep\n"); goto out; }
+        uint64_t out_amt = total_in - fee;
+        if (!kw_tx_add_output(&tx, out_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+        for (int i = 0; i < nin; i++)
+            if (!kw_tx_sign_p2pkh(&tx, (size_t)i, sk, prevspk[i], 25)) { fprintf(stderr, "kw: sign failed\n"); goto out; }
+
+        uint8_t raw[16384];
+        size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);
+        if (!rn) { fprintf(stderr, "kw: serialize failed\n"); goto out; }
+        char hex[32770]; kw_hex_encode(raw, rn, hex, sizeof hex);
+        uint8_t txid[32], d[32]; kw_tx_txid(&tx, txid);
+        for (int i = 0; i < 32; i++) d[i] = txid[31 - i];
+        char txidhex[65]; kw_hex_encode(d, 32, txidhex, sizeof txidhex);
+        printf("swept %d utxos, %llu koinu to %s\n", nin, (unsigned long long)out_amt, daddr);
+        printf("txid  %s\n", txidhex);
+        printf("raw   %s\n", hex);
+        printf("fee   %llu koinu, %zu bytes\n", (unsigned long long)fee, rn);
+        rc = 0;
+    }
+out:
+    if (have_us) kw_utxoset_free(&us);
+    kw_peer_close(&p);
+    kw_watchset_free(&ws);
+    kw_secure_zero(sk, sizeof sk);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0;
@@ -634,7 +737,7 @@ int main(int argc, char **argv)
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
-    const char *node = "127.0.0.1", *utxos_arg = NULL;
+    const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *inputs[KW_TX_MAX_IN];
 
     for (int i = 1; i < argc; i++) {
@@ -661,6 +764,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--cf"))         use_cf = 1;
         else if (!strcmp(a, "--gap"))      { const char *v = NEXT(); gap = v ? atoi(v) : 100; }
         else if (!strcmp(a, "--utxos"))      utxos_arg = NEXT();
+        else if (!strcmp(a, "--wif"))        wif_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
@@ -677,6 +781,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
+    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;
