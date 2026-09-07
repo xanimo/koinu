@@ -43,14 +43,16 @@ static void usage(void)
       "                                          [--index N] [--change]\n"
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
       "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH]\n"
-      "  sign     --keystore PATH [--passphrase @FILE|-] --fee DOGE --to ADDR:AMOUNT\n"
-      "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
-      "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
+      "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
+      "           [--fee DOGE | --feerate DOGE_PER_KB] [--change-to ADDR]\n"
+      "           [--gap N] [--utxos PATH] [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
       "\n"
       "  scan watches the first --gap receive and change addresses, syncs from\n"
       "  --node (compact filters by default, --spv for full blocks), and writes the\n"
       "  utxo set to <keystore>.utxos. sign then selects inputs from it; with\n"
-      "  --input it instead spends the named outpoints.\n"
+      "  --input it instead spends the named outpoints. The fee defaults to the\n"
+      "  0.001 DOGE/kB relay floor; pass --feerate 0.01 for the miner-preferred\n"
+      "  rate, or --fee for an exact amount.\n"
       "\n"
       "  A passphrase or mnemonic is read from a file (@PATH), from stdin (-),\n"
       "  or prompted for; never from the command line, where ps could see it.\n"
@@ -155,6 +157,19 @@ static int parse_doge(const char *s, uint64_t *out)
     if (v > UINT64_MAX - frac) return 0;
     *out = v + frac;
     return 1;
+}
+
+/* Dogecoin's minrelaytxfee: the lowest rate a default node will relay. The
+   recommended (mined) rate is ten times this. Both are per 1000 bytes. */
+#define KW_MIN_RELAY_FEE_PER_KB   100000ULL     /* 0.001 DOGE/kB */
+
+/* A signed p2pkh tx's size: ~148 bytes per input, 34 per output, 10 overhead.
+   The input estimate rounds up (a der signature is 71-72 bytes), so the fee is
+   never short. */
+static uint64_t est_fee(int nin, int nout, uint64_t rate_per_kb)
+{
+    uint64_t size = 10 + 148ULL * (uint64_t)nin + 34ULL * (uint64_t)nout;
+    return (size * rate_per_kb + 999) / 1000;    /* round up */
 }
 
 /* an address to its scriptPubKey, p2pkh or p2sh, for this network */
@@ -378,10 +393,10 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
    a derived address in the first (gap) receive and change addresses. */
 static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass_arg,
                     char **inputs, int ninputs, const char *to_arg,
-                    const char *fee_arg, const char *change_arg,
+                    const char *fee_arg, const char *feerate_arg, const char *change_arg,
                     const char *utxos_path, int gap)
 {
-    if (!path || !to_arg || !fee_arg) { usage(); return 2; }
+    if (!path || !to_arg) { usage(); return 2; }
 
     uint8_t seed[64];
     if (!open_seed(path, pass_arg, seed)) return 1;
@@ -400,7 +415,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     kw_utxoset us; int have_us = 0;
     kw_bip32_key *keymap = NULL; uint8_t (*h160map)[20] = NULL;
 
-    /* destination and fee up front, so auto selection knows the target */
+    /* destination up front, so auto selection knows the target */
     char tob[160];
     snprintf(tob, sizeof tob, "%s", to_arg);
     char *daddr = strtok(tob, ":"), *dam = strtok(NULL, ":");
@@ -408,7 +423,14 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     uint8_t dspk[25]; size_t dl = 0;
     if (!daddr || !dam || !parse_doge(dam, &send_amt)) { fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
     if (!addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); goto out; }
-    if (!parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+    if (send_amt < KOINU_DUST) { fprintf(stderr, "kw: --to amount is below the dust limit (0.01 DOGE)\n"); goto out; }
+
+    /* fee: an explicit --fee overrides; otherwise a rate (default the relay
+       floor) times the estimated size, settled once the inputs are chosen */
+    int fixed_fee = (fee_arg != NULL);
+    uint64_t rate = KW_MIN_RELAY_FEE_PER_KB;
+    if (fixed_fee && !parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+    if (feerate_arg && !parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
 
     if (ninputs > 0) {
         /* manual: the operator names each outpoint and its key index */
@@ -454,8 +476,8 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 m++;
             }
 
-        uint64_t need = send_amt + fee;
-        for (size_t u = 0; u < us.count && total_in < need; u++) {
+        for (size_t u = 0; u < us.count; u++) {
+            if (total_in >= send_amt + (fixed_fee ? fee : est_fee(nin, 2, rate))) break;
             const kw_utxo *e = &us.u[u];
             if (e->spklen != 25 || e->spk[0] != 0x76 || e->spk[1] != 0xa9 || e->spk[2] != 0x14 ||
                 e->spk[23] != 0x88 || e->spk[24] != 0xac) continue;     /* only p2pkh */
@@ -471,6 +493,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             memcpy(prevspk[nin], e->spk, 25);
             total_in += e->value; nin++;
         }
+        uint64_t need = send_amt + (fixed_fee ? fee : est_fee(nin, 2, rate));
         if (total_in < need) {
             fprintf(stderr, "kw: insufficient funds: have %llu, need %llu koinu\n",
                     (unsigned long long)total_in, (unsigned long long)need);
@@ -479,27 +502,35 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     }
 
     if (nin == 0) { fprintf(stderr, "kw: no inputs\n"); goto out; }
-    if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
-    if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
 
-    {
-        uint64_t change = total_in - send_amt - fee;
-        if (change >= KOINU_DUST) {
-            uint8_t cspk[25]; size_t cl = 0;
-            if (change_arg) {
-                if (!addr_to_spk(cp, change_arg, cspk, &cl)) { fprintf(stderr, "kw: bad --change address\n"); goto out; }
-            } else {
-                kw_bip32_key ck;
-                if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, 0, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
-                uint8_t cpub[33], ch[20];
-                kw_bip32_pubkey(&ck, cpub); kw_hash160(cpub, 33, ch);
-                h160_to_spk(ch, cspk); cl = 25;
-                kw_secure_zero(&ck, sizeof ck);
-            }
-            if (!kw_tx_add_output(&tx, change, cspk, cl)) { fprintf(stderr, "kw: add change\n"); goto out; }
-        }
-        /* change below the dust threshold is left to the miner as extra fee */
+    /* settle the fee: assume a change output, then drop it (folding its value
+       into the fee) when what would remain is dust */
+    if (!fixed_fee) fee = est_fee(nin, 2, rate);
+    if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
+    uint64_t change = total_in - send_amt - fee;
+    if (change < KOINU_DUST && !fixed_fee) {
+        fee = est_fee(nin, 1, rate);
+        if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
+        change = total_in - send_amt - fee;
     }
+    int has_change = (change >= KOINU_DUST);
+
+    if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+    if (has_change) {
+        uint8_t cspk[25]; size_t cl = 0;
+        if (change_arg) {
+            if (!addr_to_spk(cp, change_arg, cspk, &cl)) { fprintf(stderr, "kw: bad --change address\n"); goto out; }
+        } else {
+            kw_bip32_key ck;
+            if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, 0, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
+            uint8_t cpub[33], ch[20];
+            kw_bip32_pubkey(&ck, cpub); kw_hash160(cpub, 33, ch);
+            h160_to_spk(ch, cspk); cl = 25;
+            kw_secure_zero(&ck, sizeof ck);
+        }
+        if (!kw_tx_add_output(&tx, change, cspk, cl)) { fprintf(stderr, "kw: add change\n"); goto out; }
+    }
+    /* with no change output, the remainder is left to the miner as fee */
 
     for (int i = 0; i < nin; i++) {
         if (!kw_tx_sign_p2pkh(&tx, (size_t)i, inkeys[i].key + 1, prevspk[i], 25)) {
@@ -520,6 +551,8 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
         printf("txid  %s\n", txidhex);
         printf("raw   %s\n", hex);
+        printf("fee   %llu koinu, %zu bytes\n",
+               (unsigned long long)(total_in - send_amt - (has_change ? change : 0)), rn);
         rc = 0;
     }
 out:
@@ -538,7 +571,7 @@ int main(int argc, char **argv)
     int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
-    const char *to_arg = NULL, *fee_arg = NULL, *change_arg = NULL;
+    const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL;
     const char *inputs[KW_TX_MAX_IN];
 
@@ -557,6 +590,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--input"))    { const char *v = NEXT(); if (v && ninputs < KW_TX_MAX_IN) inputs[ninputs++] = v; }
         else if (!strcmp(a, "--to"))         to_arg = NEXT();
         else if (!strcmp(a, "--fee"))        fee_arg = NEXT();
+        else if (!strcmp(a, "--feerate"))    feerate_arg = NEXT();
         else if (!strcmp(a, "--change-to"))  change_arg = NEXT();
         else if (!strcmp(a, "--node"))       node = NEXT();
         else if (!strcmp(a, "--port"))     { const char *v = NEXT(); port = v ? atoi(v) : -1; }
@@ -580,7 +614,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg);
-    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, change_arg, utxos_arg, gap);
+    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;
