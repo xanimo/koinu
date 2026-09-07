@@ -309,3 +309,54 @@ size_t kw_tx_scan(const uint8_t *raw, size_t len, uint8_t txid[32],
     tx_walk(&r2, 1, id, on_input, on_output, ctx);  /* reporting pass */
     return consumed;
 }
+
+int kw_script_multisig_parse(const uint8_t *script, size_t scriptlen,
+                             int *m, uint8_t (*pubkeys)[33], int *n)
+{
+    if (scriptlen < 1 + 34 + 2) return 0;
+    int mm = script[0] - 0x50, nn = script[scriptlen - 2] - 0x50;
+    if (mm < 1 || mm > 16 || nn < mm || nn > 16) return 0;
+    if (script[scriptlen - 1] != 0xae) return 0;
+    if (scriptlen != 1 + (size_t)nn * 34 + 2) return 0;
+    for (int i = 0; i < nn; i++) {
+        const uint8_t *p = script + 1 + (size_t)i * 34;
+        if (p[0] != 33) return 0;
+        memcpy(pubkeys[i], p + 1, 33);
+    }
+    *m = mm; *n = nn;
+    return 1;
+}
+
+size_t kw_tx_parse(const uint8_t *raw, size_t len, kw_tx *tx)
+{
+    rd r = { raw, len, 0, 0 };
+    kw_tx_init(tx);
+    tx->version = (uint32_t)rd_le(&r, 4);
+    uint64_t nin = rd_count(&r);
+    if (r.bad || nin > KW_TX_MAX_IN) return 0;
+    tx->nin = (size_t)nin;
+    for (size_t i = 0; i < tx->nin; i++) {
+        kw_txin *in = &tx->vin[i];
+        if (r.off + 36 > r.len) return 0;
+        memcpy(in->prevout, r.p + r.off, 32); r.off += 32;
+        in->vout = (uint32_t)rd_le(&r, 4);
+        uint64_t sl = rd_count(&r);                /* bounded by bytes left */
+        if (r.bad || sl > KW_TX_SCRIPT_MAX) return 0;
+        memcpy(in->script, r.p + r.off, (size_t)sl);
+        in->scriptlen = (size_t)sl; r.off += (size_t)sl;
+        in->sequence = (uint32_t)rd_le(&r, 4);
+    }
+    uint64_t nout = rd_count(&r);
+    if (r.bad || nout > KW_TX_MAX_OUT) return 0;
+    tx->nout = (size_t)nout;
+    for (size_t i = 0; i < tx->nout; i++) {
+        kw_txout *o = &tx->vout[i];
+        o->value = rd_le(&r, 8);
+        uint64_t sl = rd_count(&r);
+        if (r.bad || sl > KW_TX_SCRIPT_MAX) return 0;
+        memcpy(o->script, r.p + r.off, (size_t)sl);
+        o->scriptlen = (size_t)sl; r.off += (size_t)sl;
+    }
+    tx->locktime = (uint32_t)rd_le(&r, 4);
+    return r.bad ? 0 : r.off;
+}

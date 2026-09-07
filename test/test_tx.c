@@ -108,9 +108,28 @@ int main(void)
         if (ms[0] != 0x00 || msl < rl + 1 || memcmp(ms + msl - rl, redeem, rl) != 0) {
             fprintf(stderr, "FAIL: ms scriptSig shape\n"); return 1;
         }
+
+        /* the redeem script reads back into its parts */
+        int pm = 0, pn = 0; uint8_t pk[16][33];
+        if (!kw_script_multisig_parse(redeem, rl, &pm, pk, &pn) || pm != 2 || pn != 2 ||
+            memcmp(pk[0], pub, 33) != 0 || memcmp(pk[1], pub2, 33) != 0) {
+            fprintf(stderr, "FAIL: multisig parse\n"); return 1;
+        }
+        if (kw_script_multisig_parse(redeem, rl - 1, &pm, pk, &pn)) {
+            fprintf(stderr, "FAIL: truncated multisig accepted\n"); return 1;
+        }
+
+        /* serialize -> parse -> serialize is byte-identical */
+        uint8_t raw1[4096], raw2[4096];
+        size_t n1 = kw_tx_serialize(&mtx, raw1, sizeof raw1);
+        kw_tx ptx;
+        if (!n1 || kw_tx_parse(raw1, n1, &ptx) != n1) { fprintf(stderr, "FAIL: tx parse\n"); return 1; }
+        size_t n2 = kw_tx_serialize(&ptx, raw2, sizeof raw2);
+        if (n2 != n1 || memcmp(raw1, raw2, n1) != 0) { fprintf(stderr, "FAIL: parse round-trip\n"); return 1; }
+        if (kw_tx_parse(raw1, n1 - 1, &ptx)) { fprintf(stderr, "FAIL: truncated tx accepted\n"); return 1; }
     }
 
     kw_ec_stop();
-    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies\n");
+    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips\n");
     return 0;
 }

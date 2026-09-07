@@ -57,6 +57,8 @@ static void usage(void)
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor]\n"
+      "  cosign   --tx HEX|@FILE|- --redeem HEX [--wif @FILE|-] [--vin N]\n"
+      "           [--sig HEX ...] [--finish]\n"
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
       "  a later run resumes from the stored tip instead of syncing from genesis.\n"
@@ -68,6 +70,10 @@ static void usage(void)
       "  --input it instead spends the named outpoints. The fee defaults to the\n"
       "  0.001 DOGE/kB relay floor; pass --feerate 0.01 for the miner-preferred\n"
       "  rate, or --fee for an exact amount.\n"
+      "  cosign signs input --vin of a P2SH multisig spend over --redeem and\n"
+      "  prints the signature for the counterparty; with --finish it combines\n"
+      "  each --sig with its own, in redeem-script key order, and prints the\n"
+      "  completed transaction ready for kw send.\n"
       "\n"
       "  A passphrase or mnemonic is read from a file (@PATH), from stdin (-),\n"
       "  or prompted for; never from the command line, where ps could see it.\n"
@@ -659,6 +665,26 @@ out:
 /* Sweep an external key: decode its WIF, scan the chain for its one address,
    and spend every output it holds to --to, signed with that key. The key is not
    added to the wallet; only the funds move. Compressed WIF only. */
+/* Decode a network-checked WIF into (sk), setting (*compressed) from its
+   trailing flag. Returns 1, or 0 with the reason printed. */
+static int wif_decode(const kw_chainparams *cp, const char *wif_arg, uint8_t sk[32], int *compressed)
+{
+    char *wif = read_secret(wif_arg, "wif: ");
+    if (!wif) { fprintf(stderr, "kw: no wif\n"); return 0; }
+    uint8_t pay[64]; size_t plen = 0;
+    int okdec = kw_base58check_decode(wif, pay, sizeof pay, &plen);
+    secret_free(wif);
+    if (!okdec) { fprintf(stderr, "kw: bad wif\n"); return 0; }
+    if (pay[0] != cp->wif) { fprintf(stderr, "kw: wif is for another network\n"); kw_secure_zero(pay, sizeof pay); return 0; }
+    int comp;
+    if (plen == 33) comp = 0;
+    else if (plen == 34 && pay[33] == 0x01) comp = 1;
+    else { fprintf(stderr, "kw: bad wif\n"); kw_secure_zero(pay, sizeof pay); return 0; }
+    memcpy(sk, pay + 1, 32); kw_secure_zero(pay, sizeof pay);
+    *compressed = comp;
+    return 1;
+}
+
 static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
                      const char *node, int port, int tor, int use_cf,
                      const char *fee_arg, const char *feerate_arg)
@@ -666,16 +692,9 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
     if (!to_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
 
-    char *wif = read_secret(wif_arg, "wif: ");
-    if (!wif) { fprintf(stderr, "kw: no wif\n"); return 1; }
-    uint8_t pay[64]; size_t plen = 0;
-    int okdec = kw_base58check_decode(wif, pay, sizeof pay, &plen);
-    secret_free(wif);
-    if (!okdec) { fprintf(stderr, "kw: bad wif\n"); return 1; }
-    if (pay[0] != cp->wif) { fprintf(stderr, "kw: wif is for another network\n"); kw_secure_zero(pay, sizeof pay); return 1; }
-    if (plen == 33) { fprintf(stderr, "kw: uncompressed wif not supported\n"); kw_secure_zero(pay, sizeof pay); return 1; }
-    if (plen != 34 || pay[33] != 0x01) { fprintf(stderr, "kw: bad wif\n"); kw_secure_zero(pay, sizeof pay); return 1; }
-    uint8_t sk[32]; memcpy(sk, pay + 1, 32); kw_secure_zero(pay, sizeof pay);
+    uint8_t sk[32]; int comp = 0;
+    if (!wif_decode(cp, wif_arg, sk, &comp)) return 1;
+    if (!comp) { fprintf(stderr, "kw: uncompressed wif not supported\n"); kw_secure_zero(sk, sizeof sk); return 1; }
 
     uint8_t pub[33], h[20], spk[25];
     if (!kw_ec_pubkey(sk, pub)) { fprintf(stderr, "kw: bad key\n"); kw_secure_zero(sk, sizeof sk); return 1; }
@@ -978,6 +997,101 @@ out:
     return rc;
 }
 
+/* Co-sign one input of a P2SH multisig spend. Prints this key's signature for
+   the counterparty to assemble; with --finish combines the provided signatures
+   with ours into the completed transaction. */
+static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *redeem_arg,
+                      const char *wif_arg, int vin, const char **sig_args, int nsigs,
+                      int finish)
+{
+    if (!tx_arg || !redeem_arg) { usage(); return 2; }
+
+    char *txt = read_text(tx_arg);
+    if (!txt) { fprintf(stderr, "kw: cannot read --tx\n"); return 1; }
+    size_t hexlen = strlen(txt);
+    uint8_t raw[16384];
+    if (hexlen == 0 || hexlen % 2 || hexlen / 2 > sizeof raw || !kw_hex_decode(txt, hexlen, raw, hexlen / 2)) {
+        fprintf(stderr, "kw: --tx is not valid hex\n"); free(txt); return 1;
+    }
+    size_t rawlen = hexlen / 2;
+    free(txt);
+
+    kw_tx tx;
+    if (kw_tx_parse(raw, rawlen, &tx) != rawlen) { fprintf(stderr, "kw: --tx is not a transaction\n"); return 1; }
+    if (vin < 0 || (size_t)vin >= tx.nin) { fprintf(stderr, "kw: no input %d\n", vin); return 1; }
+
+    uint8_t redeem[520]; size_t rhexlen = strlen(redeem_arg), rl = rhexlen / 2;
+    if (!rhexlen || rhexlen % 2 || rl > sizeof redeem ||
+        !kw_hex_decode(redeem_arg, rhexlen, redeem, rl)) {
+        fprintf(stderr, "kw: --redeem is not valid hex\n"); return 1;
+    }
+
+    uint8_t sk[32]; int comp = 0;
+    if (!wif_decode(cp, wif_arg, sk, &comp)) return 1;
+
+    uint8_t mysig[KW_EC_SIG_DER_MAX + 1]; size_t mylen = sizeof mysig;
+    int ok = kw_tx_signature(&tx, (size_t)vin, sk, redeem, rl, KW_SIGHASH_ALL, mysig, &mylen);
+    kw_secure_zero(sk, sizeof sk);
+    if (!ok) { fprintf(stderr, "kw: sign failed\n"); return 1; }
+
+    if (!finish) {
+        char hex[160];
+        kw_hex_encode(mysig, mylen, hex, sizeof hex);
+        printf("%s\n", hex);
+        return 0;
+    }
+
+    int m = 0, n = 0; uint8_t keys[16][33];
+    if (!kw_script_multisig_parse(redeem, rl, &m, keys, &n)) {
+        fprintf(stderr, "kw: --finish needs an m-of-n --redeem; without it kw prints this\n"
+                        "    key's signature and the caller assembles the scriptSig\n");
+        return 1;
+    }
+    if (nsigs + 1 != m) { fprintf(stderr, "kw: have %d signatures, need %d\n", nsigs + 1, m); return 1; }
+
+    uint8_t sigbuf[16][KW_EC_SIG_DER_MAX + 1]; size_t sblen[16];
+    for (int i = 0; i < nsigs; i++) {
+        size_t hl = strlen(sig_args[i]);
+        if (!hl || hl % 2 || hl / 2 > sizeof sigbuf[i] ||
+            !kw_hex_decode(sig_args[i], hl, sigbuf[i], hl / 2)) {
+            fprintf(stderr, "kw: --sig is not valid hex\n"); return 1;
+        }
+        sblen[i] = hl / 2;
+        if (sblen[i] < 9 || sigbuf[i][sblen[i] - 1] != KW_SIGHASH_ALL) {
+            fprintf(stderr, "kw: --sig is not a SIGHASH_ALL signature\n"); return 1;
+        }
+    }
+    memcpy(sigbuf[nsigs], mysig, mylen); sblen[nsigs] = mylen;
+
+    /* CHECKMULTISIG wants signatures in the redeem script's pubkey order:
+       verify each against the sighash to find its slot, which also refuses a
+       counterparty signature that would not validate on chain. */
+    uint8_t hash[32];
+    if (!kw_tx_sighash(&tx, (size_t)vin, redeem, rl, KW_SIGHASH_ALL, hash)) { fprintf(stderr, "kw: sighash failed\n"); return 1; }
+    const uint8_t *ordered[16]; size_t olen[16]; int no = 0;
+    int used[16] = {0};
+    for (int k = 0; k < n && no < m; k++) {
+        for (int i = 0; i <= nsigs; i++) {
+            if (used[i]) continue;
+            if (kw_ec_verify(keys[k], hash, sigbuf[i], sblen[i] - 1)) {
+                ordered[no] = sigbuf[i]; olen[no] = sblen[i]; no++; used[i] = 1; break;
+            }
+        }
+    }
+    if (no != m) { fprintf(stderr, "kw: a signature does not verify against the redeem script\n"); return 1; }
+
+    if (!kw_tx_set_multisig(&tx, (size_t)vin, ordered, olen, (size_t)no, redeem, rl)) {
+        fprintf(stderr, "kw: scriptSig would not fit\n"); return 1;
+    }
+    uint8_t outraw[16384];
+    size_t on = kw_tx_serialize(&tx, outraw, sizeof outraw);
+    if (!on) { fprintf(stderr, "kw: serialize failed\n"); return 1; }
+    char hex[32770];
+    kw_hex_encode(outraw, on, hex, sizeof hex);
+    printf("%s\n", hex);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0;
@@ -987,9 +1101,10 @@ int main(int argc, char **argv)
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
-    const char *filters_arg = NULL, *daemon_arg = NULL;
+    const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL;
     long since = -1;
-    const char *inputs[KW_TX_MAX_IN];
+    int vin = 0, nsigs = 0, finish = 0;
+    const char *inputs[KW_TX_MAX_IN], *sigs[16];
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1023,6 +1138,10 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--since"))    { const char *v = NEXT(); since = v ? atol(v) : -1; }
         else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
+        else if (!strcmp(a, "--redeem"))     redeem_arg = NEXT();
+        else if (!strcmp(a, "--vin"))      { const char *v = NEXT(); vin = v ? atoi(v) : 0; }
+        else if (!strcmp(a, "--sig"))      { const char *v = NEXT(); if (v && nsigs < 15) sigs[nsigs++] = v; }
+        else if (!strcmp(a, "--finish"))     finish = 1;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
@@ -1043,6 +1162,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
+    else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;

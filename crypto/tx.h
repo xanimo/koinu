@@ -91,6 +91,17 @@ int  kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
                         const size_t *siglens, size_t nsigs,
                         const uint8_t *redeem, size_t redeemlen);
 
+/* Read an m-of-n bare multisig script back into its parts. Compressed keys
+   only, the shape kw_script_multisig builds; (pubkeys) holds up to 16.
+   Returns 1, or 0 if the script is not that shape. */
+int  kw_script_multisig_parse(const uint8_t *script, size_t scriptlen,
+                              int *m, uint8_t (*pubkeys)[33], int *n);
+
+/* Parse a legacy serialized transaction into (tx), bounded by the builder's
+   limits (KW_TX_MAX_IN/OUT, KW_TX_SCRIPT_MAX). Returns the bytes consumed
+   (the tx length), or 0 if malformed or over a limit. */
+size_t kw_tx_parse(const uint8_t *raw, size_t len, kw_tx *tx);
+
 /* Double-SHA256 of the serialization, internal byte order (reverse for display). */
 int  kw_tx_txid(const kw_tx *tx, uint8_t out[32]);
 
