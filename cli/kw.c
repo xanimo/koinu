@@ -15,6 +15,7 @@
 #include "base58.h"
 #include "keystore.h"
 #include "ripemd160.h"
+#include "sha2.h"
 #include "tx.h"
 #include "hex.h"
 #include "ec.h"
@@ -51,6 +52,7 @@ static void usage(void)
       "  height   --node HOST [--port N] [--tor]\n"
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv]\n"
+      "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor]\n"
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
       "  a later run resumes from the stored tip instead of syncing from genesis.\n"
@@ -852,6 +854,77 @@ out:
     return rc;
 }
 
+/* Read non-secret text from @FILE, stdin ("-"), or the argument itself. */
+static char *read_text(const char *arg)
+{
+    if (!arg) return NULL;
+    if (arg[0] == '@' || !strcmp(arg, "-")) {
+        FILE *f = (arg[0] == '@') ? fopen(arg + 1, "r") : stdin;
+        if (!f) return NULL;
+        char *l = NULL; size_t c = 0; ssize_t n = getline(&l, &c, f);
+        if (arg[0] == '@') fclose(f);
+        if (n < 0) { free(l); return NULL; }
+        chomp(l);
+        return l;
+    }
+    return strdup(arg);
+}
+
+/* Broadcast a raw transaction and confirm the peer took it: send the tx, then
+   ask for it back by txid. A returned tx means it is in the peer's mempool; a
+   notfound or reject means it was refused. */
+static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node, int port, int tor)
+{
+    if (!tx_arg || !node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+
+    char *txt = read_text(tx_arg);
+    if (!txt) { fprintf(stderr, "kw: cannot read --tx\n"); return 1; }
+    size_t hexlen = strlen(txt);
+    static uint8_t raw[16384];
+    if (hexlen == 0 || hexlen % 2 || hexlen / 2 > sizeof raw || !kw_hex_decode(txt, hexlen, raw, hexlen / 2)) {
+        fprintf(stderr, "kw: --tx is not valid hex\n"); free(txt); return 1;
+    }
+    size_t rawlen = hexlen / 2;
+    free(txt);
+
+    uint8_t txid[32], disp[32];
+    kw_hash256(raw, rawlen, txid);
+    for (int i = 0; i < 32; i++) disp[i] = txid[31 - i];
+    char txidhex[65]; kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
+
+    kw_peer p;
+    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+                   : kw_peer_connect(&p, cp, node, port, 10);
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); return 1; }
+
+    int rc = 1;
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
+    if (!kw_peer_send(&p, "tx", raw, rawlen)) { fprintf(stderr, "kw: send failed\n"); goto out; }
+
+    /* p2p has no positive accept ack: a node never echoes a tx back to its
+       sender. watch for a reject; going quiet means it was relayed. */
+    for (;;) {
+        char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
+        int r = kw_peer_recv(&p, cmd, &pl, &pn);
+        if (r != 1) { printf("broadcast: %s (no reject; confirm with kw outpoint)\n", txidhex); rc = 0; break; }
+        if (!strcmp(cmd, "ping")) { kw_peer_send(&p, "pong", pl, pn); continue; }
+        if (!strcmp(cmd, "reject")) {
+            char reason[128] = "";
+            size_t o = 0;                          /* reject: message, ccode, reason, [data] */
+            if (o < pn) { uint8_t ml = pl[o++]; o += ml; }      /* skip the command varstr */
+            if (o < pn) o++;                                    /* skip ccode */
+            if (o < pn) { uint8_t rl = pl[o++]; if (rl < sizeof reason && o + rl <= pn) { memcpy(reason, pl + o, rl); reason[rl] = 0; } }
+            fprintf(stderr, "rejected: %s%s%s\n", txidhex, reason[0] ? " - " : "", reason);
+            rc = 1; break;
+        }
+        /* inv, addr, sendheaders, etc: keep waiting for a possible reject */
+    }
+out:
+    kw_peer_close(&p);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0;
@@ -860,7 +933,7 @@ int main(int argc, char **argv)
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
-    const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL;
+    const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *inputs[KW_TX_MAX_IN];
 
     for (int i = 1; i < argc; i++) {
@@ -891,6 +964,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--watch"))      watch_arg = NEXT();
         else if (!strcmp(a, "--outpoint"))   outpoint_arg = NEXT();
         else if (!strcmp(a, "--headers"))    headers_arg = NEXT();
+        else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
@@ -910,6 +984,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg);
+    else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;
