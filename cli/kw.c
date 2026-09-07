@@ -31,6 +31,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -53,6 +55,7 @@ static void usage(void)
       "  height   --node HOST [--port N] [--tor]\n"
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
+      "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor]\n"
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
@@ -791,10 +794,36 @@ out:
    is not in the unspent set (unconfirmed or already spent), 1 on error. Lets a
    caller confirm a funding output to its own depth policy without trusting a
    claimed height. */
+/* Ask a running kwd over its unix socket. Prints the reply text, returns its rc. */
+static int outpoint_via_daemon(const char *sock, const char *watch, const char *op, long since)
+{
+    if (!watch || !op) { usage(); return 2; }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { fprintf(stderr, "kw: socket\n"); return 1; }
+    struct sockaddr_un sa; memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", sock);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        fprintf(stderr, "kw: cannot reach daemon at %s\n", sock); close(fd); return 1;
+    }
+    char req[512];
+    int rn = snprintf(req, sizeof req, "outpoint %s %s %ld\n", watch, op, since >= 0 ? since : 0);
+    if (rn <= 0 || write(fd, req, (size_t)rn) != rn) { close(fd); return 1; }
+    char rep[256]; ssize_t r = read(fd, rep, sizeof rep - 1); close(fd);
+    if (r <= 0) { fprintf(stderr, "kw: no reply from daemon\n"); return 1; }
+    rep[r] = '\0';
+    int rc = atoi(rep);
+    char *sp = strchr(rep, ' ');
+    printf("%s", sp ? sp + 1 : rep);         /* reply text carries its own newline */
+    return rc;
+}
+
 static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const char *outpoint_arg,
                         const char *node, int port, int tor, int use_cf,
-                        const char *headers_path, const char *filters_path, long since)
+                        const char *headers_path, const char *filters_path, long since,
+                        const char *daemon_sock)
 {
+    if (daemon_sock) return outpoint_via_daemon(daemon_sock, watch_arg, outpoint_arg, since);
     if (!watch_arg || !outpoint_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
 
@@ -838,29 +867,13 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
         /* range: test filters over [since, tip] and report the outpoint's
            creation and spend seen there. requires the filter cache. */
         if (!use_cf || !filters_path) { fprintf(stderr, "kw: --since requires --cf and --filters\n"); kw_headerstore_free(&s); goto out; }
-        if (kw_cfstore_sync(&p, &s, filters_path, 1) < 0) { fprintf(stderr, "kw: filter sync failed\n"); kw_headerstore_free(&s); goto out; }
-
-        kw_gcs_item it = { spk, spklen };
-        uint32_t *heights = (uint32_t *)malloc((s.count ? s.count : 1) * sizeof *heights);
-        if (!heights) { kw_headerstore_free(&s); goto out; }
-        long nm = kw_cfstore_match_range(filters_path, &s, 1, (uint32_t)since, &it, 1, heights, s.count);
-        long created_h = -1, spent_h = -1; uint64_t value = 0;
-        for (long i = 0; i < nm; i++) {
-            uint32_t h = heights[i];
-            const uint8_t *pl = NULL; size_t pn = 0;
-            kw_outpoint_status st = { 0, 0, 0 };
-            if (!kw_spv_get_block(&p, s.h[h - 1].hash, &pl, &pn) ||
-                !kw_block_find_outpoint(pl, pn, txint, vout, &st)) { nm = -1; break; }
-            if (st.created) { created_h = (long)h; value = st.created_value; }
-            if (st.spent) spent_h = (long)h;
-        }
-        free(heights);
+        kw_outpoint_result r;
+        int ok = kw_query_outpoint_range(&p, &s, filters_path, 1, spk, spklen, txint, vout, (uint32_t)since, &r);
         kw_headerstore_free(&s);
-        if (nm < 0) { fprintf(stderr, "kw: filter/block scan failed\n"); goto out; }
-
-        if (spent_h >= 0) { printf("spent at height %ld depth %ld\n", spent_h, (long)tipheight - spent_h + 1); rc = 3; }
-        else if (created_h >= 0) { printf("unspent height %ld depth %ld value %llu koinu\n",
-                                          created_h, (long)tipheight - created_h + 1, (unsigned long long)value); rc = 0; }
+        if (ok != 1) { fprintf(stderr, "kw: filter/block scan failed\n"); goto out; }
+        if (r.status == 1) { printf("spent at height %ld depth %ld\n", r.height, r.tipheight - r.height + 1); rc = 3; }
+        else if (r.status == 0) { printf("unspent height %ld depth %ld value %llu koinu\n",
+                                         r.height, r.tipheight - r.height + 1, (unsigned long long)r.value); rc = 0; }
         else { printf("not seen since %ld\n", since); rc = 4; }
         goto out;
     }
@@ -974,7 +987,7 @@ int main(int argc, char **argv)
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
-    const char *filters_arg = NULL;
+    const char *filters_arg = NULL, *daemon_arg = NULL;
     long since = -1;
     const char *inputs[KW_TX_MAX_IN];
 
@@ -1008,6 +1021,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--headers"))    headers_arg = NEXT();
         else if (!strcmp(a, "--filters"))    filters_arg = NEXT();
         else if (!strcmp(a, "--since"))    { const char *v = NEXT(); since = v ? atol(v) : -1; }
+        else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
@@ -1027,7 +1041,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg);
-    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since);
+    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
     else { usage(); rc = 2; }
     kw_ec_stop();

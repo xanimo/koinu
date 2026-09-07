@@ -32,3 +32,5 @@
 /test/test_gcs
 /test/test_cf
 /test/test_cfstore
+/kw
+/kwd

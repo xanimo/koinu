@@ -154,3 +154,36 @@ long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
     free(heights);
     return scanned;
 }
+
+int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *filters_path,
+                            uint32_t base_height, const uint8_t *spk, size_t spklen,
+                            const uint8_t txid[32], uint32_t vout, uint32_t since,
+                            kw_outpoint_result *res)
+{
+    if (kw_cfstore_sync(p, s, filters_path, base_height) < 0) return -1;
+
+    kw_gcs_item it = { spk, spklen };
+    uint32_t *heights = (uint32_t *)malloc((s->count ? s->count : 1) * sizeof *heights);
+    if (!heights) return -1;
+    long nm = kw_cfstore_match_range(filters_path, s, base_height, since, &it, 1, heights, s->count);
+    if (nm < 0) { free(heights); return -1; }
+
+    long created_h = -1, spent_h = -1; uint64_t value = 0;
+    for (long i = 0; i < nm; i++) {
+        size_t idx = heights[i] - base_height;
+        const uint8_t *pl = NULL; size_t pn = 0;
+        kw_outpoint_status st = { 0, 0, 0 };
+        if (!kw_spv_get_block(p, s->h[idx].hash, &pl, &pn) ||
+            !kw_block_find_outpoint(pl, pn, txid, vout, &st)) { free(heights); return -1; }
+        if (st.created) { created_h = (long)heights[i]; value = st.created_value; }
+        if (st.spent) spent_h = (long)heights[i];
+    }
+    free(heights);
+
+    res->tipheight = (long)base_height + (long)s->count - 1;
+    res->value = 0; res->height = 0;
+    if (spent_h >= 0) { res->status = 1; res->height = spent_h; }
+    else if (created_h >= 0) { res->status = 0; res->height = created_h; res->value = value; }
+    else res->status = 2;
+    return 1;
+}

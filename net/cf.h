@@ -46,4 +46,17 @@ long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
                        kw_utxoset *us, const kw_watchset *ws, uint32_t base_height,
                        const char *filters_path);
 
+/* The status of an outpoint over [since, tip], from the filter cache. status:
+   0 unspent (height,value set), 1 spent (height set), 2 not seen in range. */
+typedef struct { int status; long height; uint64_t value; long tipheight; } kw_outpoint_result;
+
+/* Fill (res) for (txid,vout) paying (spk), testing cached filters over
+   [since, tip] and reading only the matching blocks. Updates the filter cache
+   delta first. Returns 1, or -1 on error. Reused by the daemon so a resident
+   header store and peer answer queries without reloading. */
+int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *filters_path,
+                            uint32_t base_height, const uint8_t *spk, size_t spklen,
+                            const uint8_t txid[32], uint32_t vout, uint32_t since,
+                            kw_outpoint_result *res);
+
 #endif /* KOINU_CF_H */
