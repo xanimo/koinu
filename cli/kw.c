@@ -241,23 +241,27 @@ static int open_seed(const char *path, const char *pass_arg, uint8_t seed[64])
     return 1;
 }
 
-/* The fee-rate hint sits beside the utxo file: scan records the peer's advertised
-   feefilter there so a later offline sign can default to it. */
-static void write_feerate_hint(const char *utxos, int64_t rate)
+/* Scan metadata sits beside the utxo file: the peer's advertised feefilter (so a
+   later offline sign defaults to it) and the address count scan watched (so sign
+   derives far enough to key every tracked utxo). */
+static void write_scan_meta(const char *utxos, int64_t feerate, int extent)
 {
-    char p[4200]; snprintf(p, sizeof p, "%s.fee", utxos);
+    char p[4200]; snprintf(p, sizeof p, "%s.meta", utxos);
     FILE *f = fopen(p, "w");
-    if (f) { fprintf(f, "%lld\n", (long long)rate); fclose(f); }
+    if (f) { fprintf(f, "feerate %lld\ngap %d\n", (long long)feerate, extent); fclose(f); }
 }
-static int64_t read_feerate_hint(const char *utxos)
+static void read_scan_meta(const char *utxos, int64_t *feerate, int *extent)
 {
-    char p[4200]; snprintf(p, sizeof p, "%s.fee", utxos);
+    *feerate = 0; *extent = 0;
+    char p[4200]; snprintf(p, sizeof p, "%s.meta", utxos);
     FILE *f = fopen(p, "r");
-    if (!f) return 0;
-    long long v = 0;
-    if (fscanf(f, "%lld", &v) != 1) v = 0;
+    if (!f) return;
+    char key[32]; long long v;
+    while (fscanf(f, "%31s %lld", key, &v) == 2) {
+        if (!strcmp(key, "feerate")) *feerate = (int64_t)v;
+        else if (!strcmp(key, "gap")) *extent = (int)v;
+    }
     fclose(f);
-    return (int64_t)v;
 }
 
 /* seal a seed under a passphrase and write it, then print the first address */
@@ -359,52 +363,81 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_secure_zero(seed, sizeof seed);
     if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
 
-    kw_watchset ws; kw_watchset_init(&ws);
-    for (int chg = 0; chg <= 1; chg++)
-        for (int i = 0; i < gap; i++) {
-            kw_bip32_key k;
-            if (kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &k)) {
-                uint8_t pub[33], h[20], spk[25];
-                kw_bip32_pubkey(&k, pub); kw_hash160(pub, 33, h); h160_to_spk(h, spk);
-                kw_watchset_add(&ws, spk, 25);
-            }
-            kw_secure_zero(&k, sizeof k);
-        }
-    kw_secure_zero(&master, sizeof master);
-
     kw_net_verbose = 1;
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
-    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); return 1; }
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_secure_zero(&master, sizeof master); return 1; }
 
     int rc = 1;
-    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); }
-    else {
-        kw_headerstore s; kw_headerstore_init(&s);
-        long nh = kw_sync_headers(&p, &s, cp);
-        if (nh < 0) fprintf(stderr, "kw: header sync failed\n");
-        else {
-            kw_utxoset us; kw_utxoset_init(&us);
-            long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
-                             : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
-            if (nb < 0) fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
-            else {
-                if (kw_utxoset_save(&us, utxos_path)) {
-                    if (p.peer_feerate > 0) write_feerate_hint(utxos_path, p.peer_feerate);
-                    printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
-                           nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
-                    printf("saved to %s\n", utxos_path);
-                    if (p.peer_feerate > 0) printf("peer fee floor %lld koinu/kB\n", (long long)p.peer_feerate);
-                    rc = 0;
-                } else fprintf(stderr, "kw: could not write %s\n", utxos_path);
+    long nh = 0;
+    int watched = gap;
+    kw_utxoset us; int have_us = 0;
+
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
+
+    kw_headerstore s; kw_headerstore_init(&s);
+    nh = kw_sync_headers(&p, &s, cp);
+    if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
+
+    /* gap-limit: rescan with a growing range until `gap` unused addresses trail
+       the highest used one. headers are synced once; only the scan repeats. */
+    for (int iter = 0; iter < 64; iter++) {
+        kw_watchset ws; kw_watchset_init(&ws);
+        uint8_t (*h160map)[20] = malloc((size_t)(2 * watched) * 20);
+        int *idxmap = malloc((size_t)(2 * watched) * sizeof *idxmap);
+        if (!h160map || !idxmap) { free(h160map); free(idxmap); kw_watchset_free(&ws);
+            fprintf(stderr, "kw: out of memory\n"); kw_headerstore_free(&s); goto done; }
+        int m = 0;
+        for (int chg = 0; chg <= 1; chg++)
+            for (int i = 0; i < watched; i++) {
+                kw_bip32_key k;
+                if (kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &k)) {
+                    uint8_t pub[33], h[20], spk[25];
+                    kw_bip32_pubkey(&k, pub); kw_hash160(pub, 33, h); h160_to_spk(h, spk);
+                    kw_watchset_add(&ws, spk, 25);
+                    memcpy(h160map[m], h, 20); idxmap[m] = i; m++;
+                }
+                kw_secure_zero(&k, sizeof k);
             }
-            kw_utxoset_free(&us);
+
+        if (have_us) kw_utxoset_free(&us);
+        kw_utxoset_init(&us); have_us = 1;
+        long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
+                         : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        kw_watchset_free(&ws);
+        if (nb < 0) { free(h160map); free(idxmap);
+            fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
+            kw_headerstore_free(&s); goto done; }
+
+        int maxidx = -1;
+        for (size_t u = 0; u < us.count; u++) {
+            const kw_utxo *e = &us.u[u];
+            if (e->spklen != 25) continue;
+            for (int t = 0; t < m; t++)
+                if (memcmp(h160map[t], e->spk + 3, 20) == 0) { if (idxmap[t] > maxidx) maxidx = idxmap[t]; break; }
         }
-        kw_headerstore_free(&s);
+        free(h160map); free(idxmap);
+
+        if (watched >= maxidx + gap) break;         /* gap unused addresses trail the last used */
+        fprintf(stderr, "[scan] address %d used, extending watch to %d and rescanning\n", maxidx, maxidx + gap);
+        watched = maxidx + gap;
     }
+    kw_headerstore_free(&s);
+
+    if (kw_utxoset_save(&us, utxos_path)) {
+        write_scan_meta(utxos_path, p.peer_feerate, watched);
+        printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
+               nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
+        printf("watched %d addresses per chain, saved to %s\n", watched, utxos_path);
+        if (p.peer_feerate > 0) printf("peer fee floor %lld koinu/kB\n", (long long)p.peer_feerate);
+        rc = 0;
+    } else fprintf(stderr, "kw: could not write %s\n", utxos_path);
+
+done:
+    if (have_us) kw_utxoset_free(&us);
     kw_peer_close(&p);
-    kw_watchset_free(&ws);
+    kw_secure_zero(&master, sizeof master);
     return rc;
 }
 
@@ -434,7 +467,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     uint64_t total_in = 0;
 
     kw_utxoset us; int have_us = 0;
-    kw_bip32_key *keymap = NULL; uint8_t (*h160map)[20] = NULL;
+    kw_bip32_key *keymap = NULL; uint8_t (*h160map)[20] = NULL; int keymap_n = 0;
 
     /* destination up front, so auto selection knows the target */
     char tob[160];
@@ -485,18 +518,20 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         kw_utxoset_init(&us); have_us = 1;
         if (!kw_utxoset_load(&us, up)) { fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up); goto out; }
 
-        /* unless overridden, default to the peer fee floor scan recorded */
-        if (!feerate_arg) {
-            int64_t hint = read_feerate_hint(up);
-            if (hint > (int64_t)rate) rate = (uint64_t)hint;
-        }
+        /* scan metadata: default the rate to the peer floor it recorded, and
+           derive as far as it watched so every tracked utxo's key is available */
+        int64_t hint = 0; int extent = 0;
+        read_scan_meta(up, &hint, &extent);
+        if (!feerate_arg && hint > (int64_t)rate) rate = (uint64_t)hint;
+        int derive_n = gap; if (extent > derive_n) derive_n = extent;
 
-        keymap = (kw_bip32_key *)malloc((size_t)(2 * gap) * sizeof *keymap);
-        h160map = malloc((size_t)(2 * gap) * 20);
+        keymap_n = 2 * derive_n;
+        keymap = (kw_bip32_key *)malloc((size_t)keymap_n * sizeof *keymap);
+        h160map = malloc((size_t)keymap_n * 20);
         if (!keymap || !h160map) { fprintf(stderr, "kw: out of memory\n"); goto out; }
         int m = 0;
         for (int chg = 0; chg <= 1; chg++)
-            for (int i = 0; i < gap; i++) {
+            for (int i = 0; i < derive_n; i++) {
                 if (!kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &keymap[m])) continue;
                 uint8_t pub[33];
                 kw_bip32_pubkey(&keymap[m], pub); kw_hash160(pub, 33, h160map[m]);
@@ -583,7 +618,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         rc = 0;
     }
 out:
-    if (keymap) { kw_secure_zero(keymap, (size_t)(2 * gap) * sizeof *keymap); free(keymap); }
+    if (keymap) { kw_secure_zero(keymap, (size_t)keymap_n * sizeof *keymap); free(keymap); }
     free(h160map);
     if (have_us) kw_utxoset_free(&us);
     kw_secure_zero(seed, sizeof seed);
