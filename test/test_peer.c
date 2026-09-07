@@ -59,12 +59,16 @@ int main(void)
     int c2 = kw_msg_parse(magic, inbuf + c1, (size_t)got - c1, cmd, &pl, &pn);
     if (c2 <= 0 || strcmp(cmd, "verack") != 0) { fprintf(stderr, "FAIL: we did not send verack\n"); return 1; }
 
-    /* a following message reassembles through recv */
+    /* a feefilter is captured transparently, and the following ping reassembles */
+    uint8_t feerate[8] = { 0x88, 0x13, 0, 0, 0, 0, 0, 0 };   /* 5000 koinu/kB, LE */
+    fn = kw_msg_serialize(magic, "feefilter", feerate, sizeof feerate, frame, sizeof frame);
+    if (write(sv[1], frame, fn) != (ssize_t)fn) { fprintf(stderr, "FAIL: write feefilter\n"); return 1; }
     uint8_t nonce[8] = {9,9,9,9,0,0,0,0};
     fn = kw_msg_serialize(magic, "ping", nonce, sizeof nonce, frame, sizeof frame);
     if (write(sv[1], frame, fn) != (ssize_t)fn) { fprintf(stderr, "FAIL: write ping\n"); return 1; }
     if (kw_peer_recv(&p, cmd, &pl, &pn) != 1 || strcmp(cmd, "ping") != 0 || pn != 8 ||
         memcmp(pl, nonce, 8) != 0) { fprintf(stderr, "FAIL: recv ping\n"); return 1; }
+    if (p.peer_feerate != 5000) { fprintf(stderr, "FAIL: feefilter %lld\n", (long long)p.peer_feerate); return 1; }
 
     kw_peer_close(&p);
     close(sv[1]);

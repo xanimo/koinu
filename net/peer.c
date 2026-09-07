@@ -120,6 +120,13 @@ int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
             memcpy(p->msg, pl, pn);
             memmove(p->rbuf, p->rbuf + c, p->rlen - (size_t)c);
             p->rlen -= (size_t)c;
+            /* capture the peer's fee floor transparently; the caller never sees it */
+            if (!strcmp(cmd, "feefilter") && pn >= 8) {
+                int64_t fr = 0;
+                for (int i = 0; i < 8; i++) fr |= (int64_t)p->msg[i] << (8 * i);
+                p->peer_feerate = fr;
+                continue;
+            }
             if (payload) *payload = p->msg;
             if (plen) *plen = pn;
             return 1;

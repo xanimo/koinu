@@ -241,6 +241,25 @@ static int open_seed(const char *path, const char *pass_arg, uint8_t seed[64])
     return 1;
 }
 
+/* The fee-rate hint sits beside the utxo file: scan records the peer's advertised
+   feefilter there so a later offline sign can default to it. */
+static void write_feerate_hint(const char *utxos, int64_t rate)
+{
+    char p[4200]; snprintf(p, sizeof p, "%s.fee", utxos);
+    FILE *f = fopen(p, "w");
+    if (f) { fprintf(f, "%lld\n", (long long)rate); fclose(f); }
+}
+static int64_t read_feerate_hint(const char *utxos)
+{
+    char p[4200]; snprintf(p, sizeof p, "%s.fee", utxos);
+    FILE *f = fopen(p, "r");
+    if (!f) return 0;
+    long long v = 0;
+    if (fscanf(f, "%lld", &v) != 1) v = 0;
+    fclose(f);
+    return (int64_t)v;
+}
+
 /* seal a seed under a passphrase and write it, then print the first address */
 static int seal_and_report(const kw_chainparams *cp, const char *path,
                            const char *pass_arg, const uint8_t seed[64])
@@ -372,9 +391,11 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
             if (nb < 0) fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
             else {
                 if (kw_utxoset_save(&us, utxos_path)) {
+                    if (p.peer_feerate > 0) write_feerate_hint(utxos_path, p.peer_feerate);
                     printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
                            nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
                     printf("saved to %s\n", utxos_path);
+                    if (p.peer_feerate > 0) printf("peer fee floor %lld koinu/kB\n", (long long)p.peer_feerate);
                     rc = 0;
                 } else fprintf(stderr, "kw: could not write %s\n", utxos_path);
             }
@@ -463,6 +484,12 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
         kw_utxoset_init(&us); have_us = 1;
         if (!kw_utxoset_load(&us, up)) { fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up); goto out; }
+
+        /* unless overridden, default to the peer fee floor scan recorded */
+        if (!feerate_arg) {
+            int64_t hint = read_feerate_hint(up);
+            if (hint > (int64_t)rate) rate = (uint64_t)hint;
+        }
 
         keymap = (kw_bip32_key *)malloc((size_t)(2 * gap) * sizeof *keymap);
         h160map = malloc((size_t)(2 * gap) * 20);

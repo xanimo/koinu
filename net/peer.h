@@ -22,6 +22,7 @@ typedef struct {
     uint8_t *msg;   size_t mcap;         /* holds the last parsed payload */
     int32_t  peer_version;
     int32_t  peer_height;
+    int64_t  peer_feerate;               /* last BIP133 feefilter, koinu/kB, 0 if none */
 } kw_peer;
 
 /* Wrap an already-connected fd (used by tests over a socketpair). Returns 1. */
