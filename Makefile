@@ -146,6 +146,10 @@ net_spv: test/net_spv.o $(LIB) $(SECP_LIB)
 net_cf: test/net_cf.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_cf.o $(LIB) $(SECP_LIB)
 
+# live p2sh 2-of-2 co-sign harness, built on demand
+net_multisig: test/net_multisig.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -o $@ test/net_multisig.o $(LIB) $(SECP_LIB)
+
 # live handshake tool, built on demand, not part of `make check`
 net_handshake: test/net_handshake.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_handshake.o $(LIB)
@@ -194,7 +198,7 @@ asan:
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw kwd cli/*.o net_handshake net_sync net_spv net_cf
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw kwd cli/*.o net_handshake net_sync net_spv net_cf net_multisig
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

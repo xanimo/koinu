@@ -68,7 +68,49 @@ int main(void)
     size_t derlen = ss[0] - 1;                 /* strip the trailing hashtype byte */
     if (!kw_ec_verify(pub, h, ss + 1, derlen)) { fprintf(stderr, "FAIL signature does not verify\n"); return 1; }
 
+    /* P2SH 2-of-2: build the redeem script, co-sign an input with both keys,
+       verify each partial signature, and assemble the redeeming scriptSig. */
+    {
+        uint8_t sk2[32]; memset(sk2, 0x02, 32);
+        uint8_t pub2[33];
+        if (!kw_ec_pubkey(sk2, pub2)) { fprintf(stderr, "FAIL: pub2\n"); return 1; }
+        uint8_t keys[2][33];
+        memcpy(keys[0], pub, 33); memcpy(keys[1], pub2, 33);
+
+        uint8_t redeem[128];
+        size_t rl = kw_script_multisig(2, keys, 2, redeem, sizeof redeem);
+        if (rl == 0 || redeem[0] != 0x52 || redeem[rl - 2] != 0x52 || redeem[rl - 1] != 0xae) {
+            fprintf(stderr, "FAIL: redeem script\n"); return 1;
+        }
+        uint8_t p2sh[23];
+        if (kw_script_p2sh(redeem, rl, p2sh) != 23 || p2sh[0] != 0xa9 || p2sh[1] != 0x14 || p2sh[22] != 0x87) {
+            fprintf(stderr, "FAIL: p2sh spk\n"); return 1;
+        }
+
+        kw_tx mtx; kw_tx_init(&mtx);
+        kw_tx_add_input(&mtx, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", 0);
+        uint8_t ospk[25] = { 0x76, 0xa9, 0x14 }; memset(ospk + 3, 0x11, 20); ospk[23] = 0x88; ospk[24] = 0xac;
+        kw_tx_add_output(&mtx, 100000000ULL, ospk, 25);
+
+        uint8_t mh[32];
+        if (!kw_tx_sighash(&mtx, 0, redeem, rl, KW_SIGHASH_ALL, mh)) { fprintf(stderr, "FAIL: ms sighash\n"); return 1; }
+
+        uint8_t sigA[73], sigB[73]; size_t la = sizeof sigA, lb = sizeof sigB;
+        if (!kw_tx_signature(&mtx, 0, sk,  redeem, rl, KW_SIGHASH_ALL, sigA, &la) ||
+            !kw_tx_signature(&mtx, 0, sk2, redeem, rl, KW_SIGHASH_ALL, sigB, &lb)) { fprintf(stderr, "FAIL: ms sign\n"); return 1; }
+        if (!kw_ec_verify(pub, mh, sigA, la - 1) || !kw_ec_verify(pub2, mh, sigB, lb - 1)) {
+            fprintf(stderr, "FAIL: ms sig verify\n"); return 1;
+        }
+
+        const uint8_t *sigs[2] = { sigA, sigB }; size_t lens[2] = { la, lb };
+        if (!kw_tx_set_multisig(&mtx, 0, sigs, lens, 2, redeem, rl)) { fprintf(stderr, "FAIL: ms assemble\n"); return 1; }
+        const uint8_t *ms = mtx.vin[0].script; size_t msl = mtx.vin[0].scriptlen;
+        if (ms[0] != 0x00 || msl < rl + 1 || memcmp(ms + msl - rl, redeem, rl) != 0) {
+            fprintf(stderr, "FAIL: ms scriptSig shape\n"); return 1;
+        }
+    }
+
     kw_ec_stop();
-    printf("tx ok: p2pkh spend matches libdogecoin byte-for-byte, signature verifies\n");
+    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies\n");
     return 0;
 }

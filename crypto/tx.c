@@ -4,6 +4,7 @@
 
 #include "tx.h"
 #include "sha2.h"
+#include "ripemd160.h"
 #include "ec.h"
 #include "mem.h"
 #include "hex.h"
@@ -127,33 +128,93 @@ int kw_tx_sighash(const kw_tx *tx, size_t index,
     return 1;
 }
 
+int kw_tx_signature(const kw_tx *tx, size_t index, const uint8_t sk[32],
+                    const uint8_t *subscript, size_t subscriptlen, uint32_t hashtype,
+                    uint8_t *out, size_t *outlen)
+{
+    if (index >= tx->nin) return 0;
+    uint8_t hash[32];
+    if (!kw_tx_sighash(tx, index, subscript, subscriptlen, hashtype, hash)) return 0;
+
+    uint8_t der[KW_EC_SIG_DER_MAX]; size_t derlen = 0;
+    int ok = kw_ec_sign(sk, hash, der, &derlen);
+    kw_secure_zero(hash, sizeof hash);
+    if (!ok || derlen + 1 > *outlen) return 0;
+
+    memcpy(out, der, derlen);
+    out[derlen] = (uint8_t)hashtype;              /* the pushed element is sig||hashtype */
+    *outlen = derlen + 1;
+    return 1;
+}
+
 int kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
                      const uint8_t *prev_spk, size_t prev_spk_len)
 {
     if (index >= tx->nin) return 0;
 
-    uint8_t hash[32];
-    if (!kw_tx_sighash(tx, index, prev_spk, prev_spk_len, KW_SIGHASH_ALL, hash)) return 0;
-
-    uint8_t der[KW_EC_SIG_DER_MAX];
-    size_t derlen = 0;
-    if (!kw_ec_sign(sk, hash, der, &derlen)) return 0;
-    if (derlen + 1 > 75) return 0;                 /* must be a single-byte push */
+    uint8_t sig[KW_EC_SIG_DER_MAX + 1]; size_t siglen = sizeof sig;
+    if (!kw_tx_signature(tx, index, sk, prev_spk, prev_spk_len, KW_SIGHASH_ALL, sig, &siglen)) return 0;
+    if (siglen > 75) return 0;                     /* single-byte push */
 
     uint8_t pub[33];
     if (!kw_ec_pubkey(sk, pub)) return 0;
 
-    /* scriptSig = <sig||SIGHASH_ALL> <pubkey> */
+    /* scriptSig = <sig||hashtype> <pubkey> */
     kw_txin *in = &tx->vin[index];
     size_t k = 0;
-    in->script[k++] = (uint8_t)(derlen + 1);
-    memcpy(in->script + k, der, derlen); k += derlen;
-    in->script[k++] = KW_SIGHASH_ALL;
+    in->script[k++] = (uint8_t)siglen;
+    memcpy(in->script + k, sig, siglen); k += siglen;
     in->script[k++] = 33;
     memcpy(in->script + k, pub, 33); k += 33;
     in->scriptlen = k;
+    return 1;
+}
 
-    kw_secure_zero(hash, sizeof hash);
+size_t kw_script_multisig(int m, const uint8_t (*pubkeys)[33], int n, uint8_t *out, size_t cap)
+{
+    if (m < 1 || m > 16 || n < m || n > 16) return 0;
+    size_t need = 1 + (size_t)n * 34 + 2;
+    if (need > cap) return 0;
+    size_t k = 0;
+    out[k++] = (uint8_t)(0x50 + m);                /* OP_m */
+    for (int i = 0; i < n; i++) { out[k++] = 33; memcpy(out + k, pubkeys[i], 33); k += 33; }
+    out[k++] = (uint8_t)(0x50 + n);                /* OP_n */
+    out[k++] = 0xae;                               /* OP_CHECKMULTISIG */
+    return k;
+}
+
+size_t kw_script_p2sh(const uint8_t *redeem, size_t redeemlen, uint8_t out[23])
+{
+    uint8_t h[20];
+    kw_hash160(redeem, redeemlen, h);
+    out[0] = 0xa9; out[1] = 0x14; memcpy(out + 2, h, 20); out[22] = 0x87;
+    return 23;
+}
+
+int kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
+                       const size_t *siglens, size_t nsigs,
+                       const uint8_t *redeem, size_t redeemlen)
+{
+    if (index >= tx->nin) return 0;
+
+    size_t total = 1;                              /* OP_0 */
+    for (size_t i = 0; i < nsigs; i++) { if (siglens[i] > 75) return 0; total += 1 + siglens[i]; }
+    size_t rpush = redeemlen < 76 ? 1 : redeemlen <= 255 ? 2 : 3;
+    total += rpush + redeemlen;
+    if (total > KW_TX_SCRIPT_MAX) return 0;
+
+    kw_txin *in = &tx->vin[index];
+    size_t k = 0;
+    in->script[k++] = 0x00;                        /* OP_0: CHECKMULTISIG pops one extra */
+    for (size_t i = 0; i < nsigs; i++) {
+        in->script[k++] = (uint8_t)siglens[i];
+        memcpy(in->script + k, sigs[i], siglens[i]); k += siglens[i];
+    }
+    if (redeemlen < 76) in->script[k++] = (uint8_t)redeemlen;
+    else if (redeemlen <= 255) { in->script[k++] = 0x4c; in->script[k++] = (uint8_t)redeemlen; }
+    else { in->script[k++] = 0x4d; in->script[k++] = (uint8_t)(redeemlen & 0xff); in->script[k++] = (uint8_t)(redeemlen >> 8); }
+    memcpy(in->script + k, redeem, redeemlen); k += redeemlen;
+    in->scriptlen = k;
     return 1;
 }
 

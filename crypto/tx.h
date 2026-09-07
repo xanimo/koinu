@@ -69,6 +69,28 @@ int  kw_tx_sighash(const kw_tx *tx, size_t index,
 int  kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
                       const uint8_t *prev_spk, size_t prev_spk_len);
 
+/* Produce one input's signature over (subscript): the DER signature with the
+   hashtype byte appended, ready to push into a scriptSig. This is the piece each
+   party contributes when co-signing; (subscript) is the redeem script for P2SH.
+   (*outlen) is the buffer size in and the signature length out. Returns 1. */
+int  kw_tx_signature(const kw_tx *tx, size_t index, const uint8_t sk[32],
+                     const uint8_t *subscript, size_t subscriptlen, uint32_t hashtype,
+                     uint8_t *out, size_t *outlen);
+
+/* Build an m-of-n bare multisig script (OP_m <pubkey..> OP_n OP_CHECKMULTISIG),
+   used as a P2SH redeem script. Returns its length, or 0. */
+size_t kw_script_multisig(int m, const uint8_t (*pubkeys)[33], int n, uint8_t *out, size_t cap);
+
+/* The P2SH scriptPubKey (a914 <hash160(redeem)> 87) for a redeem script. */
+size_t kw_script_p2sh(const uint8_t *redeem, size_t redeemlen, uint8_t out[23]);
+
+/* Set input (index)'s scriptSig to redeem a P2SH multisig: OP_0 then each
+   signature (in the redeem script's pubkey order) then the redeem script.
+   Returns 1, or 0 if it does not fit. */
+int  kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
+                        const size_t *siglens, size_t nsigs,
+                        const uint8_t *redeem, size_t redeemlen);
+
 /* Double-SHA256 of the serialization, internal byte order (reverse for display). */
 int  kw_tx_txid(const kw_tx *tx, uint8_t out[32]);
 
