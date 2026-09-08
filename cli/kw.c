@@ -694,11 +694,12 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
 
     uint8_t sk[32]; int comp = 0;
     if (!wif_decode(cp, wif_arg, sk, &comp)) return 1;
-    if (!comp) { fprintf(stderr, "kw: uncompressed wif not supported\n"); kw_secure_zero(sk, sizeof sk); return 1; }
 
-    uint8_t pub[33], h[20], spk[25];
-    if (!kw_ec_pubkey(sk, pub)) { fprintf(stderr, "kw: bad key\n"); kw_secure_zero(sk, sizeof sk); return 1; }
-    kw_hash160(pub, 33, h); h160_to_spk(h, spk);
+    uint8_t pub[65], h[20], spk[25];
+    size_t publen = comp ? 33 : 65;
+    int okpub = comp ? kw_ec_pubkey(sk, pub) : kw_ec_pubkey_uncompressed(sk, pub);
+    if (!okpub) { fprintf(stderr, "kw: bad key\n"); kw_secure_zero(sk, sizeof sk); return 1; }
+    kw_hash160(pub, publen, h); h160_to_spk(h, spk);
 
     uint8_t dspk[25]; size_t dl = 0;
     char tob[160]; snprintf(tob, sizeof tob, "%s", to_arg);
@@ -748,12 +749,16 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
         }
         if ((size_t)nin < us.count) fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
 
-        uint64_t fee = have_fixed ? fixed : est_fee(nin, 1, rate);
+        /* an uncompressed pubkey adds 32 bytes to each input's scriptSig */
+        uint64_t fee = have_fixed ? fixed : est_fee(nin, 1, rate) + (comp ? 0 : (32ULL * (uint64_t)nin * rate + 999) / 1000);
         if (total_in <= fee || total_in - fee < KOINU_DUST) { fprintf(stderr, "kw: balance too small to sweep\n"); goto out; }
         uint64_t out_amt = total_in - fee;
         if (!kw_tx_add_output(&tx, out_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
-        for (int i = 0; i < nin; i++)
-            if (!kw_tx_sign_p2pkh(&tx, (size_t)i, sk, prevspk[i], 25)) { fprintf(stderr, "kw: sign failed\n"); goto out; }
+        for (int i = 0; i < nin; i++) {
+            int oks = comp ? kw_tx_sign_p2pkh(&tx, (size_t)i, sk, prevspk[i], 25)
+                           : kw_tx_sign_p2pkh_uncompressed(&tx, (size_t)i, sk, prevspk[i], 25);
+            if (!oks) { fprintf(stderr, "kw: sign failed\n"); goto out; }
+        }
 
         uint8_t raw[16384];
         size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);

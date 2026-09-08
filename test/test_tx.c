@@ -129,7 +129,26 @@ int main(void)
         if (kw_tx_parse(raw1, n1 - 1, &ptx)) { fprintf(stderr, "FAIL: truncated tx accepted\n"); return 1; }
     }
 
+    /* the uncompressed p2pkh variant pushes the 65-byte key and still verifies */
+    {
+        kw_tx utx; kw_tx_init(&utx);
+        kw_tx_add_input(&utx, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", 1);
+        uint8_t uspk[25] = { 0x76, 0xa9, 0x14 }; memset(uspk + 3, 0x22, 20); uspk[23] = 0x88; uspk[24] = 0xac;
+        kw_tx_add_output(&utx, 50000000ULL, uspk, 25);
+        if (!kw_tx_sign_p2pkh_uncompressed(&utx, 0, sk, uspk, 25)) { fprintf(stderr, "FAIL: uncompressed sign\n"); return 1; }
+        const uint8_t *us = utx.vin[0].script; size_t usl = utx.vin[0].scriptlen;
+        size_t sl = us[0];
+        if (usl != 2 + sl + 65 || us[1 + sl] != 65 || us[2 + sl] != 0x04) {
+            fprintf(stderr, "FAIL: uncompressed scriptSig shape\n"); return 1;
+        }
+        uint8_t uh[32];
+        if (!kw_tx_sighash(&utx, 0, uspk, 25, KW_SIGHASH_ALL, uh) ||
+            !kw_ec_verify(pub, uh, us + 1, sl - 1)) {
+            fprintf(stderr, "FAIL: uncompressed sig verify\n"); return 1;
+        }
+    }
+
     kw_ec_stop();
-    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips\n");
+    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips, uncompressed p2pkh verifies\n");
     return 0;
 }

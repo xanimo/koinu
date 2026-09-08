@@ -147,8 +147,9 @@ int kw_tx_signature(const kw_tx *tx, size_t index, const uint8_t sk[32],
     return 1;
 }
 
-int kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
-                     const uint8_t *prev_spk, size_t prev_spk_len)
+static int sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
+                      const uint8_t *prev_spk, size_t prev_spk_len,
+                      const uint8_t *pub, size_t publen)
 {
     if (index >= tx->nin) return 0;
 
@@ -156,18 +157,31 @@ int kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
     if (!kw_tx_signature(tx, index, sk, prev_spk, prev_spk_len, KW_SIGHASH_ALL, sig, &siglen)) return 0;
     if (siglen > 75) return 0;                     /* single-byte push */
 
-    uint8_t pub[33];
-    if (!kw_ec_pubkey(sk, pub)) return 0;
-
     /* scriptSig = <sig||hashtype> <pubkey> */
     kw_txin *in = &tx->vin[index];
     size_t k = 0;
     in->script[k++] = (uint8_t)siglen;
     memcpy(in->script + k, sig, siglen); k += siglen;
-    in->script[k++] = 33;
-    memcpy(in->script + k, pub, 33); k += 33;
+    in->script[k++] = (uint8_t)publen;
+    memcpy(in->script + k, pub, publen); k += publen;
     in->scriptlen = k;
     return 1;
+}
+
+int kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
+                     const uint8_t *prev_spk, size_t prev_spk_len)
+{
+    uint8_t pub[33];
+    if (!kw_ec_pubkey(sk, pub)) return 0;
+    return sign_p2pkh(tx, index, sk, prev_spk, prev_spk_len, pub, 33);
+}
+
+int kw_tx_sign_p2pkh_uncompressed(kw_tx *tx, size_t index, const uint8_t sk[32],
+                                  const uint8_t *prev_spk, size_t prev_spk_len)
+{
+    uint8_t pub[65];
+    if (!kw_ec_pubkey_uncompressed(sk, pub)) return 0;
+    return sign_p2pkh(tx, index, sk, prev_spk, prev_spk_len, pub, 65);
 }
 
 size_t kw_script_multisig(int m, const uint8_t (*pubkeys)[33], int n, uint8_t *out, size_t cap)

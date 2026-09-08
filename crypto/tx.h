@@ -69,6 +69,11 @@ int  kw_tx_sighash(const kw_tx *tx, size_t index,
 int  kw_tx_sign_p2pkh(kw_tx *tx, size_t index, const uint8_t sk[32],
                       const uint8_t *prev_spk, size_t prev_spk_len);
 
+/* As kw_tx_sign_p2pkh, but pushing the uncompressed (65-byte) pubkey, for
+   external keys whose address hashes that form. */
+int  kw_tx_sign_p2pkh_uncompressed(kw_tx *tx, size_t index, const uint8_t sk[32],
+                                   const uint8_t *prev_spk, size_t prev_spk_len);
+
 /* Produce one input's signature over (subscript): the DER signature with the
    hashtype byte appended, ready to push into a scriptSig. This is the piece each
    party contributes when co-signing; (subscript) is the redeem script for P2SH.

@@ -28,6 +28,10 @@ int  kw_ec_seckey_verify(const uint8_t sk[KW_EC_SECKEY_LEN]);
 /* Compressed public key for (sk). Returns 1 on success. */
 int  kw_ec_pubkey(const uint8_t sk[KW_EC_SECKEY_LEN], uint8_t pub[KW_EC_PUBKEY_LEN]);
 
+/* Uncompressed (0x04-form) public key for (sk), for keys whose address hashes
+   the 65-byte encoding. Returns 1 on success. */
+int  kw_ec_pubkey_uncompressed(const uint8_t sk[KW_EC_SECKEY_LEN], uint8_t pub[65]);
+
 /* Parse and validate a public key of any standard encoding, re-emitting it
    compressed. Rejects points not on the curve. Returns 1 on success. */
 int  kw_ec_pubkey_parse(const uint8_t *in, size_t inlen, uint8_t pub[KW_EC_PUBKEY_LEN]);

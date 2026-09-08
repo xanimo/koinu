@@ -48,6 +48,16 @@ int kw_ec_pubkey(const uint8_t sk[KW_EC_SECKEY_LEN], uint8_t pub[KW_EC_PUBKEY_LE
            && len == KW_EC_PUBKEY_LEN;
 }
 
+int kw_ec_pubkey_uncompressed(const uint8_t sk[KW_EC_SECKEY_LEN], uint8_t pub[65])
+{
+    if (!g_ctx) return 0;
+    secp256k1_pubkey pk;
+    if (!secp256k1_ec_pubkey_create(g_ctx, &pk, sk)) return 0;
+    size_t len = 65;
+    return secp256k1_ec_pubkey_serialize(g_ctx, pub, &len, &pk, SECP256K1_EC_UNCOMPRESSED)
+           && len == 65;
+}
+
 int kw_ec_pubkey_parse(const uint8_t *in, size_t inlen, uint8_t pub[KW_EC_PUBKEY_LEN])
 {
     if (!g_ctx) return 0;
