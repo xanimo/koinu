@@ -7,6 +7,7 @@
 #include "spv.h"
 #include "sync.h"
 #include "cfstore.h"
+#include "sha2.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,69 @@ int kw_msg_cfilter_parse(const uint8_t *payload, size_t len,
     return 1;
 }
 
+size_t kw_msg_getcfheaders_build(uint8_t type, uint32_t start_height,
+                                 const uint8_t stop_hash[32], uint8_t *out, size_t outcap)
+{
+    return kw_msg_getcfilters_build(type, start_height, stop_hash, out, outcap);
+}
+
+int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
+                           uint8_t *type, uint8_t stop_hash[32], uint8_t prev_header[32],
+                           const uint8_t **hashes, size_t *nhashes)
+{
+    if (len < 1 + 32 + 32 + 1) return 0;
+    *type = payload[0];
+    memcpy(stop_hash, payload + 1, 32);
+    memcpy(prev_header, payload + 33, 32);
+
+    size_t off = 65;
+    uint8_t pfx = payload[off++];
+    uint64_t n;
+    if (pfx < 0xfd) n = pfx;
+    else {
+        int k = pfx == 0xfd ? 2 : pfx == 0xfe ? 4 : 8;
+        if (off + (size_t)k > len) return 0;
+        n = 0;
+        for (int i = 0; i < k; i++) n |= (uint64_t)payload[off + i] << (8 * i);
+        off += (size_t)k;
+    }
+    if (n > (uint64_t)((len - off) / 32) || n * 32 != len - off) return 0;
+    *hashes = payload + off;
+    *nhashes = (size_t)n;
+    return 1;
+}
+
+void kw_cf_header_step(const uint8_t filter_hash[32], const uint8_t prev[32], uint8_t out[32])
+{
+    uint8_t buf[64];
+    memcpy(buf, filter_hash, 32);
+    memcpy(buf + 32, prev, 32);
+    kw_hash256(buf, 64, out);
+}
+
+int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_height,
+                        size_t s0, size_t s1, uint8_t prev[32], uint8_t (*hashes)[32])
+{
+    uint8_t body[37];
+    size_t bn = kw_msg_getcfheaders_build(KW_CF_TYPE_BASIC, base_height + (uint32_t)s0,
+                                          s->h[s1 - 1].hash, body, sizeof body);
+    if (!bn || !kw_peer_send(p, "getcfheaders", body, bn)) return 0;
+
+    char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
+    for (;;) {
+        if (kw_peer_recv(p, cmd, &pl, &pn) != 1) return 0;
+        if (!strcmp(cmd, "cfheaders")) break;
+        if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+    }
+
+    uint8_t type, stop[32]; const uint8_t *hp; size_t nh;
+    if (!kw_msg_cfheaders_parse(pl, pn, &type, stop, prev, &hp, &nh)) return 0;
+    if (type != KW_CF_TYPE_BASIC || nh != s1 - s0 ||
+        memcmp(stop, s->h[s1 - 1].hash, 32) != 0) return 0;
+    memcpy(hashes, hp, nh * 32);            /* the recv buffer dies on the next recv */
+    return 1;
+}
+
 long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                 kw_utxoset *us, const kw_watchset *ws, uint32_t base_height)
 {
@@ -66,9 +130,23 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
     int err = 0;
     const size_t CHUNK = 1000;                 /* BIP157 caps a request at 1000 */
 
+    uint8_t (*fh)[32] = (uint8_t (*)[32])malloc(CHUNK * 32);
+    if (!fh) { free(items); return -1; }
+    uint8_t chain[32]; int have_chain = 0;
+
     for (size_t s0 = 0; s0 < s->count && !err; s0 += CHUNK) {
         size_t s1 = s0 + CHUNK;
         if (s1 > s->count) s1 = s->count;
+
+        /* the committed filter-header chain first, then the filters it binds */
+        uint8_t prev[32];
+        if (!kw_cf_fetch_headers(p, s, base_height, s0, s1, prev, fh)) { err = 1; break; }
+        if (have_chain && memcmp(prev, chain, 32) != 0) {
+            if (kw_net_verbose) fprintf(stderr, "[cf] filter-header chain broke at height %u\n",
+                                        base_height + (uint32_t)s0);
+            err = 1; break;
+        }
+        memcpy(chain, prev, 32); have_chain = 1;
 
         uint8_t body[37];
         size_t bn = kw_msg_getcfilters_build(KW_CF_TYPE_BASIC, base_height + (uint32_t)s0,
@@ -88,6 +166,15 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
             if (!kw_msg_cfilter_parse(pl, pn, &type, bh, &filt, &flen)) { err = 1; break; }
             /* filters arrive in height order; each must be the block we expect */
             if (type != KW_CF_TYPE_BASIC || memcmp(bh, s->h[k].hash, 32) != 0) { err = 1; break; }
+
+            uint8_t fhash[32];
+            kw_hash256(filt, flen, fhash);
+            if (memcmp(fhash, fh[k - s0], 32) != 0) {
+                if (kw_net_verbose) fprintf(stderr, "[cf] filter commitment mismatch at height %u\n",
+                                            base_height + (uint32_t)k);
+                err = 1; break;
+            }
+            kw_cf_header_step(fhash, chain, chain);
 
             int m = ws->count ? kw_gcs_match_any(filt, flen, bh, items, ws->count) : 0;
             if (m < 0) { err = 1; break; }
@@ -120,6 +207,7 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
         }
     }
 
+    free(fh);
     free(items);
     free(matched);
     return scanned;

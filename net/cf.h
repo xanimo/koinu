@@ -5,9 +5,15 @@
  * The privacy-preferred backend. It pulls one basic filter per block
  * (getcfilters/cfilter), tests the watched scripts against each, and downloads
  * only the blocks that match. Needs a peer that serves BIP157; the classic SPV
- * backend is the fallback where a peer does not. Filter commitments
- * (getcfheaders/getcfcheckpt) are not yet verified, so the served filters are
- * trusted, matching the header sync's trust-the-served-chain stance. */
+ * backend is the fallback where a peer does not.
+ *
+ * Every fetched filter is checked against the peer's committed filter-header
+ * chain (getcfheaders): the filter must hash to the committed filter hash, and
+ * each chunk's previous_filter_header must link to the chain already verified.
+ * The cached store persists its verified tip, so a later delta sync must
+ * connect to it and the peer cannot quietly rewrite cached history. The chain's
+ * base is taken from the peer on first contact (there is no cross-peer
+ * checkpoint comparison; single-peer, trust-on-first-use). */
 
 #ifndef KOINU_CF_H
 #define KOINU_CF_H
@@ -31,6 +37,29 @@ size_t kw_msg_getcfilters_build(uint8_t type, uint32_t start_height,
 int kw_msg_cfilter_parse(const uint8_t *payload, size_t len,
                          uint8_t *type, uint8_t block_hash[32],
                          const uint8_t **filter, size_t *flen);
+
+/* Build a getcfheaders: filter type, start height, stop block hash (internal
+   order), the same layout as getcfilters. Returns length or 0. */
+size_t kw_msg_getcfheaders_build(uint8_t type, uint32_t start_height,
+                                 const uint8_t stop_hash[32], uint8_t *out, size_t outcap);
+
+/* Parse a cfheaders: filter type, stop hash, previous filter header, then the
+   filter hashes. On success returns 1 and points (hashes) at (nhashes)
+   contiguous 32-byte entries inside (payload). */
+int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
+                           uint8_t *type, uint8_t stop_hash[32], uint8_t prev_header[32],
+                           const uint8_t **hashes, size_t *nhashes);
+
+/* One link of the BIP157 filter-header chain:
+   out = sha256d(filter_hash || prev). out may alias prev. */
+void kw_cf_header_step(const uint8_t filter_hash[32], const uint8_t prev[32], uint8_t out[32]);
+
+/* Fetch the committed filter-header chain for store range [s0,s1): the peer's
+   previous_filter_header lands in (prev), the per-block filter hashes in
+   (hashes), s1-s0 entries. Returns 1, or 0 on a wire error or a response that
+   does not cover the range. */
+int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_height,
+                        size_t s0, size_t s1, uint8_t prev[32], uint8_t (*hashes)[32]);
 
 /* Fetch a basic filter for every block in the store, and for each block whose
    filter matches a watched script download and scan it into (us). (base_height)

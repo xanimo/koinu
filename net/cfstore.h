@@ -25,7 +25,10 @@ int  kw_cfstore_append(const char *path, const uint8_t block_hash[32],
 long kw_cfstore_count(const char *path);
 
 /* Ensure a filter is cached for every block in (s), fetching the missing suffix
-   from (p) with getcfilters. Returns the cached count (== s->count) or -1. */
+   from (p) with getcfilters. Each fetched filter is verified against the peer's
+   cfheaders commitment chain, whose verified tip persists in <path>.fh so a
+   later delta must connect to it. Returns the cached count (== s->count) or -1,
+   including on a commitment mismatch. */
 long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                      uint32_t base_height);
 

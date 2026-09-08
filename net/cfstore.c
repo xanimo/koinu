@@ -5,12 +5,48 @@
 #include "cfstore.h"
 #include "cf.h"
 #include "sync.h"
+#include "sha2.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char KW_CF_MAGIC[4] = { 'K', 'W', 'F', '1' };
+static const char KW_FH_MAGIC[4] = { 'K', 'W', 'F', 'H' };
+
+/* The verified filter-header tip in <path>.fh: tag, entry count (8 LE), the
+   filter header after that many entries. Binds a later delta sync to the chain
+   already verified, so the peer cannot quietly rewrite cached history. */
+static int fh_load(const char *path, long *count, uint8_t hdr[32])
+{
+    char fp[4200]; snprintf(fp, sizeof fp, "%s.fh", path);
+    FILE *f = fopen(fp, "rb");
+    if (!f) return 0;
+    uint8_t buf[4 + 8 + 32];
+    int ok = fread(buf, 1, sizeof buf, f) == sizeof buf &&
+             memcmp(buf, KW_FH_MAGIC, 4) == 0;
+    fclose(f);
+    if (!ok) return 0;
+    long c = 0;
+    for (int i = 0; i < 8; i++) c |= (long)buf[4 + i] << (8 * i);
+    *count = c;
+    memcpy(hdr, buf + 12, 32);
+    return 1;
+}
+
+static int fh_save(const char *path, long count, const uint8_t hdr[32])
+{
+    char fp[4200]; snprintf(fp, sizeof fp, "%s.fh", path);
+    FILE *f = fopen(fp, "wb");
+    if (!f) return 0;
+    uint8_t buf[4 + 8 + 32];
+    memcpy(buf, KW_FH_MAGIC, 4);
+    for (int i = 0; i < 8; i++) buf[4 + i] = (uint8_t)((uint64_t)count >> (8 * i));
+    memcpy(buf + 12, hdr, 32);
+    int ok = fwrite(buf, 1, sizeof buf, f) == sizeof buf;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
 
 static int  ensure_index(const char *path);
 static long index_count(const char *path);
@@ -86,15 +122,33 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
     if (have < 0 || (size_t)have > s->count) return -1;      /* corrupt or ahead of headers */
     if ((size_t)have == s->count) return (long)s->count;
 
+    /* resume the verified filter-header chain; a cache from before the sidecar
+       existed re-adopts the peer's chain at its tip (trust-on-first-use) */
+    uint8_t chain[32]; int have_chain = 0;
+    long fhc;
+    if (have > 0 && fh_load(path, &fhc, chain) && fhc == have) have_chain = 1;
+
+    uint8_t (*fh)[32] = (uint8_t (*)[32])malloc(1000 * 32);
+    if (!fh) return -1;
+
     const size_t CHUNK = 1000;
     for (size_t s0 = (size_t)have; s0 < s->count; s0 += CHUNK) {
         size_t s1 = s0 + CHUNK;
         if (s1 > s->count) s1 = s->count;
 
+        uint8_t prev[32];
+        if (!kw_cf_fetch_headers(p, s, base_height, s0, s1, prev, fh)) { free(fh); return -1; }
+        if (have_chain && memcmp(prev, chain, 32) != 0) {
+            if (kw_net_verbose) fprintf(stderr, "[cf] filter-header chain broke at height %u\n",
+                                        base_height + (uint32_t)s0);
+            free(fh); return -1;
+        }
+        memcpy(chain, prev, 32); have_chain = 1;
+
         uint8_t body[37];
         size_t bn = kw_msg_getcfilters_build(KW_CF_TYPE_BASIC, base_height + (uint32_t)s0,
                                              s->h[s1 - 1].hash, body, sizeof body);
-        if (!bn || !kw_peer_send(p, "getcfilters", body, bn)) return -1;
+        if (!bn || !kw_peer_send(p, "getcfilters", body, bn)) { free(fh); return -1; }
 
         for (size_t k = s0; k < s1; k++) {
             char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
@@ -103,15 +157,27 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                 if (!strcmp(cmd, "cfilter")) { got = 1; break; }
                 if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
             }
-            if (!got) return -1;
+            if (!got) { free(fh); return -1; }
 
             uint8_t type, bh[32]; const uint8_t *filt; size_t flen;
-            if (!kw_msg_cfilter_parse(pl, pn, &type, bh, &filt, &flen)) return -1;
-            if (type != KW_CF_TYPE_BASIC || memcmp(bh, s->h[k].hash, 32) != 0) return -1;
-            if (!kw_cfstore_append(path, bh, filt, flen)) return -1;
+            if (!kw_msg_cfilter_parse(pl, pn, &type, bh, &filt, &flen)) { free(fh); return -1; }
+            if (type != KW_CF_TYPE_BASIC || memcmp(bh, s->h[k].hash, 32) != 0) { free(fh); return -1; }
+
+            uint8_t fhash[32];
+            kw_hash256(filt, flen, fhash);
+            if (memcmp(fhash, fh[k - s0], 32) != 0) {
+                if (kw_net_verbose) fprintf(stderr, "[cf] filter commitment mismatch at height %u\n",
+                                            base_height + (uint32_t)k);
+                free(fh); return -1;
+            }
+            kw_cf_header_step(fhash, chain, chain);
+
+            if (!kw_cfstore_append(path, bh, filt, flen)) { free(fh); return -1; }
         }
+        if (!fh_save(path, (long)s1, chain)) { free(fh); return -1; }
         if (kw_net_verbose) fprintf(stderr, "[cf] cached %zu/%zu filters\n", s1, s->count);
     }
+    free(fh);
     return (long)s->count;
 }
 

@@ -7,6 +7,7 @@
 
 #include "cf.h"
 #include "gcs.h"
+#include "sha2.h"
 #include "testutil.h"
 
 #include "bip158_vectors.h"
@@ -56,6 +57,42 @@ int main(void)
         if (kw_msg_cfilter_parse(msg, 20, &type, bh, &pf, &pfl)) { fprintf(stderr, "FAIL: short cfilter\n"); return 1; }
     }
 
-    printf("cf ok: getcfilters format, cfilter round-trip, real-filter match\n");
+    /* cfheaders: type, stop, previous filter header, then the filter hashes */
+    {
+        uint8_t stop[32], prev[32], h1[32], h2[32];
+        memset(stop, 0xaa, 32); memset(prev, 0xbb, 32);
+        memset(h1, 0x01, 32); memset(h2, 0x02, 32);
+        uint8_t msg[130]; size_t n = 0;
+        msg[n++] = KW_CF_TYPE_BASIC;
+        memcpy(msg + n, stop, 32); n += 32;
+        memcpy(msg + n, prev, 32); n += 32;
+        msg[n++] = 2;
+        memcpy(msg + n, h1, 32); n += 32;
+        memcpy(msg + n, h2, 32); n += 32;
+
+        uint8_t type, ps[32], pp[32]; const uint8_t *hs; size_t nh;
+        if (!kw_msg_cfheaders_parse(msg, n, &type, ps, pp, &hs, &nh)) { fprintf(stderr, "FAIL: cfheaders parse\n"); return 1; }
+        if (type != KW_CF_TYPE_BASIC || nh != 2 || memcmp(ps, stop, 32) != 0 ||
+            memcmp(pp, prev, 32) != 0 || memcmp(hs, h1, 32) != 0 || memcmp(hs + 32, h2, 32) != 0) {
+            fprintf(stderr, "FAIL: cfheaders fields\n"); return 1;
+        }
+        /* truncation and a count beyond the payload are rejected */
+        if (kw_msg_cfheaders_parse(msg, n - 1, &type, ps, pp, &hs, &nh)) { fprintf(stderr, "FAIL: short cfheaders\n"); return 1; }
+        msg[65] = 3;
+        if (kw_msg_cfheaders_parse(msg, n, &type, ps, pp, &hs, &nh)) { fprintf(stderr, "FAIL: overlong count\n"); return 1; }
+    }
+
+    /* the filter-header chain step reproduces every official vector */
+    for (size_t i = 0; i < sizeof KW_BIP158_VECS / sizeof KW_BIP158_VECS[0]; i++) {
+        const kw_bip158_vec *v = &KW_BIP158_VECS[i];
+        uint8_t filt[256]; int flen = kw_test_unhex(v->filter, filt);
+        uint8_t prev[32], want[32]; kw_test_unhex(v->prev_header, prev); kw_test_unhex(v->header, want);
+        uint8_t fhash[32], got[32];
+        kw_hash256(filt, (size_t)flen, fhash);
+        kw_cf_header_step(fhash, prev, got);
+        if (memcmp(got, want, 32) != 0) { fprintf(stderr, "FAIL: header chain %s\n", v->name); return 1; }
+    }
+
+    printf("cf ok: getcfilters format, cfilter round-trip, real-filter match, cfheaders parse, header chain vectors\n");
     return 0;
 }

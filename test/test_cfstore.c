@@ -7,13 +7,71 @@
  * is not. Header integrity is exercised by the live path, so (s) is NULL here. */
 
 #include "cfstore.h"
+#include "cf.h"
 #include "gcs.h"
+#include "sha2.h"
+#include "proto.h"
+#include "peer.h"
+#include "chainparams.h"
 #include "testutil.h"
 
 #include "bip158_vectors.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+/* frame (cmd,payload) and write it to the fake peer's end */
+static int put_msg(int fd, uint32_t magic, const char *cmd, const uint8_t *pl, size_t pn)
+{
+    uint8_t frame[2048];
+    size_t fn = kw_msg_serialize(magic, cmd, pl, pn, frame, sizeof frame);
+    return fn && write(fd, frame, fn) == (ssize_t)fn;
+}
+
+static size_t mk_cfheaders(uint8_t *out, const uint8_t stop[32], const uint8_t prev[32],
+                           const uint8_t fhash[32])
+{
+    out[0] = KW_CF_TYPE_BASIC;
+    memcpy(out + 1, stop, 32);
+    memcpy(out + 33, prev, 32);
+    out[65] = 1;
+    memcpy(out + 66, fhash, 32);
+    return 98;
+}
+
+static size_t mk_cfilter(uint8_t *out, const uint8_t bh[32], const uint8_t *f, size_t flen)
+{
+    out[0] = KW_CF_TYPE_BASIC;
+    memcpy(out + 1, bh, 32);
+    out[33] = (uint8_t)flen;
+    memcpy(out + 34, f, flen);
+    return 34 + flen;
+}
+
+/* one kw_cfstore_sync run against a preloaded socketpair peer */
+static long sync_round(const kw_headerstore *s, const char *path,
+                       const uint8_t *msgs, const size_t *lens, const char **cmds, int nmsg)
+{
+    uint32_t magic = KW_DOGE_REGTEST.magic;
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -2;
+    struct timeval tv = { 5, 0 };
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    size_t off = 0;
+    for (int i = 0; i < nmsg; i++) {
+        if (!put_msg(sv[1], magic, cmds[i], msgs + off, lens[i])) { close(sv[0]); close(sv[1]); return -2; }
+        off += lens[i];
+    }
+    kw_peer p;
+    kw_peer_from_fd(&p, magic, sv[0]);
+    long r = kw_cfstore_sync(&p, s, path, 1);
+    kw_peer_close(&p);
+    close(sv[1]);
+    return r;
+}
 
 int main(void)
 {
@@ -62,6 +120,68 @@ int main(void)
     remove(tmp);
     remove("test_cfstore.tmp.idx");
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected\n");
+    /* sync verifies the cfheaders commitment chain and pins its tip in <path>.fh */
+    {
+        const char *sp = "test_cfstore_sync.tmp";
+        remove(sp);
+        char aux[64];
+        snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
+        snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
+
+        /* three linked headers, base height 1 */
+        kw_block_header h1, h2, h3;
+        uint8_t raw[80];
+        memset(raw, 0, 80); raw[0] = 1;
+        kw_block_header_parse(raw, 80, &h1);
+        memset(raw, 0, 80); raw[0] = 2; memcpy(raw + 4, h1.hash, 32);
+        kw_block_header_parse(raw, 80, &h2);
+        memset(raw, 0, 80); raw[0] = 3; memcpy(raw + 4, h2.hash, 32);
+        kw_block_header_parse(raw, 80, &h3);
+
+        uint8_t f1[2] = { 0xaa, 0xbb }, f2[1] = { 0xcc }, f3[1] = { 0xdd };
+        uint8_t prev0[32]; memset(prev0, 0x11, 32);
+        uint8_t hash1[32], hash2[32], hash3[32], chain1[32], chain2[32];
+        kw_hash256(f1, sizeof f1, hash1);
+        kw_hash256(f2, sizeof f2, hash2);
+        kw_hash256(f3, sizeof f3, hash3);
+        kw_cf_header_step(hash1, prev0, chain1);
+        kw_cf_header_step(hash2, chain1, chain2);
+
+        uint8_t msgs[512]; size_t lens[2]; const char *cmds[2] = { "cfheaders", "cfilter" };
+        kw_headerstore s; kw_headerstore_init(&s);
+        kw_headerstore_append(&s, &h1);
+
+        /* first fill adopts the peer's chain base and caches the filter */
+        lens[0] = mk_cfheaders(msgs, h1.hash, prev0, hash1);
+        lens[1] = mk_cfilter(msgs + lens[0], h1.hash, f1, sizeof f1);
+        if (sync_round(&s, sp, msgs, lens, cmds, 2) != 1) { fprintf(stderr, "FAIL: sync fill\n"); return 1; }
+
+        /* a delta whose previous header links to the pinned tip extends it */
+        kw_headerstore_append(&s, &h2);
+        lens[0] = mk_cfheaders(msgs, h2.hash, chain1, hash2);
+        lens[1] = mk_cfilter(msgs + lens[0], h2.hash, f2, sizeof f2);
+        if (sync_round(&s, sp, msgs, lens, cmds, 2) != 2) { fprintf(stderr, "FAIL: sync delta\n"); return 1; }
+
+        /* a delta that does not link to the pinned tip is refused */
+        kw_headerstore_append(&s, &h3);
+        uint8_t wrong[32]; memset(wrong, 0, 32);
+        lens[0] = mk_cfheaders(msgs, h3.hash, wrong, hash3);
+        lens[1] = mk_cfilter(msgs + lens[0], h3.hash, f3, sizeof f3);
+        if (sync_round(&s, sp, msgs, lens, cmds, 2) != -1) { fprintf(stderr, "FAIL: broken chain accepted\n"); return 1; }
+
+        /* a filter that does not hash to its committed value is refused */
+        uint8_t f3bad[1] = { 0xde };
+        lens[0] = mk_cfheaders(msgs, h3.hash, chain2, hash3);
+        lens[1] = mk_cfilter(msgs + lens[0], h3.hash, f3bad, sizeof f3bad);
+        if (sync_round(&s, sp, msgs, lens, cmds, 2) != -1) { fprintf(stderr, "FAIL: tampered filter accepted\n"); return 1; }
+        if (kw_cfstore_count(sp) != 2) { fprintf(stderr, "FAIL: refused filter cached\n"); return 1; }
+
+        kw_headerstore_free(&s);
+        remove(sp);
+        snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
+        snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned and tamper refused\n");
     return 0;
 }
