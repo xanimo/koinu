@@ -175,8 +175,24 @@ int main(void)
             fprintf(stderr, "FAIL: missing cache\n"); return 1;
         }
         kw_headerstore_free(&none);
+
+        /* an old raw-only KWH1 file still loads, rehashing each record */
+        f = fopen(tmp, "wb");
+        if (!f) { fprintf(stderr, "FAIL: v1 write\n"); return 1; }
+        fwrite("KWH1", 1, 4, f);
+        fwrite(hg.raw, 1, KW_HEADER_LEN, f);
+        fwrite(h1.raw, 1, KW_HEADER_LEN, f);
+        fwrite(h2.raw, 1, KW_HEADER_LEN, f);
+        fclose(f);
+        kw_headerstore v1; kw_headerstore_init(&v1);
+        if (!kw_headerstore_load(&v1, tmp) || v1.count != 3 ||
+            memcmp(kw_headerstore_tip(&v1)->hash, h2.hash, 32) != 0) {
+            fprintf(stderr, "FAIL: v1 cache load\n"); return 1;
+        }
+        kw_headerstore_free(&v1);
+        remove(tmp);
     }
 
-    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache\n");
+    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache v1+v2\n");
     return 0;
 }

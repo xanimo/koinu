@@ -57,10 +57,11 @@ int  kw_headerstore_append(kw_headerstore *s, const kw_block_header *h);
 const kw_block_header *kw_headerstore_tip(const kw_headerstore *s);
 void kw_headerstore_free(kw_headerstore *s);
 
-/* Persist the chain (a 4-byte tag then each 80-byte header) and reload it. Load
-   appends onto (s), re-linking each header, so a later sync resumes from the
-   stored tip. Load returns 1 when the file is absent (nothing to load) or read
-   cleanly, 0 only if it is corrupt or a link is broken. Save returns 1/0. */
+/* Persist the chain (a 4-byte tag then 112-byte header+hash records, so load
+   skips rehashing; the older raw-only KWH1 form still loads) and reload it.
+   Load appends onto (s), re-linking each header, so a later sync resumes from
+   the stored tip. Load returns 1 when the file is absent (nothing to load) or
+   read cleanly, 0 only if it is corrupt or a link is broken. Save returns 1/0. */
 int  kw_headerstore_save(const kw_headerstore *s, const char *path);
 int  kw_headerstore_load(kw_headerstore *s, const char *path);
 

@@ -207,15 +207,17 @@ void kw_headerstore_free(kw_headerstore *s)
 }
 
 /* ── on-disk cache ───────────────────────────────────────────── */
-static const uint8_t KW_HDR_MAGIC[4] = { 'K', 'W', 'H', '1' };
+static const uint8_t KW_HDR_MAGIC1[4] = { 'K', 'W', 'H', '1' };   /* raw only */
+static const uint8_t KW_HDR_MAGIC2[4] = { 'K', 'W', 'H', '2' };   /* raw + hash */
 
 int kw_headerstore_save(const kw_headerstore *s, const char *path)
 {
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
-    int ok = fwrite(KW_HDR_MAGIC, 1, 4, f) == 4;
+    int ok = fwrite(KW_HDR_MAGIC2, 1, 4, f) == 4;
     for (size_t i = 0; i < s->count && ok; i++)
-        ok = fwrite(s->h[i].raw, 1, KW_HEADER_LEN, f) == KW_HEADER_LEN;
+        ok = fwrite(s->h[i].raw, 1, KW_HEADER_LEN, f) == KW_HEADER_LEN &&
+             fwrite(s->h[i].hash, 1, 32, f) == 32;
     if (fclose(f) != 0) ok = 0;
     return ok;
 }
@@ -225,16 +227,24 @@ int kw_headerstore_load(kw_headerstore *s, const char *path)
     FILE *f = fopen(path, "rb");
     if (!f) return 1;                         /* no cache is not an error */
     uint8_t magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, KW_HDR_MAGIC, 4) != 0) { fclose(f); return 0; }
+    if (fread(magic, 1, 4, f) != 4) { fclose(f); return 0; }
+    int v2 = memcmp(magic, KW_HDR_MAGIC2, 4) == 0;
+    if (!v2 && memcmp(magic, KW_HDR_MAGIC1, 4) != 0) { fclose(f); return 0; }
 
     int ok = 1;
     for (;;) {
-        uint8_t raw[KW_HEADER_LEN];
-        size_t r = fread(raw, 1, KW_HEADER_LEN, f);
+        kw_block_header h;
+        size_t r = fread(h.raw, 1, KW_HEADER_LEN, f);
         if (r == 0) break;                    /* clean end */
         if (r != KW_HEADER_LEN) { ok = 0; break; }
-        kw_block_header h;
-        kw_block_header_parse(raw, KW_HEADER_LEN, &h);
+        if (v2) {
+            /* The stored hash skips 6M+ sha256d on load. Each record's hash is
+               checked by the next record's prev link; only the tip's is taken
+               on faith, like the rest of this local file. */
+            if (fread(h.hash, 1, 32, f) != 32) { ok = 0; break; }
+        } else {
+            kw_hash256(h.raw, KW_HEADER_LEN, h.hash);
+        }
         if (!kw_headerstore_append(s, &h)) { ok = 0; break; }   /* broken link */
     }
     fclose(f);
