@@ -23,6 +23,7 @@
 /net_handshake
 /test/test_headers
 /test/test_sync
+/test/test_psync
 /net_sync
 /net_spv
 /net_cf

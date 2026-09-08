@@ -57,6 +57,14 @@ int  kw_headerstore_append(kw_headerstore *s, const kw_block_header *h);
 const kw_block_header *kw_headerstore_tip(const kw_headerstore *s);
 void kw_headerstore_free(kw_headerstore *s);
 
+/* One KWH2 cache record: the 80 raw bytes then the 32-byte hash. A record for
+   height h sits at byte 4 + (h-1)*KW_HDR_REC; the store never holds genesis. */
+#define KW_HDR_REC (KW_HEADER_LEN + 32)
+
+/* Create (path) as a KWH2 cache of (count) zeroed records for a parallel fill
+   to write into place. Returns 1/0. */
+int  kw_headerstore_create(const char *path, size_t count);
+
 /* Persist the chain (a 4-byte tag then 112-byte header+hash records, so load
    skips rehashing; the older raw-only KWH1 form still loads) and reload it.
    Load appends onto (s), re-linking each header, so a later sync resumes from

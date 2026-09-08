@@ -9,6 +9,12 @@
 
 #include "bip32.h"
 
+/* A header-chain anchor: the block hash at a height, display (reversed) hex.
+   Consecutive checkpoints bound the segments of the parallel header download;
+   within a segment prev-linkage is verified and the last header must hash to
+   the segment's end checkpoint. */
+typedef struct { uint32_t height; const char *hash; } kw_checkpoint;
+
 /* The base58 version bytes and derivation constants for a network, from
    Dogecoin Core's chainparams.cpp. */
 typedef struct {
@@ -21,6 +27,8 @@ typedef struct {
     uint32_t         magic;      /* p2p message-start bytes, little-endian */
     uint16_t         p2p_port;   /* default p2p port */
     const char      *genesis;    /* genesis block hash, display (reversed) hex */
+    const kw_checkpoint *checkpoints;  /* ascending by height, [0] is genesis; NULL if none */
+    size_t           ncheckpoints;
 } kw_chainparams;
 
 extern const kw_chainparams KW_DOGE_MAINNET;

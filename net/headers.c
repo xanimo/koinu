@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static uint32_t rd_le32(const uint8_t *p)
 {
@@ -209,6 +210,16 @@ void kw_headerstore_free(kw_headerstore *s)
 /* ── on-disk cache ───────────────────────────────────────────── */
 static const uint8_t KW_HDR_MAGIC1[4] = { 'K', 'W', 'H', '1' };   /* raw only */
 static const uint8_t KW_HDR_MAGIC2[4] = { 'K', 'W', 'H', '2' };   /* raw + hash */
+
+int kw_headerstore_create(const char *path, size_t count)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    int ok = fwrite(KW_HDR_MAGIC2, 1, 4, f) == 4 && fflush(f) == 0 &&
+             ftruncate(fileno(f), (off_t)(4 + count * KW_HDR_REC)) == 0;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
 
 int kw_headerstore_save(const kw_headerstore *s, const char *path)
 {
