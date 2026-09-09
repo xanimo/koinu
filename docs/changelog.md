@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+## What's Changed
+* kw: bound the fee a spend may pay
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

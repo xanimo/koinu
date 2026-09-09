@@ -50,6 +50,37 @@ if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
        --input "$IN" --to "$ADDR1:20.0" --fee 0.001 >/dev/null 2>&1; then
     echo "FAIL: signed a spend the inputs cannot cover" >&2; exit 1
 fi
+# an absurd fee must be refused: this tx is 226 bytes, so the limit is 0.226 DOGE
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+       --input "$IN" --to "$ADDR1:1.0" --fee 5.0 >/dev/null 2>&1; then
+    echo "FAIL: signed a spend paying a 5 DOGE fee" >&2; exit 1
+fi
+# --feerate reaches the same limit, since the fee is rate times size. 2 DOGE/kB
+# over 226 bytes is 0.452, which the inputs still cover, so this is the fee
+# check refusing it and not the balance check
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+       --input "$IN" --to "$ADDR1:1.0" --feerate 2.0 >/dev/null 2>&1; then
+    echo "FAIL: signed a spend at a 2 DOGE/kB rate" >&2; exit 1
+fi
+# --maxfee raises it, and is itself enforced
+./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:1.0" --fee 5.0 --maxfee 6.0 >/dev/null \
+     || { echo "FAIL: --maxfee 6.0 did not permit a 5 DOGE fee" >&2; exit 1; }
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+       --input "$IN" --to "$ADDR1:1.0" --fee 5.0 --maxfee 4.0 >/dev/null 2>&1; then
+    echo "FAIL: paid a 5 DOGE fee under --maxfee 4.0" >&2; exit 1
+fi
+# change dropped for dust is folded into the fee, so the limit must judge what
+# is paid rather than --fee. 0.19 is under the limit on its own (it signs with a
+# change output below), but leaving 0.009 of dust change pushes the paid fee to
+# 0.199 against a 0.192 limit for the resulting one-output tx
+./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:9.0" --fee 0.19 >/dev/null \
+     || { echo "FAIL: 0.19 fee refused with a change output" >&2; exit 1; }
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+       --input "$IN" --to "$ADDR1:9.801" --fee 0.19 >/dev/null 2>&1; then
+    echo "FAIL: dust change folded into the fee escaped the limit" >&2; exit 1
+fi
 
 # cosign: two fixed keys (0x11.., 0x22..) co-sign a 2-of-2 P2SH spend. The
 # unsigned tx and redeem script match test_tx's fixtures; outputs are

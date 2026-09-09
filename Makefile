@@ -223,6 +223,7 @@ check: $(TESTS) kw
 	./test/test_cf
 	./test/test_cfstore
 	./test/test_cli.sh
+	./test/test_sweep.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:

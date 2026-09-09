@@ -53,10 +53,11 @@ static void usage(void)
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
       "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH]\n"
       "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
-      "           [--fee DOGE | --feerate DOGE_PER_KB] [--change-to ADDR]\n"
-      "           [--gap N] [--utxos PATH] [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
+      "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
+      "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
+      "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
       "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
-      "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB]\n"
+      "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "  height   --node HOST [--port N] [--tor]\n"
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
@@ -82,7 +83,9 @@ static void usage(void)
       "  utxo set to <keystore>.utxos. sign then selects inputs from it; with\n"
       "  --input it instead spends the named outpoints. The fee defaults to the\n"
       "  0.001 DOGE/kB relay floor; pass --feerate 0.01 for the miner-preferred\n"
-      "  rate, or --fee for an exact amount.\n"
+      "  rate, or --fee for an exact amount. sign and sweep refuse to pay more\n"
+      "  than 100x the recommended rate for the size of the transaction, unless\n"
+      "  --maxfee names a ceiling of its own.\n"
       "  cosign signs input --vin of a P2SH multisig spend over --redeem and\n"
       "  prints the signature for the counterparty; with --finish it combines\n"
       "  each --sig with its own, in redeem-script key order, and prints the\n"
@@ -204,6 +207,40 @@ static uint64_t est_fee(int nin, int nout, uint64_t rate_per_kb)
 {
     uint64_t size = 10 + 148ULL * (uint64_t)nin + 34ULL * (uint64_t)nout;
     return (size * rate_per_kb + 999) / 1000;    /* round up */
+}
+
+/* Dogecoin's RECOMMENDED_MIN_TX_FEE, the rate a miner prefers, per 1000 bytes. */
+#define KW_RECOMMENDED_FEE_PER_KB       1000000ULL   /* 0.01 DOGE/kB */
+#define KW_MAX_FEE_MULTIPLE                    100
+
+/* An over-large --fee or --feerate is unrecoverable once the transaction
+   confirms, so bound what a spend may pay: KW_MAX_FEE_MULTIPLE times the
+   recommended fee for a transaction this size. Scaling by size rather than by
+   a flat cap catches a mistyped fee on a small spend while leaving a large
+   consolidation room to pay what its bytes actually cost. Returns 1 if the fee
+   is allowed. */
+static int fee_ok(uint64_t fee, size_t nbytes, const char *maxfee_arg)
+{
+    uint64_t cap;
+    if (maxfee_arg) {
+        if (!parse_doge(maxfee_arg, &cap)) { fprintf(stderr, "kw: bad --maxfee\n"); return 0; }
+    } else {
+        cap = ((uint64_t)nbytes * KW_RECOMMENDED_FEE_PER_KB + 999) / 1000 * KW_MAX_FEE_MULTIPLE;
+    }
+    if (fee > cap) {
+        /* in DOGE as well as koinu: an absurd fee is only obvious in the unit
+           the amount was typed in */
+        fprintf(stderr, "kw: fee %llu koinu (%llu.%08llu DOGE) is too high for a "
+                        "transaction of about %zu bytes, limit %llu koinu "
+                        "(%llu.%08llu DOGE)%s\n",
+                (unsigned long long)fee,
+                (unsigned long long)(fee / 100000000ULL), (unsigned long long)(fee % 100000000ULL),
+                nbytes, (unsigned long long)cap,
+                (unsigned long long)(cap / 100000000ULL), (unsigned long long)(cap % 100000000ULL),
+                maxfee_arg ? "" : "; pass --maxfee to raise the limit");
+        return 0;
+    }
+    return 1;
 }
 
 /* an address to its scriptPubKey, p2pkh or p2sh, for this network */
@@ -539,8 +576,8 @@ done:
    a derived address in the first (gap) receive and change addresses. */
 static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass_arg,
                     char **inputs, int ninputs, const char *to_arg,
-                    const char *fee_arg, const char *feerate_arg, const char *change_arg,
-                    const char *utxos_path, int gap)
+                    const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
+                    const char *change_arg, const char *utxos_path, int gap)
 {
     if (!path || !to_arg) { usage(); return 2; }
 
@@ -669,6 +706,10 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     }
     int has_change = (change >= KOINU_DUST);
 
+    /* bound what is actually paid, which folds in change dropped for dust */
+    if (!fee_ok(total_in - send_amt - (has_change ? change : 0),
+                10 + 148 * (size_t)nin + 34 * (size_t)(has_change ? 2 : 1), maxfee_arg)) goto out;
+
     if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
     if (has_change) {
         uint8_t cspk[25]; size_t cl = 0;
@@ -744,7 +785,7 @@ static int wif_decode(const kw_chainparams *cp, const char *wif_arg, uint8_t sk[
 
 static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
                      const char *node, int port, int tor, int use_cf,
-                     const char *fee_arg, const char *feerate_arg)
+                     const char *fee_arg, const char *feerate_arg, const char *maxfee_arg)
 {
     if (!to_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -808,6 +849,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
 
         /* an uncompressed pubkey adds 32 bytes to each input's scriptSig */
         uint64_t fee = have_fixed ? fixed : est_fee(nin, 1, rate) + (comp ? 0 : (32ULL * (uint64_t)nin * rate + 999) / 1000);
+        if (!fee_ok(fee, 10 + (comp ? 148 : 180) * (size_t)nin + 34, maxfee_arg)) goto out;
         if (total_in <= fee || total_in - fee < KOINU_DUST) { fprintf(stderr, "kw: balance too small to sweep\n"); goto out; }
         uint64_t out_amt = total_in - fee;
         if (!kw_tx_add_output(&tx, out_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
@@ -1289,6 +1331,7 @@ int main(int argc, char **argv)
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
+    const char *maxfee_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL;
@@ -1314,6 +1357,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--to"))         to_arg = NEXT();
         else if (!strcmp(a, "--fee"))        fee_arg = NEXT();
         else if (!strcmp(a, "--feerate"))    feerate_arg = NEXT();
+        else if (!strcmp(a, "--maxfee"))     maxfee_arg = NEXT();
         else if (!strcmp(a, "--change-to"))  change_arg = NEXT();
         else if (!strcmp(a, "--node"))     { node = NEXT(); if (node && g_nnodes < 8) g_nodes[g_nnodes++] = node; }
         else if (!strcmp(a, "--port"))     { const char *v = NEXT(); port = v ? atoi(v) : -1; }
@@ -1359,8 +1403,8 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers);
-    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, change_arg, utxos_arg, gap);
-    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg);
+    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
+    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
