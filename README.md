@@ -60,6 +60,25 @@ the counterparty; --finish combines the collected signatures with its own into
 the finished transaction, checking each against the sighash first, so a
 signature that would fail on chain is refused before broadcast.
 
+psbt is the same co-signing as bip174 partially signed transactions, for a
+caller that already speaks that format. each subcommand takes a psbt as hex
+and prints one:
+
+    kw psbt create   --tx HEX                 wrap an unsigned transaction
+    kw psbt tx       --psbt HEX               the transaction being signed
+    kw psbt sign     --psbt HEX --wif @k --redeem HEX --vin N
+    kw psbt combine  --psbt HEX --psbt HEX    merge each party's signatures
+    kw psbt sigs     --psbt HEX               pubkey and signature per line
+    kw psbt finalize --psbt HEX --vin N --scriptsig HEX
+    kw psbt extract  --psbt HEX               the transaction for kw send
+
+tx is what a counterparty reads before it signs, rather than trusting what it
+was handed. finalize takes the scriptSig from the caller because the scripts
+this is for, a payment channel's OP_IF branch among them, do not classify for
+any standard finalizer. the legacy field set is what dogecoin needs; a psbt
+carrying segwit or unknown fields is refused rather than parsed with those
+fields dropped.
+
 passphrases, mnemonics and private keys are read from a file (@path), stdin
 (-), or a no-echo prompt, never from argv. --testnet and --regtest switch
 networks. --tor routes every connection through a socks5 proxy, 127.0.0.1:9050

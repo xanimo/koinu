@@ -17,6 +17,7 @@
 #include "ripemd160.h"
 #include "sha2.h"
 #include "tx.h"
+#include "psbt.h"
 #include "hex.h"
 #include "ec.h"
 #include "mem.h"
@@ -61,6 +62,10 @@ static void usage(void)
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor]\n"
+      "  psbt     create --tx HEX | tx --psbt HEX | sigs --psbt HEX [--vin N]\n"
+      "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--vin N]\n"
+      "           combine --psbt HEX --psbt HEX ... | extract --psbt HEX\n"
+      "           finalize --psbt HEX --vin N --scriptsig HEX\n"
       "  cosign   --tx HEX|@FILE|- --redeem HEX [--wif @FILE|-] [--vin N]\n"
       "           [--sig HEX ...] [--finish]\n"
       "\n"
@@ -1064,6 +1069,7 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
                       int finish)
 {
     if (!tx_arg || !redeem_arg) { usage(); return 2; }
+    if (vin < 0) vin = 0;                      /* cosign works on one input */
 
     char *txt = read_text(tx_arg);
     if (!txt) { fprintf(stderr, "kw: cannot read --tx\n"); return 1; }
@@ -1151,6 +1157,131 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
     return 0;
 }
 
+/* Decode a hex argument (inline, @FILE or -) into (out). Returns the length, or
+   0 with the reason printed. */
+static size_t read_hex_arg(const char *arg, const char *what, uint8_t *out, size_t cap)
+{
+    char *txt = read_text(arg);
+    if (!txt) { fprintf(stderr, "kw: cannot read %s\n", what); return 0; }
+    size_t hl = strlen(txt), n = hl / 2;
+    int ok = hl && !(hl % 2) && n <= cap && kw_hex_decode(txt, hl, out, n);
+    free(txt);
+    if (!ok) { fprintf(stderr, "kw: %s is not valid hex\n", what); return 0; }
+    return n;
+}
+
+static int print_psbt(const kw_psbt *p)
+{
+    uint8_t raw[32768];
+    size_t n = kw_psbt_serialize(p, raw, sizeof raw);
+    if (!n) { fprintf(stderr, "kw: psbt does not fit\n"); return 1; }
+    char *hex = (char *)malloc(n * 2 + 1);
+    if (!hex) return 1;
+    kw_hex_encode(raw, n, hex, n * 2 + 1);
+    printf("%s\n", hex);
+    free(hex);
+    return 0;
+}
+
+/* BIP174 roles over the command line, so a caller that shells out to kw gets
+   the same psbt handling the library does. */
+static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_arg,
+                    const char *tx_arg, const char *redeem_arg, const char *wif_arg,
+                    const char *script_arg, const char *const *extra, int nextra, int vin)
+{
+    if (!sub) { usage(); return 2; }
+    uint8_t raw[32768];
+    kw_psbt p;
+
+    if (!strcmp(sub, "create")) {
+        size_t n = read_hex_arg(tx_arg, "--tx", raw, sizeof raw);
+        if (!n) return 1;
+        kw_tx tx;
+        if (kw_tx_parse(raw, n, &tx) != n) { fprintf(stderr, "kw: --tx is not a transaction\n"); return 1; }
+        if (!kw_psbt_create(&p, &tx)) { fprintf(stderr, "kw: --tx already carries a scriptSig\n"); return 1; }
+        int rc = print_psbt(&p);
+        kw_psbt_free(&p);
+        return rc;
+    }
+
+    size_t n = read_hex_arg(psbt_arg, "--psbt", raw, sizeof raw);
+    if (!n) return 1;
+    if (!kw_psbt_parse(raw, n, &p)) { fprintf(stderr, "kw: --psbt is not a psbt kw can represent\n"); return 1; }
+
+    int rc = 1;
+    if (!strcmp(sub, "tx")) {
+        /* the unsigned transaction, so a signer can see what it is signing */
+        uint8_t t[16384];
+        size_t tn = kw_tx_serialize(kw_psbt_unsigned_tx(&p), t, sizeof t);
+        if (tn) {
+            char hex[32770]; kw_hex_encode(t, tn, hex, sizeof hex);
+            printf("%s\n", hex); rc = 0;
+        }
+    } else if (!strcmp(sub, "sign")) {
+        if (vin < 0 || (size_t)vin >= p.tx.nin) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
+        if (redeem_arg) {
+            uint8_t r[KW_PSBT_SCRIPT_MAX];
+            size_t rl = read_hex_arg(redeem_arg, "--redeem", r, sizeof r);
+            if (!rl || !kw_psbt_set_redeem(&p, (size_t)vin, r, rl)) goto out;
+        }
+        uint8_t sk[32]; int comp = 0;
+        if (!wif_decode(cp, wif_arg, sk, &comp)) goto out;
+        int s = kw_psbt_sign(&p, (size_t)vin, sk, KW_SIGHASH_ALL);
+        kw_secure_zero(sk, sizeof sk);
+        if (s != 1) {
+            fprintf(stderr, s == -1 ? "kw: input already holds the maximum signatures\n"
+                                    : "kw: sign failed (does the input have a --redeem script?)\n");
+            goto out;
+        }
+        rc = print_psbt(&p);
+    } else if (!strcmp(sub, "sigs")) {
+        /* pubkey and signature per line, for a caller assembling its own
+           scriptSig because its script does not classify */
+        for (size_t i = 0; i < p.tx.nin; i++) {
+            if (vin >= 0 && (size_t)vin != i) continue;
+            for (size_t k = 0;; k++) {
+                uint8_t pk[33], sig[80]; size_t sl = sizeof sig;
+                if (!kw_psbt_get_sig(&p, i, k, pk, sig, &sl)) break;
+                char ph[67], sh[161];
+                kw_hex_encode(pk, 33, ph, sizeof ph);
+                kw_hex_encode(sig, sl, sh, sizeof sh);
+                printf("%zu %s %s\n", i, ph, sh);
+            }
+        }
+        rc = 0;
+    } else if (!strcmp(sub, "combine")) {
+        for (int i = 0; i < nextra; i++) {
+            uint8_t o[32768];
+            size_t on = read_hex_arg(extra[i], "--psbt", o, sizeof o);
+            kw_psbt q;
+            if (!on || !kw_psbt_parse(o, on, &q)) { fprintf(stderr, "kw: bad --psbt to combine\n"); goto out; }
+            int okc = kw_psbt_combine(&p, &q);
+            kw_psbt_free(&q);
+            if (!okc) { fprintf(stderr, "kw: those psbts describe different transactions\n"); goto out; }
+        }
+        rc = print_psbt(&p);
+    } else if (!strcmp(sub, "finalize")) {
+        uint8_t ss[KW_TX_SCRIPT_MAX];
+        size_t sl = read_hex_arg(script_arg, "--scriptsig", ss, sizeof ss);
+        if (vin < 0 || (size_t)vin >= p.tx.nin) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
+        if (!sl || !kw_psbt_finalize(&p, (size_t)vin, ss, sl)) goto out;
+        rc = print_psbt(&p);
+    } else if (!strcmp(sub, "extract")) {
+        kw_tx t;
+        if (!kw_psbt_extract(&p, &t)) { fprintf(stderr, "kw: every input needs a final scriptSig first\n"); goto out; }
+        uint8_t b[16384];
+        size_t bn = kw_tx_serialize(&t, b, sizeof b);
+        if (bn) {
+            char hex[32770]; kw_hex_encode(b, bn, hex, sizeof hex);
+            printf("%s\n", hex); rc = 0;
+        }
+    } else { usage(); rc = 2; }
+
+out:
+    kw_psbt_free(&p);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0;
@@ -1161,8 +1292,10 @@ int main(int argc, char **argv)
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL;
+    const char *psbt_arg = NULL, *script_arg = NULL, *sub = NULL, *psbts[8];
+    int npsbt = 0;
     long since = -1;
-    int vin = 0, nsigs = 0, finish = 0, peers = 1;
+    int vin = -1, nsigs = 0, finish = 0, peers = 1;   /* -1: every input */
     const char *inputs[KW_TX_MAX_IN], *sigs[16];
 
     for (int i = 1; i < argc; i++) {
@@ -1198,6 +1331,8 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "--redeem"))     redeem_arg = NEXT();
+        else if (!strcmp(a, "--psbt"))     { const char *v = NEXT(); if (!psbt_arg) psbt_arg = v; else if (npsbt < 8) psbts[npsbt++] = v; }
+        else if (!strcmp(a, "--scriptsig"))  script_arg = NEXT();
         else if (!strcmp(a, "--vin"))      { const char *v = NEXT(); vin = v ? atoi(v) : 0; }
         else if (!strcmp(a, "--sig"))      { const char *v = NEXT(); if (v && nsigs < 15) sigs[nsigs++] = v; }
         else if (!strcmp(a, "--finish"))     finish = 1;
@@ -1205,6 +1340,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (!strcmp(a, "--version")) { printf("kw %s\n", KW_VERSION); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
+        else if (a[0] != '-' && !sub)        sub = a;
         else { usage(); return 2; }
         #undef NEXT
     }
@@ -1228,6 +1364,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
+    else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }
     kw_ec_stop();

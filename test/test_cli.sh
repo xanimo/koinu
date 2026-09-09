@@ -75,4 +75,29 @@ if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1" \
     echo "FAIL: cosign accepted the same key twice" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, cosign 2-of-2"
+# psbt: the bip174 roles over the cli, two parties signing separately. The
+# extracted transaction must equal what cosign --finish builds from the same
+# keys, since both assemble the same 2-of-2 scriptSig.
+P0=$(./kw --regtest psbt create --tx "$UNSIGNED")
+case "$P0" in 70736274ff*) ;; *) echo "FAIL: psbt create magic" >&2; exit 1;; esac
+[ "$(./kw --regtest psbt tx --psbt "$P0")" = "$UNSIGNED" ] || { echo "FAIL: psbt tx accessor" >&2; exit 1; }
+PA=$(./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w1" --redeem "$REDEEM" --vin 0)
+PB=$(./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w2" --redeem "$REDEEM" --vin 0)
+[ "$PA" != "$PB" ] || { echo "FAIL: both keys produced the same psbt" >&2; exit 1; }
+PC=$(./kw --regtest psbt combine --psbt "$PA" --psbt "$PB")
+NSIG=$(./kw --regtest psbt sigs --psbt "$PC" | wc -l)
+[ "$NSIG" = "2" ] || { echo "FAIL: combine kept $NSIG signatures" >&2; exit 1; }
+# combining is idempotent, so a replayed half cannot inflate the set
+[ "$(./kw --regtest psbt combine --psbt "$PC" --psbt "$PA" | ./kw --regtest psbt sigs --psbt - | wc -l)" = "2" ] \
+    || { echo "FAIL: combine not idempotent" >&2; exit 1; }
+SS=$(./kw --regtest psbt sigs --psbt "$PC" | awk '{printf "%02x%s", length($3)/2, $3}')
+SS="00${SS}$(printf '%02x' $((${#REDEEM}/2)))$REDEEM"
+PF=$(./kw --regtest psbt finalize --psbt "$PC" --vin 0 --scriptsig "$SS")
+EXTRACTED=$(./kw --regtest psbt extract --psbt "$PF")
+[ "$EXTRACTED" = "$FULL" ] || { echo "FAIL: psbt and cosign disagree on the transaction" >&2; exit 1; }
+# extracting before every input is final must fail
+if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
+    echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
+fi
+
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, cosign 2-of-2, psbt roles agree with cosign"
