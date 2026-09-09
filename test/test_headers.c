@@ -176,6 +176,38 @@ int main(void)
         }
         kw_headerstore_free(&none);
 
+        /* saving a grown store onto its own cache appends rather than rewrites:
+           a byte poked past the tag survives a delta save (a rewrite would
+           clear it) but tail divergence forces the rewrite */
+        kw_headerstore g; kw_headerstore_init(&g);
+        kw_headerstore_append(&g, &hg); kw_headerstore_append(&g, &h1);
+        if (!kw_headerstore_save(&g, tmp)) { fprintf(stderr, "FAIL: base save\n"); return 1; }
+        f = fopen(tmp, "r+b");
+        if (!f) { fprintf(stderr, "FAIL: poke open\n"); return 1; }
+        fseek(f, 4, SEEK_SET); int orig = fgetc(f);
+        fseek(f, 4, SEEK_SET); fputc(orig ^ 1, f);
+        fclose(f);
+        kw_headerstore_append(&g, &h2);
+        if (!kw_headerstore_save(&g, tmp)) { fprintf(stderr, "FAIL: delta save\n"); return 1; }
+        f = fopen(tmp, "rb");
+        fseek(f, 4, SEEK_SET);
+        int now = fgetc(f);
+        fclose(f);
+        if (now != (orig ^ 1)) { fprintf(stderr, "FAIL: delta save rewrote the prefix\n"); return 1; }
+        f = fopen(tmp, "r+b");                        /* diverge the tail record's hash */
+        fseek(f, -1, SEEK_END); int t = fgetc(f); fseek(f, -1, SEEK_END); fputc(t ^ 1, f);
+        fclose(f);
+        if (!kw_headerstore_save(&g, tmp)) { fprintf(stderr, "FAIL: rewrite save\n"); return 1; }
+        f = fopen(tmp, "rb");
+        fseek(f, 4, SEEK_SET);
+        now = fgetc(f);
+        fclose(f);
+        if (now != orig) { fprintf(stderr, "FAIL: diverged tail did not rewrite\n"); return 1; }
+        kw_headerstore ld2; kw_headerstore_init(&ld2);
+        if (!kw_headerstore_load(&ld2, tmp) || ld2.count != 3) { fprintf(stderr, "FAIL: reload after saves\n"); return 1; }
+        kw_headerstore_free(&ld2);
+        kw_headerstore_free(&g);
+
         /* an old raw-only KWH1 file still loads, rehashing each record */
         f = fopen(tmp, "wb");
         if (!f) { fprintf(stderr, "FAIL: v1 write\n"); return 1; }
@@ -193,6 +225,6 @@ int main(void)
         remove(tmp);
     }
 
-    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache v1+v2\n");
+    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache v1+v2, delta save\n");
     return 0;
 }

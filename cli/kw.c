@@ -64,7 +64,8 @@ static void usage(void)
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
       "  a later run resumes from the stored tip instead of syncing from genesis.\n"
       "  --peers N (with --headers, first run) downloads the checkpointed header\n"
-      "  range over N parallel connections before the sequential tail.\n"
+      "  range over N parallel connections before the sequential tail; --node may\n"
+      "  repeat (up to 8) to spread those connections over several nodes.\n"
       "  --filters PATH (with --cf) caches basic filters, so scan and outpoint test\n"
       "  them locally and download only matching blocks; the first run fills it.\n"
       "  scan watches the first --gap receive and change addresses, syncs from\n"
@@ -288,6 +289,10 @@ static void read_scan_meta(const char *utxos, int64_t *feerate, int *extent)
     fclose(f);
 }
 
+/* every --node given, so the parallel fill can spread over several */
+static const char *g_nodes[8];
+static int g_nnodes = 0;
+
 /* With --peers > 1 and no cache yet, fill the checkpointed range in parallel
    before the normal load and sequential tail. A failure falls back cleanly:
    the sequential path syncs from genesis as before. */
@@ -295,7 +300,10 @@ static void headers_parallel_fill(const kw_chainparams *cp, const char *node, in
                                   int tor, int peers, const char *path)
 {
     if (peers < 2 || !path) return;
-    long r = kw_psync_headers(cp, node, port, tor, peers, path);
+    const char *one[1] = { node };
+    const char *const *hosts = g_nnodes ? g_nodes : one;
+    size_t nhosts = g_nnodes ? (size_t)g_nnodes : 1;
+    long r = kw_psync_headers(cp, hosts, nhosts, port, tor, peers, path);
     if (r < 0) fprintf(stderr, "kw: parallel header sync failed, syncing sequentially\n");
 }
 
@@ -1146,7 +1154,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--fee"))        fee_arg = NEXT();
         else if (!strcmp(a, "--feerate"))    feerate_arg = NEXT();
         else if (!strcmp(a, "--change-to"))  change_arg = NEXT();
-        else if (!strcmp(a, "--node"))       node = NEXT();
+        else if (!strcmp(a, "--node"))     { node = NEXT(); if (node && g_nnodes < 8) g_nodes[g_nnodes++] = node; }
         else if (!strcmp(a, "--port"))     { const char *v = NEXT(); port = v ? atoi(v) : -1; }
         else if (!strcmp(a, "--tor"))        tor = 1;
         else if (!strcmp(a, "--spv"))        use_cf = 0;

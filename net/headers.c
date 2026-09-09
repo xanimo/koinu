@@ -221,12 +221,37 @@ int kw_headerstore_create(const char *path, size_t count)
     return ok;
 }
 
+/* records already in a KWH2 file at (path) whose tail matches (s), so save can
+   append the delta instead of rewriting; 0 if absent, not KWH2, or diverged */
+static size_t save_prefix(const kw_headerstore *s, const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint8_t magic[4];
+    size_t n = 0;
+    if (fread(magic, 1, 4, f) == 4 && memcmp(magic, KW_HDR_MAGIC2, 4) == 0 &&
+        fseek(f, 0, SEEK_END) == 0) {
+        long sz = ftell(f);
+        if (sz > 4 && (sz - 4) % KW_HDR_REC == 0) n = (size_t)(sz - 4) / KW_HDR_REC;
+    }
+    if (n > 0 && n <= s->count) {
+        uint8_t rec[KW_HDR_REC];
+        if (fseek(f, 4 + (long)(n - 1) * KW_HDR_REC, SEEK_SET) != 0 ||
+            fread(rec, 1, KW_HDR_REC, f) != KW_HDR_REC ||
+            memcmp(rec + KW_HEADER_LEN, s->h[n - 1].hash, 32) != 0) n = 0;
+    } else n = 0;
+    fclose(f);
+    return n;
+}
+
 int kw_headerstore_save(const kw_headerstore *s, const char *path)
 {
-    FILE *f = fopen(path, "wb");
+    size_t have = save_prefix(s, path);
+
+    FILE *f = fopen(path, have ? "ab" : "wb");
     if (!f) return 0;
-    int ok = fwrite(KW_HDR_MAGIC2, 1, 4, f) == 4;
-    for (size_t i = 0; i < s->count && ok; i++)
+    int ok = have ? 1 : fwrite(KW_HDR_MAGIC2, 1, 4, f) == 4;
+    for (size_t i = have; i < s->count && ok; i++)
         ok = fwrite(s->h[i].raw, 1, KW_HEADER_LEN, f) == KW_HEADER_LEN &&
              fwrite(s->h[i].hash, 1, 32, f) == 32;
     if (fclose(f) != 0) ok = 0;

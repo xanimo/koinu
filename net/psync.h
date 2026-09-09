@@ -25,11 +25,13 @@ int kw_psync_segment(kw_peer *p, int fd,
                      const uint8_t end_hash[32], uint32_t end_height);
 
 /* Fill (path) with the checkpointed range [1, last checkpoint] using (npeers)
-   connections to (host:port), SOCKS5 via 127.0.0.1:9050 when (tor). Builds
-   into <path>.part and renames only when every segment verified. Returns the
-   last checkpoint height, 0 when (path) already exists or the chain has no
-   checkpoints (nothing done, sync normally), or -1 on failure. */
-long kw_psync_headers(const kw_chainparams *cp, const char *host, int port,
-                      int tor, int npeers, const char *path);
+   connections spread round-robin over (hosts):(port), SOCKS5 via
+   127.0.0.1:9050 when (tor); a worker rotates to the next host when its
+   connection fails. Builds into <path>.part and renames only when every
+   segment verified. Returns the last checkpoint height, 0 when (path) already
+   exists or the chain has no checkpoints (nothing done, sync normally), or -1
+   on failure. */
+long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t nhosts,
+                      int port, int tor, int npeers, const char *path);
 
 #endif /* KOINU_PSYNC_H */

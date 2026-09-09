@@ -68,8 +68,10 @@ int  kw_headerstore_create(const char *path, size_t count);
 /* Persist the chain (a 4-byte tag then 112-byte header+hash records, so load
    skips rehashing; the older raw-only KWH1 form still loads) and reload it.
    Load appends onto (s), re-linking each header, so a later sync resumes from
-   the stored tip. Load returns 1 when the file is absent (nothing to load) or
-   read cleanly, 0 only if it is corrupt or a link is broken. Save returns 1/0. */
+   the stored tip. Save appends only the records past a KWH2 file's existing
+   tail when that tail matches the store, and rewrites otherwise. Load returns
+   1 when the file is absent (nothing to load) or read cleanly, 0 only if it is
+   corrupt or a link is broken. Save returns 1/0. */
 int  kw_headerstore_save(const kw_headerstore *s, const char *path);
 int  kw_headerstore_load(kw_headerstore *s, const char *path);
 

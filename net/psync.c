@@ -72,18 +72,24 @@ out:
 
 typedef struct {
     const kw_chainparams *cp;
-    const char *host; int port, tor;
+    const char *const *hosts; size_t nhosts;
+    int port, tor;
     int fd;
     pthread_mutex_t lock;
     size_t next;                 /* next segment index into cp->checkpoints */
     int failed;
     size_t done, nseg;
+    size_t nexthost;             /* round-robin cursor for worker start hosts */
 } psync_ctx;
 
 static void *worker(void *arg)
 {
     psync_ctx *c = (psync_ctx *)arg;
     kw_peer p; int connected = 0;
+
+    pthread_mutex_lock(&c->lock);
+    size_t host = c->nexthost++ % c->nhosts;
+    pthread_mutex_unlock(&c->lock);
 
     for (;;) {
         pthread_mutex_lock(&c->lock);
@@ -103,14 +109,16 @@ static void *worker(void *arg)
         int done = 0;
         for (int attempt = 0; attempt < 3 && !done; attempt++) {
             if (!connected) {
+                const char *hn = c->hosts[host];
                 connected = c->tor
-                    ? kw_peer_connect_socks5(&p, c->cp, c->host, c->port, 30, "127.0.0.1", 9050)
-                    : kw_peer_connect(&p, c->cp, c->host, c->port, 30);
+                    ? kw_peer_connect_socks5(&p, c->cp, hn, c->port, 30, "127.0.0.1", 9050)
+                    : kw_peer_connect(&p, c->cp, hn, c->port, 30);
                 if (connected && !kw_peer_handshake(&p, 0)) { kw_peer_close(&p); connected = 0; }
+                if (!connected) host = (host + 1) % c->nhosts;   /* try the next node */
             }
             if (!connected) continue;
             if (kw_psync_segment(&p, c->fd, sh, h0, eh, h1)) done = 1;
-            else { kw_peer_close(&p); connected = 0; }   /* fresh peer for the retry */
+            else { kw_peer_close(&p); connected = 0; host = (host + 1) % c->nhosts; }
         }
 
         pthread_mutex_lock(&c->lock);
@@ -127,10 +135,10 @@ static void *worker(void *arg)
     return NULL;
 }
 
-long kw_psync_headers(const kw_chainparams *cp, const char *host, int port,
-                      int tor, int npeers, const char *path)
+long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t nhosts,
+                      int port, int tor, int npeers, const char *path)
 {
-    if (!cp->checkpoints || cp->ncheckpoints < 2) return 0;
+    if (!cp->checkpoints || cp->ncheckpoints < 2 || nhosts == 0) return 0;
     FILE *f = fopen(path, "rb");
     if (f) { fclose(f); return 0; }                   /* cache exists: sync normally */
 
@@ -141,8 +149,8 @@ long kw_psync_headers(const kw_chainparams *cp, const char *host, int port,
     FILE *pf = fopen(part, "r+b");
     if (!pf) { remove(part); return -1; }
 
-    psync_ctx c = { cp, host, port, tor, fileno(pf),
-                    PTHREAD_MUTEX_INITIALIZER, 1, 0, 0, cp->ncheckpoints - 1 };
+    psync_ctx c = { cp, hosts, nhosts, port, tor, fileno(pf),
+                    PTHREAD_MUTEX_INITIALIZER, 1, 0, 0, cp->ncheckpoints - 1, 0 };
 
     if (npeers < 1) npeers = 1;
     if ((size_t)npeers > c.nseg) npeers = (int)c.nseg;
