@@ -11,7 +11,10 @@
 #include "ec.h"
 #include "hex.h"
 
+#include "bip174_vectors.h"
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int main(void)
@@ -115,7 +118,51 @@ int main(void)
     }
 
     kw_psbt_free(&a); kw_psbt_free(&b); kw_psbt_free(&c);
+
+    /* every psbt in the BIP174 test-vector section */
+    int parsed = 0, refused = 0;
+    for (size_t i = 0; i < sizeof KW_BIP174_VECS / sizeof KW_BIP174_VECS[0]; i++) {
+        const kw_bip174_vec *v = &KW_BIP174_VECS[i];
+        size_t hl = strlen(v->hex), bl = hl / 2;
+        uint8_t *raw = (uint8_t *)malloc(bl ? bl : 1);
+        if (!raw || !kw_hex_decode(v->hex, hl, raw, bl)) { fprintf(stderr, "FAIL: vector %zu hex\n", i); return 1; }
+
+        kw_psbt vp;
+        int got = kw_psbt_parse(raw, bl, &vp);
+        if (got != v->parses) {
+            fprintf(stderr, "FAIL: vector %zu (%s) %s\n", i, v->note,
+                    got ? "parsed but should not" : "was refused but should parse");
+            return 1;
+        }
+        if (got) {
+            /* what came back must survive a second trip unchanged */
+            uint8_t re[16384];
+            size_t rn = kw_psbt_serialize(&vp, re, sizeof re);
+            kw_psbt again;
+            if (!rn || !kw_psbt_parse(re, rn, &again)) { fprintf(stderr, "FAIL: vector %zu reserialize\n", i); return 1; }
+            uint8_t t1[32], t2[32];
+            if (!kw_tx_txid(&vp.tx, t1) || !kw_tx_txid(&again.tx, t2) || memcmp(t1, t2, 32) != 0) {
+                fprintf(stderr, "FAIL: vector %zu tx changed across a round trip\n", i); return 1;
+            }
+            for (size_t k = 0; k < vp.tx.nin; k++) {
+                if (vp.in[k].nsigs != again.in[k].nsigs ||
+                    vp.in[k].redeemlen != again.in[k].redeemlen ||
+                    vp.in[k].utxolen != again.in[k].utxolen ||
+                    vp.in[k].finallen != again.in[k].finallen ||
+                    vp.in[k].has_sighash != again.in[k].has_sighash ||
+                    (vp.in[k].utxolen && memcmp(vp.in[k].utxo, again.in[k].utxo, vp.in[k].utxolen))) {
+                    fprintf(stderr, "FAIL: vector %zu input %zu changed\n", i, k); return 1;
+                }
+            }
+            kw_psbt_free(&again);
+            parsed++;
+        } else refused++;
+        kw_psbt_free(&vp);
+        free(raw);
+    }
+
     kw_ec_stop();
-    printf("psbt ok: create/update/sign/combine/finalize/extract, round trip, signed-tx and segwit refused\n");
+    printf("psbt ok: create/update/sign/combine/finalize/extract, %d bip174 vectors parsed and round-tripped, %d refused\n",
+           parsed, refused);
     return 0;
 }
