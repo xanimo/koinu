@@ -38,6 +38,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#define KW_VERSION "0.1.0"
+
 static void usage(void)
 {
     fprintf(stderr,
@@ -1201,6 +1203,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--finish"))     finish = 1;
         else if (!strcmp(a, "--peers"))    { const char *v = NEXT(); peers = v ? atoi(v) : 1; }
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
+        else if (!strcmp(a, "--version")) { printf("kw %s\n", KW_VERSION); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
         else { usage(); return 2; }
         #undef NEXT

@@ -6,28 +6,91 @@ vendored from a named upstream at a named commit or written here, and frozen.
 
 ## building
 
-    make check      # builds libkw.a and runs the test
+    make check      # builds libkw.a and kw, runs the tests
     make asan       # the same under address and undefined-behaviour sanitizers
 
-today that is the rng and the secure-memory helpers. the rng is getrandom(2),
-with a /dev/urandom fallback only for a kernel too old for the syscall. it fails
-closed: on any error it zeroes the buffer and returns false, so a caller that
-ignores the return spends an all-zero key rather than uninitialised stack.
+the tests cover every primitive against published vectors where they exist:
+sha2, ripemd160, hmac, pbkdf2, base58, secp256k1, bip32, bip39, argon2id,
+chacha20-poly1305, bip158 filters, and the transaction signer byte-for-byte
+against libdogecoin's.
 
 ## layout
 
-a library core (libkw.a) with a thin cli on top: the core owns the
-crypto, the keys and the wallet state, and the cli stays dumb. docs/PROVENANCE.md
-records the secp256k1 pin and where every vendored primitive came from.
+a library core (libkw.a) with a thin cli on top: the core owns the crypto, the
+keys and the wallet state, and the cli stays dumb. crypto/ is the frozen
+primitives, net/ the p2p and chain sync, wallet/ the utxo tracking.
+docs/PROVENANCE.md records the secp256k1 pin and where every vendored primitive
+came from.
 
 ## kw
 
-the cli. the keystore holds the seed; the mnemonic is printed once and never
-stored, so it is the only backup.
+the keystore holds the bip39 seed sealed under argon2id and chacha20-poly1305.
+the mnemonic is printed once at creation and never stored, so it is the only
+backup.
 
     kw new     --keystore w.ks               generate, seal, show the mnemonic
     kw restore --keystore w.ks --mnemonic -  seal an existing mnemonic
     kw address --keystore w.ks               derive m/44'/coin'/0'/0/index
 
-passphrases and mnemonics are read from a file (@path), stdin (-), or a no-echo
-prompt, never from argv. --testnet and --regtest switch networks.
+spending takes three commands. scan watches the first --gap receive and change
+addresses and writes the utxo set beside the keystore, extending the range
+automatically until enough unused addresses trail the highest used one. sign
+selects inputs from that set and builds the transaction. send broadcasts it.
+
+    kw scan --keystore w.ks --node NODE --headers h --filters f
+    kw sign --keystore w.ks --to DEST:100
+    kw send --tx @tx.hex --node NODE
+
+the fee defaults to the peer's advertised relay floor, captured during scan;
+--feerate sets a rate and --fee an exact amount. change below the dust limit
+goes to the fee instead of an output.
+
+    kw height   --headers h                  the tip height and hash
+    kw outpoint --watch ADDR --outpoint TXID:VOUT --since HEIGHT
+    kw sweep    --wif @k --to DEST           spend an external key's balance
+    kw cosign   --tx HEX --redeem HEX --wif @k
+
+outpoint answers whether a funding output is confirmed, to what depth, and
+whether it has been spent, which is what a payment channel or a merchant needs
+before it trusts a deposit. --since bounds the search to a height range so a
+recent outpoint resolves without touching the whole chain.
+
+cosign signs one input of a p2sh multisig spend and prints the signature for
+the counterparty; --finish combines the collected signatures with its own into
+the finished transaction, checking each against the sighash first, so a
+signature that would fail on chain is refused before broadcast.
+
+passphrases, mnemonics and private keys are read from a file (@path), stdin
+(-), or a no-echo prompt, never from argv. --testnet and --regtest switch
+networks. --tor routes every connection through a socks5 proxy, 127.0.0.1:9050
+by default, and resolves peer names through it rather than locally.
+
+## the chain
+
+koinu never asks a peer about its addresses. the default backend pulls one
+bip158 compact filter per block, tests the watched scripts locally, and
+downloads only the blocks that match; --spv falls back to downloading full
+blocks and scanning them, for peers that do not serve filters. both learn
+nothing about the wallet beyond which blocks it wanted.
+
+filters are checked against the peer's committed filter-header chain, and the
+verified tip is kept beside the cache so a later delta sync has to connect to
+it. --headers and --filters name caches that make a second run resume from the
+stored tip instead of starting over.
+
+    kw height --peers 24 --headers h
+
+--peers downloads the checkpointed range of the header chain over that many
+connections at once, splitting it at the chainparams anchors and verifying each
+segment links internally and ends on its anchor. with no --node the peers come
+from the dns seeds, and connections migrate to whichever ones prove fastest. a
+cold mainnet header sync takes about two minutes.
+
+## kwd
+
+a resident daemon for callers that need an answer in milliseconds rather than
+seconds. it holds the header chain and the peer connection open, delta-syncs on
+each request, and answers over a unix socket.
+
+    kwd --node NODE --headers h --filters f --socket /run/kwd.sock
+    kw outpoint --daemon /run/kwd.sock --watch ADDR --outpoint TXID:VOUT --since H
