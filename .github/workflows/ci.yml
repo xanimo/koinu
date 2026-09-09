@@ -1,6 +1,8 @@
-# Builds the crypto core and runs its test, plain and again under address and
-# undefined-behaviour sanitizers. secp256k1 is checked out as a submodule so the
-# pin is exercised even though nothing links it yet.
+# Builds the library and the cli and runs the tests, on each platform and word
+# size the wallet claims to support, then again under the sanitizers and the
+# fuzzers on one of them. The word size matters: the compiler that only ever
+# sees 64-bit misses a 128-bit intrinsic that is not there on 32-bit, and the
+# byte-order work wants more than one target.
 name: ci
 
 on:
@@ -12,13 +14,74 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64-gcc
+            os: ubuntu-24.04
+            cc: gcc
+          - name: linux-x86_64-clang
+            os: ubuntu-24.04
+            cc: clang
+          - name: linux-i386-gcc
+            os: ubuntu-24.04
+            cc: gcc
+            bits32: true
+          - name: macos-arm64-clang
+            os: macos-14
+            cc: clang
+          - name: macos-x86_64-clang
+            os: macos-13
+            cc: clang
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: dependencies (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends autoconf automake libtool
+          if [ "${{ matrix.bits32 }}" = "true" ]; then
+            sudo apt-get install -y --no-install-recommends gcc-multilib
+          fi
+
+      - name: dependencies (macos)
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool
+
+      # secp256k1 has to be built for the same word size as everything else,
+      # or the link fails on an incompatible architecture rather than a bug.
+      - name: build secp256k1 (32-bit)
+        if: matrix.bits32 == true
+        run: |
+          cd depends/secp256k1
+          ./autogen.sh
+          ./configure --enable-static --disable-shared --disable-tests \
+              --disable-exhaustive-tests --disable-benchmark \
+              --host=i686-pc-linux-gnu CFLAGS=-m32 LDFLAGS=-m32
+          make
+
+      - name: check
+        run: |
+          if [ "${{ matrix.bits32 }}" = "true" ]; then
+            make check CC=${{ matrix.cc }} \
+              CFLAGS="-std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -m32"
+          else
+            make check CC=${{ matrix.cc }}
+          fi
+
+  sanitizers:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends autoconf automake libtool
-      - run: make check
       - run: make asan
       - run: KW_FUZZ_ITERS=50000 make fuzz-asan

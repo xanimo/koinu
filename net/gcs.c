@@ -7,10 +7,23 @@
 
 #include <stdlib.h>
 
-/* map a 64-bit hash uniformly into [0, F) */
+/* Map a 64-bit hash uniformly into [0, F): the high half of the 128-bit
+   product. __uint128_t is a 64-bit-target extension, so the fallback does the
+   same multiply in 32-bit halves rather than leaving the filter unbuildable
+   where it is absent. */
 static uint64_t hash_to_range(uint64_t v, uint64_t F)
 {
+#ifdef __SIZEOF_INT128__
     return (uint64_t)(((__uint128_t)v * (__uint128_t)F) >> 64);
+#else
+    uint64_t vlo = v & 0xffffffffULL, vhi = v >> 32;
+    uint64_t flo = F & 0xffffffffULL, fhi = F >> 32;
+    uint64_t ll = vlo * flo, lh = vlo * fhi;
+    uint64_t hl = vhi * flo, hh = vhi * fhi;
+    /* carry out of the low 64 bits, taken 32 at a time so nothing overflows */
+    uint64_t mid = (ll >> 32) + (lh & 0xffffffffULL) + (hl & 0xffffffffULL);
+    return hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
+#endif
 }
 
 uint64_t kw_gcs_hash(const uint8_t block_hash[32], uint64_t N,

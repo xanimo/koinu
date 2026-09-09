@@ -3,6 +3,8 @@
 ## [Unreleased]
 ## What's Changed
 * fuzz the parsers, and rebuild on a header change
+* gcs: build where there is no 128-bit integer
+* ci: build on each platform and word size, not just one
 
 ## [0.2.1] - 2026-09-09
 ## What's Changed
