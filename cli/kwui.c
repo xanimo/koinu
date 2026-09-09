@@ -2,10 +2,12 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
- * Read-only: it opens the keystore, derives addresses, reads the utxo set kw
- * scan wrote, and draws them. It never connects to a peer and never signs, so
- * the seed it holds only ever produces addresses. Plain ANSI on termios, no
- * curses, in keeping with secp256k1 being the only dependency. */
+ * It opens the keystore, derives addresses, reads the utxo set kw scan wrote,
+ * and draws them; s composes a spend, confirms it, and signs it. It never
+ * opens a socket: the signed transaction is written out for kw send, so the
+ * process holding keys is not the process talking to peers. The seed is not
+ * kept while browsing, so signing asks for the passphrase again. Plain ANSI on
+ * termios, no curses, in keeping with secp256k1 being the only dependency. */
 
 #include "chainparams.h"
 #include "keystore.h"
