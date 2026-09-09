@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 /* display hex to internal order */
@@ -70,6 +71,8 @@ out:
     return ok;
 }
 
+#define KW_PSYNC_MAX_HOSTS 16
+
 typedef struct {
     const kw_chainparams *cp;
     const char *const *hosts; size_t nhosts;
@@ -80,6 +83,8 @@ typedef struct {
     int failed;
     size_t done, nseg;
     size_t nexthost;             /* round-robin cursor for worker start hosts */
+    size_t host_segs[KW_PSYNC_MAX_HOSTS];    /* per-node serving tally */
+    long   host_hdrs[KW_PSYNC_MAX_HOSTS];
 } psync_ctx;
 
 static void *worker(void *arg)
@@ -124,8 +129,11 @@ static void *worker(void *arg)
         pthread_mutex_lock(&c->lock);
         if (done) {
             c->done++;
+            c->host_segs[host]++;
+            c->host_hdrs[host] += (long)(h1 - h0);
             if (kw_net_verbose)
-                fprintf(stderr, "[psync] segment %u-%u done (%zu/%zu)\n", h0, h1, c->done, c->nseg);
+                fprintf(stderr, "[psync] segment %u-%u done via %s (%zu/%zu)\n",
+                        h0, h1, c->hosts[host], c->done, c->nseg);
         } else c->failed = 1;
         pthread_mutex_unlock(&c->lock);
         if (!done) break;
@@ -139,6 +147,7 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
                       int port, int tor, int npeers, const char *path)
 {
     if (!cp->checkpoints || cp->ncheckpoints < 2 || nhosts == 0) return 0;
+    if (nhosts > KW_PSYNC_MAX_HOSTS) nhosts = KW_PSYNC_MAX_HOSTS;
     FILE *f = fopen(path, "rb");
     if (f) { fclose(f); return 0; }                   /* cache exists: sync normally */
 
@@ -150,7 +159,8 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     if (!pf) { remove(part); return -1; }
 
     psync_ctx c = { cp, hosts, nhosts, port, tor, fileno(pf),
-                    PTHREAD_MUTEX_INITIALIZER, 1, 0, 0, cp->ncheckpoints - 1, 0 };
+                    PTHREAD_MUTEX_INITIALIZER, 1, 0, 0, cp->ncheckpoints - 1, 0,
+                    {0}, {0} };
 
     if (npeers < 1) npeers = 1;
     if ((size_t)npeers > c.nseg) npeers = (int)c.nseg;
@@ -164,6 +174,10 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     free(th);
 
     int ok = started > 0 && !c.failed && c.done == c.nseg;
+    if (ok && kw_net_verbose)
+        for (size_t i = 0; i < nhosts; i++)
+            fprintf(stderr, "[psync] %s served %zu segments, %ld headers\n",
+                    hosts[i], c.host_segs[i], c.host_hdrs[i]);
     if (fclose(pf) != 0) ok = 0;
     if (!ok || rename(part, path) != 0) { remove(part); return -1; }
     return (long)last;

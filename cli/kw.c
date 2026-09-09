@@ -23,6 +23,7 @@
 #include "peer.h"
 #include "sync.h"
 #include "psync.h"
+#include "seed.h"
 #include "spv.h"
 #include "cf.h"
 #include "cfstore.h"
@@ -65,7 +66,8 @@ static void usage(void)
       "  a later run resumes from the stored tip instead of syncing from genesis.\n"
       "  --peers N (with --headers, first run) downloads the checkpointed header\n"
       "  range over N parallel connections before the sequential tail; --node may\n"
-      "  repeat (up to 8) to spread those connections over several nodes.\n"
+      "  repeat (up to 8) to spread those connections over several nodes, and with\n"
+      "  no --node at all the chain's dns seeds supply them.\n"
       "  --filters PATH (with --cf) caches basic filters, so scan and outpoint test\n"
       "  them locally and download only matching blocks; the first run fills it.\n"
       "  scan watches the first --gap receive and change addresses, syncs from\n"
@@ -292,6 +294,25 @@ static void read_scan_meta(const char *utxos, int64_t *feerate, int *extent)
 /* every --node given, so the parallel fill can spread over several */
 static const char *g_nodes[8];
 static int g_nnodes = 0;
+static char g_seed_ips[8][KW_SEED_ADDRLEN];
+
+/* Without any --node, resolve the chain's DNS seeds into g_nodes so the
+   parallel fill has peers, and return one of them for the rest of the command
+   to use as its single node. Over Tor the seed hostnames go to the proxy
+   unresolved instead. Returns NULL when nothing resolved. */
+static const char *seed_nodes(const kw_chainparams *cp, int tor)
+{
+    if (tor) {
+        for (size_t i = 0; i < cp->nseeds && g_nnodes < 8; i++)
+            g_nodes[g_nnodes++] = cp->dns_seeds[i];
+    } else {
+        size_t n = kw_seed_resolve(cp, g_seed_ips, 8);
+        for (size_t i = 0; i < n; i++) g_nodes[g_nnodes++] = g_seed_ips[i];
+    }
+    if (g_nnodes && kw_net_verbose)
+        fprintf(stderr, "[seed] %d peers from dns seeds\n", g_nnodes);
+    return g_nnodes ? g_nodes[0] : NULL;
+}
 
 /* With --peers > 1 and no cache yet, fill the checkpointed range in parallel
    before the normal load and sequential tail. A failure falls back cleanly:
@@ -1184,6 +1205,11 @@ int main(int argc, char **argv)
 
     kw_ec_start();
     const kw_chainparams *cp = chain_for(net);
+    /* parallel sync with no --node: the dns seeds supply the peers */
+    if (g_nnodes == 0 && peers > 1) {
+        const char *sn = seed_nodes(cp, tor);
+        if (sn) node = sn;
+    }
     int rc;
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, words);
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);

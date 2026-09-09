@@ -29,6 +29,8 @@ typedef struct {
     const char      *genesis;    /* genesis block hash, display (reversed) hex */
     const kw_checkpoint *checkpoints;  /* ascending by height, [0] is genesis; NULL if none */
     size_t           ncheckpoints;
+    const char *const *dns_seeds;      /* seeder hostnames; NULL if none */
+    size_t           nseeds;
 } kw_chainparams;
 
 extern const kw_chainparams KW_DOGE_MAINNET;

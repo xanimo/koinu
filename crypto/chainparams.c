@@ -12,6 +12,10 @@
    Derived from a koinu header sync whose filters passed cfheaders commitment
    verification and which matches libdogecoin's live-validated checkpoint
    table at all 89 of its heights. */
+/* Seeder hostnames from Dogecoin Core chainparams.cpp vSeeds. */
+static const char *const KW_DOGE_MAINNET_SEEDS[] = { "seed.multidoge.org", "seed2.multidoge.org" };
+static const char *const KW_DOGE_TESTNET_SEEDS[] = { "testseed.jrn.me.uk" };
+
 static const kw_checkpoint KW_DOGE_MAINNET_CHECKPOINTS[] = {
     { 0, "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691" },
     { 25000, "cd4c298be3657471637b80eb8260ba8f928f31662398aeb1d9c6c7e68873f236" },
@@ -276,7 +280,8 @@ const kw_chainparams KW_DOGE_MAINNET = {
     0xc0c0c0c0, 22556,
     "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691",
     KW_DOGE_MAINNET_CHECKPOINTS,
-    sizeof KW_DOGE_MAINNET_CHECKPOINTS / sizeof KW_DOGE_MAINNET_CHECKPOINTS[0]
+    sizeof KW_DOGE_MAINNET_CHECKPOINTS / sizeof KW_DOGE_MAINNET_CHECKPOINTS[0],
+    KW_DOGE_MAINNET_SEEDS, 2
 };
 
 const kw_chainparams KW_DOGE_TESTNET = {
@@ -284,7 +289,8 @@ const kw_chainparams KW_DOGE_TESTNET = {
     { 0x04358394, 0x043587cf }, 1,
     0xdcb7c1fc, 44556,
     "bb0a78264637406b6360aad926284d544d7049f45189db5664f3c4d07350559e",
-    0, 0
+    0, 0,
+    KW_DOGE_TESTNET_SEEDS, 1
 };
 
 const kw_chainparams KW_DOGE_REGTEST = {
@@ -292,5 +298,6 @@ const kw_chainparams KW_DOGE_REGTEST = {
     { 0x04358394, 0x043587cf }, 1,
     0xdab5bffa, 18444,
     "3d2160a3b5dc4a9d62e7e66a295f70313ac808440ef7400d6c0772171ce973a5",
+    0, 0,
     0, 0
 };
