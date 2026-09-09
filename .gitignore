@@ -15,6 +15,7 @@
 /test/test_argon2
 /test/test_keystore
 /test/test_tx
+/test/test_psbt
 /test/test_proto
 /test/test_msg
 /test/test_peer
