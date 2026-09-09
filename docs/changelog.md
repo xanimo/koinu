@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.2.2] - 2026-09-09
 ## What's Changed
 * fuzz the parsers, and rebuild on a header change
 * gcs: build where there is no 128-bit integer
@@ -9,6 +11,8 @@
 * ci: drop the intel macos job
 * docs: a threat model
 * kwui: compose, confirm and sign a spend
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.2.1...v0.2.2
 
 ## [0.2.1] - 2026-09-09
 ## What's Changed
