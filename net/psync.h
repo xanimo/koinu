@@ -3,13 +3,16 @@
  * Copyright (c) 2026 bluezr
  *
  * The segments between chainparams checkpoints download concurrently, one
- * worker thread and one connection each, writing finished headers straight
- * into the KWH2 cache at their record offsets, so peak memory is a few
- * batches rather than the chain. Within a segment every header must link to
- * the one before it, and the segment's last header must hash to its end
- * checkpoint. No PoW runs in the checkpointed range: checkpoint-anchored
- * linkage validates it, the same stance as the AuxPoW skip. The tail past the
- * last checkpoint is the ordinary sequential sync. */
+ * worker thread and one connection each, each buffering its segment and
+ * writing it into the KWH2 cache at its record offset only once verified, so
+ * peak memory is one segment per worker. A worker with nothing pending races
+ * the least-claimed in-flight segment, so one slow peer cannot hold the whole
+ * run hostage; the first finisher wins under the lock and losers discard.
+ * Within a segment every header must link to the one before it, and the
+ * segment's last header must hash to its end checkpoint. No PoW runs in the
+ * checkpointed range: checkpoint-anchored linkage validates it, the same
+ * stance as the AuxPoW skip. The tail past the last checkpoint is the
+ * ordinary sequential sync. */
 
 #ifndef KOINU_PSYNC_H
 #define KOINU_PSYNC_H
@@ -18,9 +21,12 @@
 #include "peer.h"
 
 /* Fetch one segment over (p): headers (start_height, end_height], starting
-   from (start_hash), each record pwritten to (fd) at its height's offset.
-   Returns 1, or 0 on a wire, linkage, or terminal-hash failure. */
-int kw_psync_segment(kw_peer *p, int fd,
+   from (start_hash), written as KWH2 records into (out), which holds
+   end_height - start_height of them. Nothing reaches the cache file until the
+   whole segment verifies, so two workers racing the same segment can never
+   interleave in it. Returns 1, or 0 on a wire, linkage, or terminal-hash
+   failure. */
+int kw_psync_segment(kw_peer *p, uint8_t *out,
                      const uint8_t start_hash[32], uint32_t start_height,
                      const uint8_t end_hash[32], uint32_t end_height);
 

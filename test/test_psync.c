@@ -32,7 +32,8 @@ static size_t mk_headers(uint8_t *out, const kw_block_header *h, size_t n)
     return k;
 }
 
-/* serve one preloaded headers message and run kw_psync_segment against it */
+/* serve one preloaded headers message, run kw_psync_segment against it, and
+   flush the verified segment to (fd) the way psync's winner does */
 static int run_segment(const uint8_t *msg, size_t mlen, int fd,
                        const uint8_t start_hash[32], uint32_t h0,
                        const uint8_t end_hash[32], uint32_t h1)
@@ -49,7 +50,10 @@ static int run_segment(const uint8_t *msg, size_t mlen, int fd,
 
     kw_peer p;
     kw_peer_from_fd(&p, magic, sv[0]);
-    int r = kw_psync_segment(&p, fd, start_hash, h0, end_hash, h1);
+    uint8_t buf[NH * KW_HDR_REC];
+    int r = kw_psync_segment(&p, buf, start_hash, h0, end_hash, h1);
+    if (r == 1 && pwrite(fd, buf, (size_t)(h1 - h0) * KW_HDR_REC,
+                         4 + (off_t)h0 * KW_HDR_REC) != (ssize_t)((h1 - h0) * KW_HDR_REC)) r = -1;
     kw_peer_close(&p);
     close(sv[1]);
     return r;

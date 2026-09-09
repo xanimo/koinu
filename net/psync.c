@@ -24,7 +24,7 @@ static int unhex_rev(const char *hex, uint8_t out[32])
     return 1;
 }
 
-int kw_psync_segment(kw_peer *p, int fd,
+int kw_psync_segment(kw_peer *p, uint8_t *out,
                      const uint8_t start_hash[32], uint32_t start_height,
                      const uint8_t end_hash[32], uint32_t end_height)
 {
@@ -56,11 +56,9 @@ int kw_psync_segment(kw_peer *p, int fd,
         for (size_t i = 0; i < nout; i++) {
             if (h >= end_height) break;               /* peer sent past the stop */
             if (memcmp(kw_block_header_prev(&batch[i]), cur, 32) != 0) goto out;
-            uint8_t rec[KW_HDR_REC];
+            uint8_t *rec = out + (size_t)(h - start_height) * KW_HDR_REC;
             memcpy(rec, batch[i].raw, KW_HEADER_LEN);
             memcpy(rec + KW_HEADER_LEN, batch[i].hash, 32);
-            off_t off = 4 + (off_t)h * KW_HDR_REC;    /* record for height h+1 */
-            if (pwrite(fd, rec, KW_HDR_REC, off) != KW_HDR_REC) goto out;
             memcpy(cur, batch[i].hash, 32);
             h++;
         }
@@ -72,74 +70,113 @@ out:
 }
 
 #define KW_PSYNC_MAX_HOSTS 16
+#define KW_PSYNC_MAX_CLAIMS 2
 
 typedef struct {
     const kw_chainparams *cp;
     const char *const *hosts; size_t nhosts;
     int port, tor;
     int fd;
+    size_t maxspan;              /* widest segment, sizes the worker buffers */
     pthread_mutex_t lock;
-    size_t next;                 /* next segment index into cp->checkpoints */
     int failed;
-    size_t done, nseg;
+    size_t done, nseg, giveups;
     size_t nexthost;             /* round-robin cursor for worker start hosts */
+    uint8_t *state;              /* per segment: 0 pending, 1 in flight, 2 done */
+    uint8_t *claims;             /* workers currently on it */
     size_t host_segs[KW_PSYNC_MAX_HOSTS];    /* per-node serving tally */
     long   host_hdrs[KW_PSYNC_MAX_HOSTS];
 } psync_ctx;
+
+/* The first pending segment, else the least-claimed in-flight one so an idle
+   worker races the straggler holding it. 0 when there is nothing left to do. */
+static size_t get_work(psync_ctx *c)
+{
+    size_t pick = 0;
+    pthread_mutex_lock(&c->lock);
+    if (!c->failed && c->done < c->nseg) {
+        for (size_t i = 1; i <= c->nseg && !pick; i++)
+            if (c->state[i] == 0) pick = i;
+        if (!pick) {
+            uint8_t least = KW_PSYNC_MAX_CLAIMS;
+            for (size_t i = 1; i <= c->nseg; i++)
+                if (c->state[i] == 1 && c->claims[i] < least) { least = c->claims[i]; pick = i; }
+            if (pick && kw_net_verbose)
+                fprintf(stderr, "[psync] racing segment %u-%u\n",
+                        c->cp->checkpoints[pick - 1].height, c->cp->checkpoints[pick].height);
+        }
+        if (pick) { c->state[pick] = 1; c->claims[pick]++; }
+    }
+    pthread_mutex_unlock(&c->lock);
+    return pick;
+}
 
 static void *worker(void *arg)
 {
     psync_ctx *c = (psync_ctx *)arg;
     kw_peer p; int connected = 0;
 
+    uint8_t *buf = (uint8_t *)malloc(c->maxspan * KW_HDR_REC);
+    if (!buf) {
+        pthread_mutex_lock(&c->lock); c->failed = 1; pthread_mutex_unlock(&c->lock);
+        return NULL;
+    }
+
     pthread_mutex_lock(&c->lock);
     size_t host = c->nexthost++ % c->nhosts;
     pthread_mutex_unlock(&c->lock);
 
     for (;;) {
-        pthread_mutex_lock(&c->lock);
-        size_t i = c->next < c->cp->ncheckpoints ? c->next++ : 0;
-        int stop = c->failed || i == 0;
-        pthread_mutex_unlock(&c->lock);
-        if (stop) break;
+        size_t i = get_work(c);
+        if (!i) break;
 
         uint8_t sh[32], eh[32];
-        if (!unhex_rev(c->cp->checkpoints[i - 1].hash, sh) ||
-            !unhex_rev(c->cp->checkpoints[i].hash, eh)) {
-            pthread_mutex_lock(&c->lock); c->failed = 1; pthread_mutex_unlock(&c->lock);
-            break;
-        }
         uint32_t h0 = c->cp->checkpoints[i - 1].height, h1 = c->cp->checkpoints[i].height;
-
         int done = 0;
-        for (int attempt = 0; attempt < 3 && !done; attempt++) {
-            if (!connected) {
-                const char *hn = c->hosts[host];
-                connected = c->tor
-                    ? kw_peer_connect_socks5(&p, c->cp, hn, c->port, 30, "127.0.0.1", 9050)
-                    : kw_peer_connect(&p, c->cp, hn, c->port, 30);
-                if (connected && !kw_peer_handshake(&p, 0)) { kw_peer_close(&p); connected = 0; }
-                if (!connected) host = (host + 1) % c->nhosts;   /* try the next node */
+        if (unhex_rev(c->cp->checkpoints[i - 1].hash, sh) &&
+            unhex_rev(c->cp->checkpoints[i].hash, eh)) {
+            for (int attempt = 0; attempt < 3 && !done; attempt++) {
+                if (!connected) {
+                    const char *hn = c->hosts[host];
+                    connected = c->tor
+                        ? kw_peer_connect_socks5(&p, c->cp, hn, c->port, 30, "127.0.0.1", 9050)
+                        : kw_peer_connect(&p, c->cp, hn, c->port, 30);
+                    if (connected && !kw_peer_handshake(&p, 0)) { kw_peer_close(&p); connected = 0; }
+                    if (!connected) host = (host + 1) % c->nhosts;   /* try the next node */
+                }
+                if (!connected) continue;
+                if (kw_psync_segment(&p, buf, sh, h0, eh, h1)) done = 1;
+                else { kw_peer_close(&p); connected = 0; host = (host + 1) % c->nhosts; }
             }
-            if (!connected) continue;
-            if (kw_psync_segment(&p, c->fd, sh, h0, eh, h1)) done = 1;
-            else { kw_peer_close(&p); connected = 0; host = (host + 1) % c->nhosts; }
         }
 
         pthread_mutex_lock(&c->lock);
-        if (done) {
+        c->claims[i]--;
+        int won = done && c->state[i] != 2;           /* a race loser discards */
+        if (won) {
+            c->state[i] = 2;
             c->done++;
             c->host_segs[host]++;
             c->host_hdrs[host] += (long)(h1 - h0);
             if (kw_net_verbose)
                 fprintf(stderr, "[psync] segment %u-%u done via %s (%zu/%zu)\n",
                         h0, h1, c->hosts[host], c->done, c->nseg);
-        } else c->failed = 1;
+        } else if (!done) {
+            if (c->state[i] == 1 && c->claims[i] == 0) c->state[i] = 0;   /* requeue */
+            if (++c->giveups > 3 * c->nseg) c->failed = 1;
+        }
         pthread_mutex_unlock(&c->lock);
-        if (!done) break;
+
+        /* only the winner reaches the file, so racers never interleave */
+        if (won && pwrite(c->fd, buf, (size_t)(h1 - h0) * KW_HDR_REC,
+                          4 + (off_t)h0 * KW_HDR_REC) != (ssize_t)((h1 - h0) * KW_HDR_REC)) {
+            pthread_mutex_lock(&c->lock); c->failed = 1; pthread_mutex_unlock(&c->lock);
+            break;
+        }
     }
 
     if (connected) kw_peer_close(&p);
+    free(buf);
     return NULL;
 }
 
@@ -158,14 +195,26 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     FILE *pf = fopen(part, "r+b");
     if (!pf) { remove(part); return -1; }
 
-    psync_ctx c = { cp, hosts, nhosts, port, tor, fileno(pf),
-                    PTHREAD_MUTEX_INITIALIZER, 1, 0, 0, cp->ncheckpoints - 1, 0,
-                    {0}, {0} };
+    psync_ctx c;
+    memset(&c, 0, sizeof c);
+    c.cp = cp; c.hosts = hosts; c.nhosts = nhosts; c.port = port; c.tor = tor;
+    c.fd = fileno(pf);
+    c.nseg = cp->ncheckpoints - 1;
+    pthread_mutex_init(&c.lock, NULL);
+    for (size_t i = 1; i < cp->ncheckpoints; i++) {
+        size_t span = cp->checkpoints[i].height - cp->checkpoints[i - 1].height;
+        if (span > c.maxspan) c.maxspan = span;
+    }
+    c.state = (uint8_t *)calloc(cp->ncheckpoints, 1);
+    c.claims = (uint8_t *)calloc(cp->ncheckpoints, 1);
+    if (!c.state || !c.claims) {
+        free(c.state); free(c.claims); fclose(pf); remove(part); return -1;
+    }
 
     if (npeers < 1) npeers = 1;
     if ((size_t)npeers > c.nseg) npeers = (int)c.nseg;
     pthread_t *th = (pthread_t *)malloc((size_t)npeers * sizeof *th);
-    if (!th) { fclose(pf); remove(part); return -1; }
+    if (!th) { free(c.state); free(c.claims); fclose(pf); remove(part); return -1; }
 
     int started = 0;
     for (int i = 0; i < npeers; i++)
@@ -178,6 +227,7 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
         for (size_t i = 0; i < nhosts; i++)
             fprintf(stderr, "[psync] %s served %zu segments, %ld headers\n",
                     hosts[i], c.host_segs[i], c.host_hdrs[i]);
+    free(c.state); free(c.claims);
     if (fclose(pf) != 0) ok = 0;
     if (!ok || rename(part, path) != 0) { remove(part); return -1; }
     return (long)last;
