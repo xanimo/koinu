@@ -85,11 +85,12 @@ PA=$(./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w1" --redeem "$REDEEM" 
 PB=$(./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w2" --redeem "$REDEEM" --vin 0)
 [ "$PA" != "$PB" ] || { echo "FAIL: both keys produced the same psbt" >&2; exit 1; }
 PC=$(./kw --regtest psbt combine --psbt "$PA" --psbt "$PB")
+# -eq not =, since BSD wc pads its count with leading spaces
 NSIG=$(./kw --regtest psbt sigs --psbt "$PC" | wc -l)
-[ "$NSIG" = "2" ] || { echo "FAIL: combine kept $NSIG signatures" >&2; exit 1; }
+[ "$NSIG" -eq 2 ] || { echo "FAIL: combine kept $NSIG signatures" >&2; exit 1; }
 # combining is idempotent, so a replayed half cannot inflate the set
-[ "$(./kw --regtest psbt combine --psbt "$PC" --psbt "$PA" | ./kw --regtest psbt sigs --psbt - | wc -l)" = "2" ] \
-    || { echo "FAIL: combine not idempotent" >&2; exit 1; }
+NSIG2=$(./kw --regtest psbt combine --psbt "$PC" --psbt "$PA" | ./kw --regtest psbt sigs --psbt - | wc -l)
+[ "$NSIG2" -eq 2 ] || { echo "FAIL: combine not idempotent" >&2; exit 1; }
 SS=$(./kw --regtest psbt sigs --psbt "$PC" | awk '{printf "%02x%s", length($3)/2, $3}')
 SS="00${SS}$(printf '%02x' $((${#REDEEM}/2)))$REDEEM"
 PF=$(./kw --regtest psbt finalize --psbt "$PC" --vin 0 --scriptsig "$SS")
