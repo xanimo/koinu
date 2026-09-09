@@ -39,7 +39,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define KW_VERSION "0.1.0"
+#define KW_VERSION "0.2.0"
 
 static void usage(void)
 {
