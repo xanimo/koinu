@@ -215,7 +215,7 @@ int kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
     for (size_t i = 0; i < nsigs; i++) { if (siglens[i] > 75) return 0; total += 1 + siglens[i]; }
     size_t rpush = redeemlen < 76 ? 1 : redeemlen <= 255 ? 2 : 3;
     total += rpush + redeemlen;
-    if (total > KW_TX_SCRIPT_MAX) return 0;
+    if (total > KW_TX_SCRIPTSIG_MAX) return 0;
 
     kw_txin *in = &tx->vin[index];
     size_t k = 0;
@@ -355,7 +355,7 @@ size_t kw_tx_parse(const uint8_t *raw, size_t len, kw_tx *tx)
         memcpy(in->prevout, r.p + r.off, 32); r.off += 32;
         in->vout = (uint32_t)rd_le(&r, 4);
         uint64_t sl = rd_count(&r);                /* bounded by bytes left */
-        if (r.bad || sl > KW_TX_SCRIPT_MAX) return 0;
+        if (r.bad || sl > KW_TX_SCRIPTSIG_MAX) return 0;
         memcpy(in->script, r.p + r.off, (size_t)sl);
         in->scriptlen = (size_t)sl; r.off += (size_t)sl;
         in->sequence = (uint32_t)rd_le(&r, 4);

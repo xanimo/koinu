@@ -14,13 +14,16 @@
 
 #define KW_TX_MAX_IN     32
 #define KW_TX_MAX_OUT    32
-#define KW_TX_SCRIPT_MAX 256
+#define KW_TX_SCRIPT_MAX 256      /* a scriptPubKey */
+/* A scriptSig, which is far larger: redeeming an m-of-n P2SH costs about 74
+   bytes a signature plus the redeem script, and 1650 is what a node relays. */
+#define KW_TX_SCRIPTSIG_MAX 1650
 #define KW_SIGHASH_ALL   1
 
 typedef struct {
     uint8_t  prevout[32];                 /* internal byte order */
     uint32_t vout;
-    uint8_t  script[KW_TX_SCRIPT_MAX];    /* scriptSig; empty until signed */
+    uint8_t  script[KW_TX_SCRIPTSIG_MAX]; /* scriptSig; empty until signed */
     size_t   scriptlen;
     uint32_t sequence;
 } kw_txin;

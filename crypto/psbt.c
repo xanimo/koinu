@@ -145,7 +145,7 @@ int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
 
 int kw_psbt_finalize(kw_psbt *p, size_t index, const uint8_t *scriptsig, size_t len)
 {
-    if (index >= p->tx.nin || len > KW_TX_SCRIPT_MAX) return 0;
+    if (index >= p->tx.nin || len > KW_TX_SCRIPTSIG_MAX) return 0;
     memcpy(p->in[index].final, scriptsig, len);
     p->in[index].finallen = len;
     return 1;
@@ -315,7 +315,7 @@ int kw_psbt_parse(const uint8_t *in, size_t len, kw_psbt *p)
                 memcpy(ip->redeem, v, vl); ip->redeemlen = vl;
                 break;
             case PSBT_IN_FINAL_SCRIPTSIG:
-                if (kl != 1 || vl > KW_TX_SCRIPT_MAX || ip->finallen) goto bad;
+                if (kl != 1 || vl > KW_TX_SCRIPTSIG_MAX || ip->finallen) goto bad;
                 memcpy(ip->final, v, vl); ip->finallen = vl;
                 break;
             default:

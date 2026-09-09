@@ -41,7 +41,7 @@ typedef struct {
     int          has_sighash;
     uint8_t      redeem[KW_PSBT_SCRIPT_MAX];
     size_t       redeemlen;
-    uint8_t      final[KW_TX_SCRIPT_MAX];  /* scriptSig, once assembled */
+    uint8_t      final[KW_TX_SCRIPTSIG_MAX];  /* scriptSig, once assembled */
     size_t       finallen;
 } kw_psbt_in;
 
