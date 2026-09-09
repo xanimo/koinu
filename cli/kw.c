@@ -315,17 +315,22 @@ static const char *seed_nodes(const kw_chainparams *cp, int tor)
 }
 
 /* With --peers > 1 and no cache yet, fill the checkpointed range in parallel
-   before the normal load and sequential tail. A failure falls back cleanly:
-   the sequential path syncs from genesis as before. */
-static void headers_parallel_fill(const kw_chainparams *cp, const char *node, int port,
-                                  int tor, int peers, const char *path)
+   before the command connects its single peer. Returns the node with the best
+   observed rate so the rest of the command uses it rather than a blind pick
+   (the first seed-resolved host can be dead), or (node) untouched when the
+   fill did not run or failed; a failure falls back cleanly to the sequential
+   path. */
+static const char *headers_parallel_fill(const kw_chainparams *cp, const char *node, int port,
+                                         int tor, int peers, const char *path)
 {
-    if (peers < 2 || !path) return;
+    if (peers < 2 || !path) return node;
     const char *one[1] = { node };
     const char *const *hosts = g_nnodes ? g_nodes : one;
     size_t nhosts = g_nnodes ? (size_t)g_nnodes : 1;
-    long r = kw_psync_headers(cp, hosts, nhosts, port, tor, peers, path);
+    const char *best = NULL;
+    long r = kw_psync_headers(cp, hosts, nhosts, port, tor, peers, path, &best);
     if (r < 0) fprintf(stderr, "kw: parallel header sync failed, syncing sequentially\n");
+    return (r > 0 && best) ? best : node;
 }
 
 /* Init a header store, loading a cache from (path) if given so a sync resumes
@@ -441,6 +446,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
 
     kw_net_verbose = 1;
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -453,7 +459,6 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
 
-    headers_parallel_fill(cp, node, port, tor, peers, headers_path);
     kw_headerstore s; headers_open(&s, headers_path);
     nh = kw_sync_headers(&p, &s, cp);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
@@ -834,6 +839,7 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
     kw_net_verbose = 1;
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -842,7 +848,6 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     int rc = 1;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
-        headers_parallel_fill(cp, node, port, tor, peers, headers_path);
         kw_headerstore s; headers_open(&s, headers_path);
         long nh = kw_sync_headers(&p, &s, cp);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
@@ -917,6 +922,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
 
     kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
     kw_net_verbose = 1;
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -927,7 +933,6 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     size_t tipheight = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
-    headers_parallel_fill(cp, node, port, tor, peers, headers_path);
     kw_headerstore s; headers_open(&s, headers_path);
     long nh = kw_sync_headers(&p, &s, cp);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }

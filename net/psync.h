@@ -36,8 +36,11 @@ int kw_psync_segment(kw_peer *p, uint8_t *out,
    connection fails. Builds into <path>.part and renames only when every
    segment verified. Returns the last checkpoint height, 0 when (path) already
    exists or the chain has no checkpoints (nothing done, sync normally), or -1
-   on failure. */
+   on failure. On a fill, (*best) points at the host with the best observed
+   rate, so the caller's remaining single-peer work avoids a dead or slow
+   node; pass NULL if unwanted. */
 long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t nhosts,
-                      int port, int tor, int npeers, const char *path);
+                      int port, int tor, int npeers, const char *path,
+                      const char **best);
 
 #endif /* KOINU_PSYNC_H */

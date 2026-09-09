@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 /* display hex to internal order */
@@ -81,12 +82,54 @@ typedef struct {
     pthread_mutex_t lock;
     int failed;
     size_t done, nseg, giveups;
-    size_t nexthost;             /* round-robin cursor for worker start hosts */
     uint8_t *state;              /* per segment: 0 pending, 1 in flight, 2 done */
     uint8_t *claims;             /* workers currently on it */
     size_t host_segs[KW_PSYNC_MAX_HOSTS];    /* per-node serving tally */
     long   host_hdrs[KW_PSYNC_MAX_HOSTS];
+    long   host_srv[KW_PSYNC_MAX_HOSTS];     /* headers timed, win or lose */
+    double host_secs[KW_PSYNC_MAX_HOSTS];
+    int    host_active[KW_PSYNC_MAX_HOSTS];  /* connections currently on it */
+    int    host_fails[KW_PSYNC_MAX_HOSTS];   /* consecutive connect failures */
 } psync_ctx;
+
+static double now_mono(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* The host with the best observed rate per connection already on it, so fast
+   nodes attract workers without being mobbed. An untried host scores as fast
+   as anything, so every node gets explored; two straight connect failures
+   bench a host, and when everyone is benched the slate wipes clean. */
+static size_t pick_host(psync_ctx *c)
+{
+    pthread_mutex_lock(&c->lock);
+    for (;;) {
+        double bestscore = -1; size_t best = 0;
+        for (size_t i = 0; i < c->nhosts; i++) {
+            if (c->host_fails[i] >= 2) continue;
+            double rate = c->host_secs[i] > 0.1 ? (double)c->host_srv[i] / c->host_secs[i] : 1e12;
+            double score = rate / (double)(c->host_active[i] + 1);
+            if (score > bestscore) { bestscore = score; best = i; }
+        }
+        if (bestscore >= 0) {
+            c->host_active[best]++;
+            pthread_mutex_unlock(&c->lock);
+            return best;
+        }
+        for (size_t i = 0; i < c->nhosts; i++) c->host_fails[i] = 0;
+    }
+}
+
+static void drop_host(psync_ctx *c, size_t host, int connect_failed)
+{
+    pthread_mutex_lock(&c->lock);
+    c->host_active[host]--;
+    if (connect_failed) c->host_fails[host]++;
+    pthread_mutex_unlock(&c->lock);
+}
 
 /* The first pending segment, else the least-claimed in-flight one so an idle
    worker races the straggler holding it. 0 when there is nothing left to do. */
@@ -115,16 +158,13 @@ static void *worker(void *arg)
 {
     psync_ctx *c = (psync_ctx *)arg;
     kw_peer p; int connected = 0;
+    size_t host = 0;
 
     uint8_t *buf = (uint8_t *)malloc(c->maxspan * KW_HDR_REC);
     if (!buf) {
         pthread_mutex_lock(&c->lock); c->failed = 1; pthread_mutex_unlock(&c->lock);
         return NULL;
     }
-
-    pthread_mutex_lock(&c->lock);
-    size_t host = c->nexthost++ % c->nhosts;
-    pthread_mutex_unlock(&c->lock);
 
     for (;;) {
         size_t i = get_work(c);
@@ -133,26 +173,32 @@ static void *worker(void *arg)
         uint8_t sh[32], eh[32];
         uint32_t h0 = c->cp->checkpoints[i - 1].height, h1 = c->cp->checkpoints[i].height;
         int done = 0;
+        double dt = 0;
         if (unhex_rev(c->cp->checkpoints[i - 1].hash, sh) &&
             unhex_rev(c->cp->checkpoints[i].hash, eh)) {
             for (int attempt = 0; attempt < 3 && !done; attempt++) {
                 if (!connected) {
+                    host = pick_host(c);
                     const char *hn = c->hosts[host];
                     connected = c->tor
-                        ? kw_peer_connect_socks5(&p, c->cp, hn, c->port, 30, "127.0.0.1", 9050)
-                        : kw_peer_connect(&p, c->cp, hn, c->port, 30);
+                        ? kw_peer_connect_socks5(&p, c->cp, hn, c->port, 10, "127.0.0.1", 9050)
+                        : kw_peer_connect(&p, c->cp, hn, c->port, 10);
                     if (connected && !kw_peer_handshake(&p, 0)) { kw_peer_close(&p); connected = 0; }
-                    if (!connected) host = (host + 1) % c->nhosts;   /* try the next node */
+                    if (!connected) { drop_host(c, host, 1); continue; }
                 }
-                if (!connected) continue;
-                if (kw_psync_segment(&p, buf, sh, h0, eh, h1)) done = 1;
-                else { kw_peer_close(&p); connected = 0; host = (host + 1) % c->nhosts; }
+                double t0 = now_mono();
+                if (kw_psync_segment(&p, buf, sh, h0, eh, h1)) { done = 1; dt = now_mono() - t0; }
+                else { kw_peer_close(&p); connected = 0; drop_host(c, host, 0); }
             }
         }
 
         pthread_mutex_lock(&c->lock);
         c->claims[i]--;
         int won = done && c->state[i] != 2;           /* a race loser discards */
+        if (done) {
+            c->host_srv[host] += (long)(h1 - h0);     /* rate counts wins and losses */
+            c->host_secs[host] += dt;
+        }
         if (won) {
             c->state[i] = 2;
             c->done++;
@@ -175,14 +221,16 @@ static void *worker(void *arg)
         }
     }
 
-    if (connected) kw_peer_close(&p);
+    if (connected) { kw_peer_close(&p); drop_host(c, host, 0); }
     free(buf);
     return NULL;
 }
 
 long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t nhosts,
-                      int port, int tor, int npeers, const char *path)
+                      int port, int tor, int npeers, const char *path,
+                      const char **best)
 {
+    if (best) *best = NULL;
     if (!cp->checkpoints || cp->ncheckpoints < 2 || nhosts == 0) return 0;
     if (nhosts > KW_PSYNC_MAX_HOSTS) nhosts = KW_PSYNC_MAX_HOSTS;
     FILE *f = fopen(path, "rb");
@@ -223,10 +271,16 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     free(th);
 
     int ok = started > 0 && !c.failed && c.done == c.nseg;
-    if (ok && kw_net_verbose)
-        for (size_t i = 0; i < nhosts; i++)
-            fprintf(stderr, "[psync] %s served %zu segments, %ld headers\n",
-                    hosts[i], c.host_segs[i], c.host_hdrs[i]);
+    if (ok) {
+        double bestrate = -1;
+        for (size_t i = 0; i < nhosts; i++) {
+            double rate = c.host_secs[i] > 0.1 ? (double)c.host_srv[i] / c.host_secs[i] : 0.0;
+            if (best && rate > bestrate) { bestrate = rate; *best = hosts[i]; }
+            if (kw_net_verbose)
+                fprintf(stderr, "[psync] %s served %zu segments, %ld headers, %.0f hdr/s\n",
+                        hosts[i], c.host_segs[i], c.host_hdrs[i], rate);
+        }
+    }
     free(c.state); free(c.claims);
     if (fclose(pf) != 0) ok = 0;
     if (!ok || rename(part, path) != 0) { remove(part); return -1; }
