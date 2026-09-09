@@ -86,6 +86,15 @@ segment links internally and ends on its anchor. with no --node the peers come
 from the dns seeds, and connections migrate to whichever ones prove fastest. a
 cold mainnet header sync takes about two minutes.
 
+## kwui
+
+a terminal view of a wallet: the balance, and every derived address with what
+it holds. it reads the keystore and the utxo set kw scan wrote, never connects
+to a peer and never signs, so the seed it opens only ever produces addresses.
+j and k move, u hides the addresses nothing has paid, q quits.
+
+    kwui --keystore w.ks
+
 ## kwd
 
 a resident daemon for callers that need an answer in milliseconds rather than

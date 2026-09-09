@@ -53,6 +53,10 @@ kw: cli/kw.o $(LIB) $(SECP_LIB)
 kwd: cli/kwd.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ cli/kwd.o $(LIB) $(SECP_LIB)
 
+# read-only terminal view of a wallet
+kwui: cli/kwui.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -o $@ cli/kwui.o $(LIB) $(SECP_LIB)
+
 # The one submodule, built via its own autotools into a static lib. Only objects
 # that reference it (ec.o, pulled in by test_ec) need it at link time.
 $(SECP_LIB):
@@ -204,7 +208,7 @@ asan:
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw kwd cli/*.o net_handshake net_sync net_spv net_cf net_multisig
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw kwd kwui cli/*.o net_handshake net_sync net_spv net_cf net_multisig
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
