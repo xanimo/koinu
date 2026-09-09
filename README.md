@@ -110,7 +110,12 @@ cold mainnet header sync takes about two minutes.
 a terminal view of a wallet: the balance, and every derived address with what
 it holds. it reads the keystore and the utxo set kw scan wrote, never connects
 to a peer and never signs, so the seed it opens only ever produces addresses.
-j and k move, u hides the addresses nothing has paid, q quits.
+j and k move, u hides the addresses nothing has paid, s composes a spend, q
+quits. send asks for a destination and an amount, shows the fee and the change
+before anything is signed, asks for the passphrase again as the last
+confirmation, and writes the signed transaction out for kw send. it never
+connects to a peer, so the process holding keys is not the process talking to
+them.
 
     kwui --keystore w.ks
 

@@ -17,6 +17,9 @@
 #include "hex.h"
 #include "mem.h"
 #include "utxo.h"
+#include "tx.h"
+#include "bip39.h"
+#include "base58.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,7 +73,37 @@ typedef struct {
     uint32_t change, index;
     uint64_t balance;
     int      nutxo;
+    uint8_t  spk[25];
 } row;
+
+/* a signed p2pkh spend's size: 148 a input, 34 an output, 10 over */
+static uint64_t est_fee(int nin, int nout, uint64_t rate_per_kb)
+{
+    uint64_t size = 10 + 148ULL * (uint64_t)nin + 34ULL * (uint64_t)nout;
+    return (size * rate_per_kb + 999) / 1000;
+}
+
+/* decimal DOGE to koinu, no floating point */
+static int parse_doge(const char *str, uint64_t *out)
+{
+    uint64_t whole = 0, frac = 0; int digits = 0, seen = 0;
+    const char *q = str;
+    for (; *q && *q != '.'; q++) {
+        if (*q < '0' || *q > '9') return 0;
+        if (whole > (UINT64_MAX - 9) / 10) return 0;
+        whole = whole * 10 + (uint64_t)(*q - '0'); seen = 1;
+    }
+    if (*q == '.') {
+        for (q++; *q; q++) {
+            if (*q < '0' || *q > '9' || digits >= 8) return 0;
+            frac = frac * 10 + (uint64_t)(*q - '0'); digits++; seen = 1;
+        }
+    }
+    if (!seen) return 0;
+    while (digits++ < 8) frac *= 10;
+    *out = whole * 100000000ULL + frac;
+    return 1;
+}
 
 /* Derive (gap) receive then (gap) change addresses and total what the utxo set
    pays each, so a row is an address and what it holds. */
@@ -96,6 +129,7 @@ static int build_rows(const kw_chainparams *cp, const uint8_t seed[64], int gap,
             memset(r, 0, sizeof *r);
             if (!kw_address_p2pkh(pub, cp->p2pkh, r->addr, sizeof r->addr)) continue;
             r->change = change; r->index = (uint32_t)i;
+            memcpy(r->spk, spk, 25);
             for (size_t u = 0; u < us->count; u++)
                 if (us->u[u].spklen == 25 && memcmp(us->u[u].spk, spk, 25) == 0) {
                     r->balance += us->u[u].value; r->nutxo++;
@@ -152,9 +186,181 @@ static void draw(const kw_chainparams *cp, const row *rows, int n, int top, int 
     }
     if (!shown) printf("  (no addresses to show; run kw scan to fill the utxo set)\r\n");
 
-    printf("\r\n j/k move   u %s   q quit\r\n",
+    printf("\r\n j/k move   u %s   s send   q quit\r\n",
            used_only ? "show all" : "used only");
     fflush(stdout);
+}
+
+/* Read a line in cooked mode, so the terminal handles editing. */
+static int ask_line(const char *prompt, char *out, size_t cap)
+{
+    if (g_raw) tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved);
+    printf("\033[?25h%s", prompt); fflush(stdout);
+    char *line = NULL; size_t lc = 0;
+    ssize_t n = getline(&line, &lc, stdin);
+    if (n > 0) { while (n && (line[n-1]=='\n'||line[n-1]=='\r')) line[--n]='\0';
+                 snprintf(out, cap, "%s", line); }
+    free(line);
+    printf("\033[?25l");
+    if (g_raw) {
+        struct termios raw = g_saved;
+        raw.c_lflag &= ~(tcflag_t)(ECHO | ICANON);
+        raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    }
+    return n > 0;
+}
+
+/* an address to its p2pkh or p2sh scriptPubKey on this network */
+static int addr_to_spk(const kw_chainparams *cp, const char *addr, uint8_t *out, size_t *len)
+{
+    uint8_t pay[64]; size_t pl = 0;
+    if (!kw_base58check_decode(addr, pay, sizeof pay, &pl) || pl != 21) return 0;
+    if (pay[0] == cp->p2pkh) { h160_to_spk(pay + 1, out); *len = 25; return 1; }
+    if (pay[0] == cp->p2sh) {
+        out[0]=0xa9; out[1]=0x14; memcpy(out+2, pay+1, 20); out[22]=0x87; *len = 23; return 1;
+    }
+    return 0;
+}
+
+/* Compose, confirm and sign a spend. Never touches the network: the signed
+   transaction is written out for kw send, so the process holding keys is not
+   the process talking to peers. The seed is not kept while browsing, so the
+   passphrase is asked for again here, which is also the last confirmation. */
+static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxos,
+                      const kw_utxoset *us, const row *rows, int nrows)
+{
+    char to[128] = "", amt[64] = "";
+    if (!ask_line("\r\nto address: ", to, sizeof to) || !to[0]) return;
+    uint8_t dspk[25]; size_t dl = 0;
+    if (!addr_to_spk(cp, to, dspk, &dl)) {
+        ask_line("not an address on this network. enter to go back ", amt, sizeof amt);
+        return;
+    }
+    if (!ask_line("amount in DOGE: ", amt, sizeof amt)) return;
+    uint64_t want = 0;
+    if (!parse_doge(amt, &want) || want < 1000000ULL) {
+        ask_line("amount is not a number, or below the 0.01 dust limit. enter to go back ", to, sizeof to);
+        return;
+    }
+
+    /* oldest first, so mature coinbase goes before recent change */
+    int order[KW_TX_MAX_IN]; int nin = 0;
+    uint64_t in_total = 0, fee = 0;
+    for (;;) {
+        nin = 0; in_total = 0;
+        uint32_t best_h;
+        int used[512] = {0};
+        while (nin < KW_TX_MAX_IN) {
+            int pick = -1; best_h = 0xffffffffu;
+            for (size_t u = 0; u < us->count && u < 512; u++)
+                if (!used[u] && us->u[u].spklen == 25 && us->u[u].height <= best_h) {
+                    best_h = us->u[u].height; pick = (int)u;
+                }
+            if (pick < 0) break;
+            used[pick] = 1; order[nin++] = pick;
+            in_total += us->u[pick].value;
+            fee = est_fee(nin, 2, 100000ULL);
+            if (in_total >= want + fee) break;
+        }
+        break;
+    }
+    if (in_total < want + fee) {
+        char m[160]; char b[32]; fmt_doge(in_total, b, sizeof b);
+        snprintf(m, sizeof m, "only %s DOGE selectable, need more. enter to go back ", b);
+        ask_line(m, to, sizeof to);
+        return;
+    }
+    uint64_t change = in_total - want - fee;
+    int with_change = change >= 1000000ULL;
+    if (!with_change) { fee += change; change = 0; }   /* dust change goes to fee */
+
+    char bw[32], bf[32], bc[32], bt[32];
+    fmt_doge(want, bw, sizeof bw); fmt_doge(fee, bf, sizeof bf);
+    fmt_doge(change, bc, sizeof bc); fmt_doge(in_total, bt, sizeof bt);
+    printf("\033[H\033[2J\033[1m confirm this spend\033[0m\r\n\r\n");
+    printf("   to        %s\r\n", to);
+    printf("   amount    %s DOGE\r\n", bw);
+    printf("   fee       %s DOGE\r\n", bf);
+    printf("   change    %s DOGE%s\r\n", bc, with_change ? "" : "  (below dust, added to the fee)");
+    printf("   spending  %s DOGE across %d output(s)\r\n\r\n", bt, nin);
+    printf("   nothing is broadcast: the signed transaction is written out\r\n");
+    printf("   for kw send, and can be discarded until then.\r\n\r\n");
+    fflush(stdout);
+
+    char yes[16] = "";
+    if (!ask_line("   type yes to sign, anything else to cancel: ", yes, sizeof yes) ||
+        strcmp(yes, "yes") != 0) return;
+
+    /* re-open the keystore: the seed is not held while browsing */
+    uint8_t blob[8192]; size_t bn = 0;
+    FILE *f = fopen(ks, "rb");
+    if (!f) return;
+    bn = fread(blob, 1, sizeof blob, f);
+    fclose(f);
+    char *pass = ask_pass();
+    if (!pass) return;
+    uint8_t seed[64]; size_t slen = 0;
+    int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
+    kw_secure_zero(pass, strlen(pass)); free(pass);
+    kw_secure_zero(blob, sizeof blob);
+    if (!opened || slen != 64) {
+        ask_line("   wrong passphrase. enter to go back ", yes, sizeof yes);
+        return;
+    }
+
+    kw_tx tx; kw_tx_init(&tx);
+    for (int i = 0; i < nin; i++) {
+        const kw_utxo *u = &us->u[order[i]];
+        char disp[65]; uint8_t d[32];
+        for (int b = 0; b < 32; b++) d[b] = u->txid[31 - b];
+        kw_hex_encode(d, 32, disp, sizeof disp);
+        kw_tx_add_input(&tx, disp, u->vout);
+    }
+    kw_tx_add_output(&tx, want, dspk, dl);
+    if (with_change) {
+        int ci = -1;
+        for (int i = 0; i < nrows; i++)                  /* first unused change address */
+            if (rows[i].change == 1 && rows[i].nutxo == 0) { ci = i; break; }
+        if (ci < 0) for (int i = 0; i < nrows; i++) if (rows[i].change == 1) { ci = i; break; }
+        if (ci >= 0) kw_tx_add_output(&tx, change, rows[ci].spk, 25);
+    }
+
+    kw_bip32_key master;
+    int ok = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
+    for (int i = 0; i < nin && ok; i++) {
+        const kw_utxo *u = &us->u[order[i]];
+        int ri = -1;
+        for (int r = 0; r < nrows; r++)
+            if (memcmp(rows[r].spk, u->spk, 25) == 0) { ri = r; break; }
+        if (ri < 0) { ok = 0; break; }
+        kw_bip32_key key;
+        if (!kw_bip44_derive(&master, cp->bip44_coin, 0, rows[ri].change, rows[ri].index, &key)) { ok = 0; break; }
+        ok = kw_tx_sign_p2pkh(&tx, (size_t)i, key.key + 1, u->spk, 25);   /* 0x00 || d */
+        kw_secure_zero(&key, sizeof key);
+    }
+    kw_secure_zero(&master, sizeof master);
+    kw_secure_zero(seed, sizeof seed);
+    if (!ok) { ask_line("   signing failed. enter to go back ", yes, sizeof yes); return; }
+
+    uint8_t raw[16384];
+    size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);
+    char path[4300];
+    snprintf(path, sizeof path, "%s.tx", utxos);
+    FILE *o = fopen(path, "w");
+    if (rn && o) {
+        char *hex = (char *)malloc(rn * 2 + 2);
+        if (hex) { kw_hex_encode(raw, rn, hex, rn * 2 + 1); fprintf(o, "%s\n", hex); free(hex); }
+        fclose(o);
+        char m[9000];
+        snprintf(m, sizeof m, "\r\n   signed, %zu bytes, written to %s\r\n"
+                              "   broadcast with: kw send --tx @%s --node NODE\r\n"
+                              "   enter to go back ", rn, path, path);
+        ask_line(m, yes, sizeof yes);
+    } else {
+        if (o) fclose(o);
+        ask_line("   could not write the transaction. enter to go back ", yes, sizeof yes);
+    }
 }
 
 int main(int argc, char **argv)
@@ -216,6 +422,7 @@ int main(int argc, char **argv)
         case 'j': if (sel < n - 1) sel++; break;
         case 'k': if (sel > 0) sel--; break;
         case 'u': used_only = !used_only; top = 0; sel = 0; break;
+        case 's': send_flow(cp, ks, utxos, &us, rows, n); break;
         case '\033':                       /* arrow keys arrive as ESC [ A/B */
             if (getchar() == '[') {
                 int d = getchar();
