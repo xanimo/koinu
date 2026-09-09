@@ -1,4 +1,5 @@
 *.o
+*.d
 *.a
 /kw
 /test/test_rng
@@ -38,3 +39,5 @@
 /kwd
 /kwui
 /net_multisig
+/fuzz_parse
+/fuzz_replay

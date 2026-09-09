@@ -21,3 +21,4 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends autoconf automake libtool
       - run: make check
       - run: make asan
+      - run: KW_FUZZ_ITERS=50000 make fuzz-asan

@@ -166,13 +166,32 @@ net_multisig: test/net_multisig.o $(LIB) $(SECP_LIB)
 net_handshake: test/net_handshake.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_handshake.o $(LIB)
 
+# Fuzz targets over the parsers that read bytes a peer chose. `make fuzz` needs
+# clang for libFuzzer; `make fuzz-run CORPUS=dir` replays a corpus with any
+# compiler, so CI can check the known inputs without clang.
+FUZZ_CC ?= clang
+.PHONY: fuzz fuzz-run fuzz-asan
+fuzz: fuzz/fuzz_parse.c $(SECP_LIB)
+	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined $(CPPFLAGS) \
+	    -o fuzz_parse fuzz/fuzz_parse.c $(CORE_SRC) $(SECP_LIB)
+
+fuzz-run: fuzz/fuzz_parse.c $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DKW_FUZZ_STANDALONE -o fuzz_replay \
+	    fuzz/fuzz_parse.c $(LIB) $(SECP_LIB)
+	./fuzz_replay $(wildcard fuzz/corpus/*)
+
 # Vendored code trips warnings we do not police in upstreams: leave the code as
 # shipped and quiet only those objects.
 crypto/vendor/poly1305-donna/poly1305-donna.o: CFLAGS += -Wno-expansion-to-defined
 crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c -o $@ $<
+
+# Rebuild an object when a header it includes changes. Without this a struct
+# whose size changed leaves stale objects linking against a new library, which
+# fails at runtime looking like a logic bug rather than at the build.
+-include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
 check: $(TESTS) kw
 	./test/test_rng
@@ -211,8 +230,15 @@ asan:
 	$(MAKE) check CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
+# The fuzzers are only meaningful under the sanitizers: without them a stray
+# read is silently harmless and the run reports success.
+fuzz-asan:
+	$(MAKE) clean
+	$(MAKE) fuzz-run CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+	    -fsanitize=address,undefined -fno-omit-frame-pointer"
+
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o kw kwd kwui cli/*.o net_handshake net_sync net_spv net_cf net_multisig
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
