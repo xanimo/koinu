@@ -11,9 +11,10 @@
  * chain (getcfheaders): the filter must hash to the committed filter hash, and
  * each chunk's previous_filter_header must link to the chain already verified.
  * The cached store persists its verified tip, so a later delta sync must
- * connect to it and the peer cannot quietly rewrite cached history. The chain's
- * base is taken from the peer on first contact (there is no cross-peer
- * checkpoint comparison; single-peer, trust-on-first-use). */
+ * connect to it and the peer cannot quietly rewrite cached history. Where the
+ * network carries filter-header anchors the chain is also checked against each
+ * one it crosses, which is what bounds the base; outside the anchored range the
+ * base is still whatever the peer said on first contact. */
 
 #ifndef KOINU_CF_H
 #define KOINU_CF_H

@@ -51,6 +51,48 @@ static int fh_save(const char *path, long count, const uint8_t hdr[32])
 static int  ensure_index(const char *path);
 static long index_count(const char *path);
 
+/* display (reversed) hex to internal order, as the checkpoint tables store it */
+static int unhex_rev(const char *hex, uint8_t out[32])
+{
+    for (int i = 0; i < 32; i++) {
+        int hi = -1, lo = -1;
+        char a = hex[2 * i], b = hex[2 * i + 1];
+        if (a >= '0' && a <= '9') hi = a - '0'; else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
+        else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
+        if (b >= '0' && b <= '9') lo = b - '0'; else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
+        else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
+        if (hi < 0 || lo < 0) return 0;
+        out[31 - i] = (uint8_t)((hi << 4) | lo);
+    }
+    return hex[64] == '\0';
+}
+
+/* The filter-header anchor at (height), or NULL. */
+static const kw_cfcheckpoint *cf_anchor_at(const kw_chainparams *cp, uint32_t height)
+{
+    if (!cp || !cp->cfcheckpoints) return NULL;
+    for (size_t i = 0; i < cp->ncfcheckpoints; i++)
+        if (cp->cfcheckpoints[i].height == height) return &cp->cfcheckpoints[i];
+    return NULL;
+}
+
+/* Compare the running chain against the anchor at (height), if there is one.
+   Returns 0 only on a real mismatch, so an absent or malformed anchor is not
+   treated as a failure of the peer. */
+static int cf_anchor_ok(const kw_chainparams *cp, uint32_t height, const uint8_t chain[32])
+{
+    const kw_cfcheckpoint *a = cf_anchor_at(cp, height);
+    uint8_t want[32];
+    if (!a || !unhex_rev(a->header, want)) return 1;
+    if (memcmp(chain, want, 32) == 0) {
+        if (kw_net_verbose) fprintf(stderr, "[cf] filter-header anchor %u matched\n", height);
+        return 1;
+    }
+    fprintf(stderr, "kw: filter-header anchor mismatch at height %u; "
+                    "this peer's filters are not the ones this release pins\n", height);
+    return 0;
+}
+
 static int wr_varint(FILE *f, uint64_t v)
 {
     uint8_t b[9]; size_t n = 0;
@@ -143,6 +185,9 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                                         base_height + (uint32_t)s0);
             free(fh); return -1;
         }
+        /* prev is the chain at the block before this range, so an anchor there
+           is checked before a single filter of the range is trusted */
+        if (s0 > 0 && !cf_anchor_ok(p->cp, base_height + (uint32_t)s0 - 1, prev)) { free(fh); return -1; }
         memcpy(chain, prev, 32); have_chain = 1;
 
         uint8_t body[37];
@@ -171,6 +216,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                 free(fh); return -1;
             }
             kw_cf_header_step(fhash, chain, chain);
+            if (!cf_anchor_ok(p->cp, base_height + (uint32_t)k, chain)) { free(fh); return -1; }
 
             if (!kw_cfstore_append(path, bh, filt, flen)) { free(fh); return -1; }
         }

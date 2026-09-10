@@ -23,6 +23,7 @@ typedef struct {
     int32_t  peer_version;
     int32_t  peer_height;
     int64_t  peer_feerate;               /* last BIP133 feefilter, koinu/kB, 0 if none */
+    const kw_chainparams *cp;            /* the network connected to; NULL from kw_peer_from_fd */
 } kw_peer;
 
 /* Wrap an already-connected fd (used by tests over a socketpair). Returns 1. */

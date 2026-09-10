@@ -59,6 +59,8 @@ static void usage(void)
       "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
       "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "  height   --node HOST [--port N] [--tor]\n"
+      "  cfcheckpoints --node HOST [--port N] [--tor] [--headers PATH]\n"
+      "           [--since SPACING]   (filter-header anchors, for a release)\n"
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
@@ -882,6 +884,81 @@ out:
 
 /* Print the peer's tip height and hash. Header sync only; no keystore. The store
    holds blocks 1..count, so the tip height is the count. */
+/* Walk the peer's filter-header chain from genesis and print the chain value at
+   every (spacing) blocks, as a kw_cfcheckpoint table ready to paste into
+   chainparams.c. Fetches cfheaders only, not filters, so it costs one round trip
+   per 1000 blocks rather than the whole filter set. This is a release-time tool:
+   the values it prints are only as good as the node they came from, so run it
+   against a node whose blocks you trust. */
+static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int port, int tor,
+                             const char *headers_path, int peers, long spacing)
+{
+    if (!node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+    if (spacing <= 0) spacing = 100000;
+    kw_net_verbose = 1;
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
+
+    kw_peer p;
+    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+                   : kw_peer_connect(&p, cp, node, port, 15);
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); return 1; }
+
+    int rc = 1;
+    kw_headerstore s; kw_headerstore_init(&s);
+    uint8_t (*fh)[32] = NULL;
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
+
+    headers_open(&s, headers_path);
+    {
+        long nh = kw_sync_headers(&p, &s, cp);
+        if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); goto out; }
+        if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
+    }
+    if (s.count == 0) { fprintf(stderr, "kw: no headers\n"); goto out; }
+
+    fh = (uint8_t (*)[32])malloc(1000 * 32);
+    if (!fh) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+
+    printf("static const kw_cfcheckpoint %s_CFCHECKPOINTS[] = {\n", "KW_DOGE_MAINNET");
+    {
+        uint8_t chain[32];
+        const size_t CHUNK = 1000;
+        for (size_t s0 = 0; s0 < s.count; s0 += CHUNK) {
+            size_t s1 = s0 + CHUNK; if (s1 > s.count) s1 = s.count;
+            uint8_t prev[32];
+            /* store index 0 is height 1: genesis is not in the header store */
+            if (!kw_cf_fetch_headers(&p, &s, 1, s0, s1, prev, fh)) {
+                fprintf(stderr, "kw: cfheaders fetch failed at height %zu "
+                                "(does %s serve BIP157?)\n", s0 + 1, node);
+                goto out;
+            }
+            /* the peer's prev must continue what we already built */
+            if (s0 > 0 && memcmp(prev, chain, 32) != 0) {
+                fprintf(stderr, "kw: filter-header chain broke at height %zu\n", s0 + 1);
+                goto out;
+            }
+            memcpy(chain, prev, 32);
+            for (size_t k = s0; k < s1; k++) {
+                kw_cf_header_step(fh[k - s0], chain, chain);
+                if ((long)(k + 1) % spacing == 0 || k == s.count - 1) {
+                    uint8_t d[32]; for (int i = 0; i < 32; i++) d[i] = chain[31 - i];
+                    char hex[65]; kw_hex_encode(d, 32, hex, sizeof hex);
+                    printf("    { %zu, \"%s\" },\n", k + 1, hex);
+                    fflush(stdout);
+                }
+            }
+        }
+    }
+    printf("};\n");
+    rc = 0;
+out:
+    free(fh);
+    kw_headerstore_free(&s);
+    kw_peer_close(&p);
+    return rc;
+}
+
 static int cmd_height(const kw_chainparams *cp, const char *node, int port, int tor,
                       const char *headers_path, int peers)
 {
@@ -1406,6 +1483,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers);
+    else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, wif_arg, script_arg, psbts, npsbt, vin);

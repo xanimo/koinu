@@ -15,6 +15,14 @@
    the segment's end checkpoint. */
 typedef struct { uint32_t height; const char *hash; } kw_checkpoint;
 
+/* A filter-header anchor: the BIP157 basic-filter header at a height, display
+   (reversed) hex. Each filter header is sha256d(filter_hash || previous), so one
+   value commits to every filter beneath it. That is what makes a single anchor
+   worth carrying: compact filters are served by too few nodes to compare peers
+   against each other, and without an anchor the chain's base is whatever the
+   first peer to answer claimed it was. */
+typedef struct { uint32_t height; const char *header; } kw_cfcheckpoint;
+
 /* The base58 version bytes and derivation constants for a network, from
    Dogecoin Core's chainparams.cpp. */
 typedef struct {
@@ -31,6 +39,8 @@ typedef struct {
     size_t           ncheckpoints;
     const char *const *dns_seeds;      /* seeder hostnames; NULL if none */
     size_t           nseeds;
+    const kw_cfcheckpoint *cfcheckpoints;  /* ascending by height; NULL if none */
+    size_t           ncfcheckpoints;
 } kw_chainparams;
 
 extern const kw_chainparams KW_DOGE_MAINNET;

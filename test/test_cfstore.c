@@ -52,8 +52,8 @@ static size_t mk_cfilter(uint8_t *out, const uint8_t bh[32], const uint8_t *f, s
 }
 
 /* one kw_cfstore_sync run against a preloaded socketpair peer */
-static long sync_round(const kw_headerstore *s, const char *path,
-                       const uint8_t *msgs, const size_t *lens, const char **cmds, int nmsg)
+static long sync_round_cp(const kw_chainparams *cp, const kw_headerstore *s, const char *path,
+                          const uint8_t *msgs, const size_t *lens, const char **cmds, int nmsg)
 {
     uint32_t magic = KW_DOGE_REGTEST.magic;
     int sv[2];
@@ -67,10 +67,28 @@ static long sync_round(const kw_headerstore *s, const char *path,
     }
     kw_peer p;
     kw_peer_from_fd(&p, magic, sv[0]);
+    p.cp = cp;                       /* NULL: no anchors, as from_fd leaves it */
     long r = kw_cfstore_sync(&p, s, path, 1);
     kw_peer_close(&p);
     close(sv[1]);
     return r;
+}
+
+static long sync_round(const kw_headerstore *s, const char *path,
+                       const uint8_t *msgs, const size_t *lens, const char **cmds, int nmsg)
+{
+    return sync_round_cp(NULL, s, path, msgs, lens, cmds, nmsg);
+}
+
+/* internal-order bytes to the display (reversed) hex a checkpoint table holds */
+static void hex_rev(const uint8_t v[32], char out[65])
+{
+    static const char *D = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[2 * i]     = D[v[31 - i] >> 4];
+        out[2 * i + 1] = D[v[31 - i] & 15];
+    }
+    out[64] = 0;
 }
 
 int main(void)
@@ -180,8 +198,43 @@ int main(void)
         remove(sp);
         snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
         snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
+
+        /* A filter-header anchor is checked as the chain is built, so a peer
+           serving a consistent chain of its own is caught at the first anchor
+           rather than believed. Height 1 is store index 0. */
+        char good[65], bad[65];
+        uint8_t other[32]; memset(other, 0x5a, 32);
+        hex_rev(chain1, good);
+        hex_rev(other, bad);
+
+        kw_headerstore s2; kw_headerstore_init(&s2);
+        kw_headerstore_append(&s2, &h1);
+        lens[0] = mk_cfheaders(msgs, h1.hash, prev0, hash1);
+        lens[1] = mk_cfilter(msgs + lens[0], h1.hash, f1, sizeof f1);
+
+        kw_chainparams cpa = KW_DOGE_REGTEST;
+        kw_cfcheckpoint anchor[1];
+        cpa.cfcheckpoints = anchor; cpa.ncfcheckpoints = 1;
+
+        anchor[0].height = 1; anchor[0].header = good;
+        if (sync_round_cp(&cpa, &s2, sp, msgs, lens, cmds, 2) != 1) {
+            fprintf(stderr, "FAIL: matching anchor refused\n"); return 1; }
+        remove(sp);
+        snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
+        snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
+
+        anchor[0].header = bad;
+        if (sync_round_cp(&cpa, &s2, sp, msgs, lens, cmds, 2) != -1) {
+            fprintf(stderr, "FAIL: chain contradicting the anchor accepted\n"); return 1; }
+        if (kw_cfstore_count(sp) > 0) {
+            fprintf(stderr, "FAIL: filter cached despite anchor mismatch\n"); return 1; }
+
+        kw_headerstore_free(&s2);
+        remove(sp);
+        snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
+        snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned and tamper refused\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused, filter-header anchor enforced\n");
     return 0;
 }

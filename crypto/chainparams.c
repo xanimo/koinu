@@ -274,6 +274,82 @@ static const kw_checkpoint KW_DOGE_MAINNET_CHECKPOINTS[] = {
     { 6350000, "948536c5d2be4002adf3478caecbcd8c322cb9ead584f9a67e7cacc2f33a420d" },
 };
 
+/* Basic-filter (BIP158) header anchors, every 100000 blocks. Each value is the
+   filter header at that height, which commits to every filter beneath it, so a
+   peer serving a different filter set is caught at the first anchor it crosses
+   rather than believed because it answered first.
+
+   Generated with kw cfcheckpoints against a node serving BIP157, then every one
+   reproduced by recomputing the chain from an independently downloaded filter
+   cache. That makes them consistent across two fetches and two message types;
+   it does not make them derived from the blocks, so they are worth exactly what
+   the release that carries them is worth. */
+static const kw_cfcheckpoint KW_DOGE_MAINNET_CFCHECKPOINTS[] = {
+    { 100000, "040a2689d9159fdd6343db90acc55206b051e51fcee10477729d22b42e2cdc8b" },
+    { 200000, "439c6d6791d5d2d681fcd94e44d3cc4bb53ebeaf12b42d3fdbe13ab9cc6c2b6c" },
+    { 300000, "b40e0d8b0e250b94b7e6b78b4087ad8f968cb582e231fe6de932530692b1173c" },
+    { 400000, "b4ee8fd5e0167bc9e8be82fee53dcd1f4e38c1a99467f371836c9135aa11a099" },
+    { 500000, "7233cd5a0e1e5b3baa21aeed1e7263a028e2ba8d59a45cda0c08fa5dab2dfe84" },
+    { 600000, "0a1642271fc8248131ab764adb984ccb550641552ab9673cfa79fda298ea4d6f" },
+    { 700000, "6a12fd0de1431e281f98e93251904bbdb8b9a4782f297951458f61f5b22ad673" },
+    { 800000, "06d16a11ae045e434b2e7850bf2b1d061c91d741783984bdee921decfacf0f90" },
+    { 900000, "58f8b3e1380ceaaeec03f23bcb3549fc385ab154b35c2015ebdf25435786dd33" },
+    { 1000000, "4f099b5a86e0a5621e4904e74041c6259f7df346a5ff331234f92432e1debee8" },
+    { 1100000, "fdd95f56fcb7f3686ef4c6b3f77f58b8710bef58de74c1b42ea9b7d5483a32e1" },
+    { 1200000, "df186174b3ecb38a32a7eab321db821c3c09b9b95e299868b97379973632c1a9" },
+    { 1300000, "4e4ee4581b585d488a77fddfa21c77b9f97779ee3eea2733516a8cbe8897220e" },
+    { 1400000, "c5bbdefba706c0c34447d9c490565b40d2b1c675316ff0df339499369f7b900c" },
+    { 1500000, "3b078229890780a2ae09633866921534c0effbac3a8e20cfc64a0de302b1056c" },
+    { 1600000, "9a45661e35b559aa2e0330e8154fb2ec463699e218092f1f58fa43e8d66f026e" },
+    { 1700000, "df5af84682500c5fe8f44707cae0ed38daf8f67d8a239abe0157be4191eed4f9" },
+    { 1800000, "bab155179e9049f9d6fc2a001ffee601361ff3f9d6cb2baa8f796318526664fe" },
+    { 1900000, "377d439a17bbf27b41e9c965e5586fc7321fa73a82a428052e749949566f73b2" },
+    { 2000000, "a90d79cbde562d72fd9510f1316c94f52752a33466b69bcb90426ee6edab9db5" },
+    { 2100000, "affbe34e0e3a8eb133929aa70043243034e69e4cd29e572e37f4b3ae77a3ce3d" },
+    { 2200000, "7b75666b0c743d7c7bf9e6de9256e0e90dbe668f05c1736fbe90dea40e2ea2fe" },
+    { 2300000, "fb81383ac4efe25ec29995f8e85e1d9a16140373b31ef3ffdb193d691315e0ca" },
+    { 2400000, "a7612655d0ef19c15687876d1b826bfa678e53c9c7956c586dcac8c438911d33" },
+    { 2500000, "218a07b75622c0035acf653764bf66ef3e4f6a20d1a3e51f0997fcd697a9ffa5" },
+    { 2600000, "4395215c5cff2f3d451d715e71a50dc7ea9209f4237221e8cdd941181af6e672" },
+    { 2700000, "6fd9c21dec58c8ea506b65ab7abde2e3848f126f2d1b16e1961fa671960b116d" },
+    { 2800000, "11b5049e07539ae0f02c01cf60950017e1d2e1aa57dcc139764e07e1fa5661b0" },
+    { 2900000, "f00092f307be8376972d0efe41fc00f2087397fcf34917c7a0e8814ca3ef2ada" },
+    { 3000000, "5c25f9157bd71e4ce367c6b2bc11fe6be51d53e8ce905973eb2ce18b235b34d4" },
+    { 3100000, "8181379a740aa40fb3a8d1d5d5cdcef7ea62d49ba6f3c65d009cf02383e678db" },
+    { 3200000, "3b58260891025de2881e45989f6f93fbd2cb5067ef9a0e4a2207833ec9469675" },
+    { 3300000, "0ddc52d1a727e9a1df55a518ac17de9185b201af0a481a1cd6890a80ed3b6bd9" },
+    { 3400000, "f6b9450ccd29883f620c89fc94e8db30287dd2f08635e2e2de134c4a3f5ecd3b" },
+    { 3500000, "01eb0a9113f0ba23492907ea6208b1de001ffcdeff90324da0f36ede5b8c62fc" },
+    { 3600000, "0ba9f2870be7afa53f9fbff27733c0aaf7c5e132f92cc562706c954c4f4878f8" },
+    { 3700000, "b5f4384d503774236352a7e1289cdfce15dc0fadd7f5d61b2408f4c886692700" },
+    { 3800000, "51efcb866e2f9a1ee1a24589d5ab7f6ad806646b45cd091fbdf9c20b57155e5d" },
+    { 3900000, "c4210b54c185004b6b6c2814c071856236c6bdd8f367465c4a4830674b770318" },
+    { 4000000, "15ff6dc247f0d8fe6ce02af33b21ca3c49f149945c2d5b61ce07c9b40f799d4c" },
+    { 4100000, "969daa1a7c803d5a4e6fb7f6e7a5528ba7d338ba260bf31e4e92099828992c6e" },
+    { 4200000, "e2e109927c49b92a958a071df251f1a63c56200f44016e53baafdd7658db42fa" },
+    { 4300000, "47c6705dfa8e9c33fdda3f60a58f700d2f0c236e3c6efc782f13b8025898f3a1" },
+    { 4400000, "c0ebbb2ad500cb8836738c95bf16f1cb33a4337d618af9f7c521b0a1fd26dd6d" },
+    { 4500000, "2d4115e7d6dd542b986ba7ca91a3c2bb34fda1248e4a28a3dbc6676ce680c34f" },
+    { 4600000, "a392ba71538958a3ba400596d5b0dc422bd5c9bdccd85c0d907983e6ae99ae7d" },
+    { 4700000, "a3e00b58554dd7bca88ae918bec6d0f7be902f404af84c9393bf758cd9773d9b" },
+    { 4800000, "f0590250dccecc04bf8a6148275451f5c7e14457a266a40975f434940abab6e1" },
+    { 4900000, "df7fb7a7b3340798b50b8b5c8387cacea017c569072de577fe9099be8be51931" },
+    { 5000000, "71d52466bbc8b854f8b06cbf2d6327748d1617f9c03598b6f035762108983096" },
+    { 5100000, "d9a205a42d72c7d005ce93391a0e2c32d50aeeedfbdef51e30aec7dff18e2276" },
+    { 5200000, "3596668ba986f86e7ec94f1a2e33f36c744bdcc83dd372f7fff3910890adce65" },
+    { 5300000, "1efa17e05359640ea5a1cec6b502627a7ffa090a9ddeeb2e326aae97f0ad295b" },
+    { 5400000, "21956279c52e7f3ecf2c72b8ccd8e514ae54459e03b8b4fdcbb02a81e5916fab" },
+    { 5500000, "0b2fa39ff57c3941a778f3ff18f8492bf841ee538949265756f739b58a597e53" },
+    { 5600000, "7966d4855c4bbb9835e828a6a7b021039779b35fee5ae2af6d77508d4ff5b545" },
+    { 5700000, "8aa5036343f806cb08cd581caaa5aec716989d17de2c7cc0a75279fddaa5df7f" },
+    { 5800000, "98ba02d82a69f91ec1b4d84d8ba0aa315a6eb25a4eed9f083d71f933d29d3ff8" },
+    { 5900000, "c57e3cd34d9e47f902185c3d185ec3035f7662b573696e27a9da29f62ad952dd" },
+    { 6000000, "6b0f77218c7a95404a148cc34fd7b011b0fcd15ce3b70ef2b220145a3f207c44" },
+    { 6100000, "0d4b5fc268c0affc29549b8e2e7f8143d6fabb7f0dbd71c8fce7dd7751c281f6" },
+    { 6200000, "b56a4e462182208430d89736df4cd4f42fa3ba9f47bc43ff8c373ab0623c74ba" },
+    { 6300000, "8acd1af5e07116a777ca2c5bc79e9f58b06679476c6551f9734065bc59051183" },
+};
+
 const kw_chainparams KW_DOGE_MAINNET = {
     "dogecoin",  0x1e, 0x16, 0x9e,
     { 0x02fac398, 0x02facafd }, 3,
@@ -281,7 +357,9 @@ const kw_chainparams KW_DOGE_MAINNET = {
     "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691",
     KW_DOGE_MAINNET_CHECKPOINTS,
     sizeof KW_DOGE_MAINNET_CHECKPOINTS / sizeof KW_DOGE_MAINNET_CHECKPOINTS[0],
-    KW_DOGE_MAINNET_SEEDS, 2
+    KW_DOGE_MAINNET_SEEDS, 2,
+    KW_DOGE_MAINNET_CFCHECKPOINTS,
+    sizeof KW_DOGE_MAINNET_CFCHECKPOINTS / sizeof KW_DOGE_MAINNET_CFCHECKPOINTS[0]
 };
 
 const kw_chainparams KW_DOGE_TESTNET = {
@@ -290,7 +368,8 @@ const kw_chainparams KW_DOGE_TESTNET = {
     0xdcb7c1fc, 44556,
     "bb0a78264637406b6360aad926284d544d7049f45189db5664f3c4d07350559e",
     0, 0,
-    KW_DOGE_TESTNET_SEEDS, 1
+    KW_DOGE_TESTNET_SEEDS, 1,
+    0, 0
 };
 
 const kw_chainparams KW_DOGE_REGTEST = {
@@ -298,6 +377,7 @@ const kw_chainparams KW_DOGE_REGTEST = {
     { 0x04358394, 0x043587cf }, 1,
     0xdab5bffa, 18444,
     "3d2160a3b5dc4a9d62e7e66a295f70313ac808440ef7400d6c0772171ce973a5",
+    0, 0,
     0, 0,
     0, 0
 };

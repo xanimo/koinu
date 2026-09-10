@@ -41,11 +41,16 @@ into chainparams. That makes a served chain match a known one; it does not make
 it the most-work chain, and the anchors are only as good as the release that
 carries them.
 
-**Filter commitments are trust-on-first-use, against one peer.** Every filter is
-checked against that peer's cfheaders chain and the verified tip is pinned, so a
-peer cannot rewrite history it already served. The chain's base is taken from
-whichever peer answered first, and there is no cross-peer comparison, so a peer
-that lies consistently from the start is believed.
+**Filter commitments are anchored to the release, not to other peers.** Every
+filter is checked against that peer's cfheaders chain and the verified tip is
+pinned, so a peer cannot rewrite history it already served. The chain is also
+checked against the filter-header anchors in chainparams, every 100000 blocks to
+height 6300000, so a peer serving a different filter set is caught at the first
+anchor it crosses rather than believed because it answered first. Above the last
+anchor the base is still the peer's word. Compact filters are served by too few
+nodes to compare peers against each other, which is why this is an anchor table
+and not a quorum; the anchors are only as good as the release carrying them, and
+they were generated from one node's cfheaders rather than derived from blocks.
 
 The practical consequence: a peer that can serve a consistent false history can
 convince koinu a transaction confirmed when it did not. For a wallet spending

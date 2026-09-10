@@ -3,6 +3,7 @@
 ## [Unreleased]
 ## What's Changed
 * kw: bound the fee a spend may pay
+* cf: anchor the filter-header chain to the release
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed
