@@ -41,3 +41,4 @@
 /net_multisig
 /fuzz_parse
 /fuzz_replay
+/test/test_scrypt
