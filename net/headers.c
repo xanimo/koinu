@@ -89,6 +89,13 @@ static uint64_t r_varint(R *r)
 int kw_msg_headers_parse(const uint8_t *in, size_t len,
                          kw_block_header *out, size_t maxout, size_t *nout)
 {
+    return kw_msg_headers_parse_cb(in, len, out, maxout, nout, NULL, NULL);
+}
+
+int kw_msg_headers_parse_cb(const uint8_t *in, size_t len,
+                            kw_block_header *out, size_t maxout, size_t *nout,
+                            kw_header_fn fn, void *ctx)
+{
     R r = { in, len, 0, 0 };
     uint64_t count = r_varint(&r);
     if (r.bad) return 0;
@@ -99,11 +106,16 @@ int kw_msg_headers_parse(const uint8_t *in, size_t len,
         uint32_t version = rd_le32(r.p + r.off);
         kw_block_header_parse(r.p + r.off, KW_HEADER_LEN, &out[i]);
         r.off += KW_HEADER_LEN;
+        const uint8_t *aux = NULL;
+        size_t auxlen = 0;
         if (version & KW_BLOCK_VERSION_AUXPOW) {          /* step over merged-mining data */
+            size_t at = r.off;
             if (!kw_auxpow_parse(r.p, r.len, &r.off, NULL)) r.bad = 1;
+            else { aux = r.p + at; auxlen = r.off - at; }
         }
         (void)r_varint(&r);            /* tx count, 0 in a headers message */
         if (r.bad) return 0;
+        if (fn && !fn(ctx, &out[i], aux, auxlen)) return 0;
     }
     *nout = (size_t)count;
     return 1;

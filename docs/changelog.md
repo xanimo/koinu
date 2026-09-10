@@ -22,6 +22,7 @@
 * test: three real mainnet merged-mining proofs, fetched from a peer
 * powq: check proof of work off the download's back, in parallel
 * cpu: the feature cache is atomic, since threads share it
+* kw: scan checks the work of every header past the last anchor
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

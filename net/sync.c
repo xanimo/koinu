@@ -12,7 +12,27 @@
 
 int kw_net_verbose = 0;
 
+/* Submitting to the pool as headers are parsed, counting heights from the store's
+   current tip. A refusal here abandons the parse: the queue only refuses once a
+   header has already failed, and there is no point downloading the rest. */
+struct feed { kw_powq *q; uint32_t from, height, stopped; };
+
+static int on_header(void *ctx, const kw_block_header *h, const uint8_t *aux, size_t auxlen)
+{
+    struct feed *f = (struct feed *)ctx;
+    uint32_t at = f->height++;
+    if (at < f->from) return 1;
+    if (!kw_powq_submit(f->q, at, h->raw, aux, auxlen)) { f->stopped = 1; return 0; }
+    return 1;
+}
+
 long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp)
+{
+    return kw_sync_headers_checked(p, s, cp, NULL, 0);
+}
+
+long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp,
+                             kw_powq *q, uint32_t from_height)
 {
     /* genesis hash in internal order, for the initial locator and link check */
     uint8_t genesis[32], disp[32];
@@ -45,7 +65,12 @@ long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp)
         if (!got) { free(batch); return -1; }
 
         size_t nout = 0;
-        if (kw_msg_headers_parse(pl, pn, batch, KW_MAX_HEADERS, &nout) != 1) { free(batch); return -1; }
+        /* the height the first header of this message will take, so the callback can
+           tell what is above the anchor and what is already pinned by one */
+        struct feed f = { q, from_height, (uint32_t)s->count + 1, 0 };
+        if (kw_msg_headers_parse_cb(pl, pn, batch, KW_MAX_HEADERS, &nout,
+                                    q ? on_header : NULL, &f) != 1) { free(batch); return -1; }
+        if (f.stopped) { free(batch); return -1; }
         if (nout == 0) break;                    /* peer has nothing after our tip */
 
         /* seeding from empty: the first header must build on genesis */

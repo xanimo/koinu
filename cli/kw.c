@@ -29,6 +29,7 @@
 #include "cf.h"
 #include "fee.h"
 #include "journal.h"
+#include "powq.h"
 #include "cfstore.h"
 #include "utxo.h"
 
@@ -54,7 +55,7 @@ static void usage(void)
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "                                          [--index N] [--change] [--spk]\n"
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
-      "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH]\n"
+      "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH] [--validate-pow]\n"
       "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
@@ -77,6 +78,9 @@ static void usage(void)
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
       "  a later run resumes from the stored tip instead of syncing from genesis.\n"
+      "  --validate-pow checks the work of every header rather than trusting the\n"
+      "  compiled-in anchors below the last one. Costs a scrypt hash per header and\n"
+      "  gives up the parallel fill, which cannot check as it downloads.\n"
       "  --peers N (with --headers, first run) downloads the checkpointed header\n"
       "  range over N parallel connections before the sequential tail; --node may\n"
       "  repeat (up to 8) to spread those connections over several nodes, and with\n"
@@ -533,7 +537,7 @@ static void record_receives(const kw_chainparams *cp, const kw_bip32_key *master
 static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass_arg,
                     const char *node, int port, int tor, int use_cf, int gap,
                     const char *utxos_path, const char *headers_path, const char *filters_path,
-                    int peers)
+                    int peers, int validate_pow)
 {
     if (!path || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -548,6 +552,15 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
 
     kw_net_verbose = 1;
+    /* The parallel fill writes the checkpointed range straight to the cache without
+       the blobs, so it cannot check work. That is exactly the range the default
+       trusts anchors for, so the two fit together; asking for the whole chain does
+       not, and quietly checking only the tail would be worse than being slow. */
+    if (validate_pow && peers > 1) {
+        fprintf(stderr, "kw: --validate-pow checks every header as it arrives, which the "
+                        "parallel fill cannot; using one peer\n");
+        peers = 1;
+    }
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
@@ -562,8 +575,33 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
 
     kw_headerstore s; headers_open(&s, headers_path);
-    nh = kw_sync_headers(&p, &s, cp);
+
+    /* Work is checked from the last compiled-in anchor by default. Below one, a block
+       hash pins the chain already, which is the stronger claim: a hash names one
+       chain where work only proves energy was spent on some chain. --validate-pow
+       checks the whole thing and trusts no anchor. */
+    uint32_t pow_from = 1;
+    if (!validate_pow && cp->ncheckpoints)
+        pow_from = cp->checkpoints[cp->ncheckpoints - 1].height + 1;
+
+    kw_powq *pq = kw_powq_start(0, 4096);
+    if (!pq) { fprintf(stderr, "kw: could not start the validator\n"); kw_headerstore_free(&s); goto done; }
+    int pow_threads = kw_powq_threads(pq);
+
+    nh = kw_sync_headers_checked(&p, &s, cp, pq, pow_from);
+
+    uint64_t pow_checked = 0;
+    uint32_t pow_bad = 0;
+    int pow_ok = kw_powq_finish(pq, &pow_checked, &pow_bad);
+    if (!pow_ok) {
+        fprintf(stderr, "kw: header %u does not prove its work; this chain is not the "
+                        "one this release pins\n", pow_bad);
+        kw_headerstore_free(&s);
+        goto done;
+    }
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
+    printf("checked the work of %llu header(s) from height %u on %d thread(s)\n",
+           (unsigned long long)pow_checked, pow_from, pow_threads);
     if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
 
     /* gap-limit: rescan with a growing range until `gap` unused addresses trail
@@ -1480,7 +1518,7 @@ out:
 
 int main(int argc, char **argv)
 {
-    int net = 0, words = 12, change = 0, ninputs = 0, want_spk = 0;
+    int net = 0, words = 12, change = 0, ninputs = 0, want_spk = 0, validate_pow = 0;
     int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
@@ -1536,6 +1574,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--sig"))      { const char *v = NEXT(); if (v && nsigs < 15) sigs[nsigs++] = v; }
         else if (!strcmp(a, "--finish"))     finish = 1;
         else if (!strcmp(a, "--peers"))    { const char *v = NEXT(); peers = v ? atoi(v) : 1; }
+        else if (!strcmp(a, "--validate-pow")) validate_pow = 1;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (!strcmp(a, "--version")) { printf("kw %s\n", KW_VERSION); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
@@ -1557,7 +1596,7 @@ int main(int argc, char **argv)
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, words);
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
-    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers);
+    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers);

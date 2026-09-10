@@ -42,6 +42,19 @@ size_t kw_msg_getheaders_build(uint32_t version,
 int kw_msg_headers_parse(const uint8_t *in, size_t len,
                          kw_block_header *out, size_t maxout, size_t *nout);
 
+/* Called for each header parsed. (aux) is its AuxPoW blob and is NULL for a block
+   that proves its own work; it points into (in) and is only valid for the duration
+   of the call, which is why a validator copies it. Return 0 to abandon the parse. */
+typedef int (*kw_header_fn)(void *ctx, const kw_block_header *h,
+                            const uint8_t *aux, size_t auxlen);
+
+/* The same parse, handing each header and its blob to (fn) on the way past. This is
+   the only chance to see a blob: the store keeps 80 bytes and a hash, so anything
+   that wants to check merged-mining work has to take it here. */
+int kw_msg_headers_parse_cb(const uint8_t *in, size_t len,
+                            kw_block_header *out, size_t maxout, size_t *nout,
+                            kw_header_fn fn, void *ctx);
+
 /* Skip a CAuxPow blob at (in + *off), advancing *off past it. Used to step over
    the merged-mining data an AuxPoW block carries between its 80-byte header and
    its transaction count. Returns 1, or 0 if malformed. */

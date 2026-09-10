@@ -8,6 +8,7 @@
 #include "peer.h"
 #include "headers.h"
 #include "chainparams.h"
+#include "powq.h"
 
 /* When nonzero, the sync drivers print progress to stderr. Off by default. */
 extern int kw_net_verbose;
@@ -20,5 +21,14 @@ extern int kw_net_verbose;
    appended, or -1 on a socket error, an AuxPoW header, or one that does not
    link. */
 long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp);
+
+/* The same, handing every header at (from_height) or above to (q) as it arrives, so
+   its work is checked while the download continues. (q) NULL is the plain sync.
+   Below (from_height) a header is trusted because a compiled-in block hash already
+   pins it, which is a stronger claim than its work: a hash names one chain, where
+   work only proves someone burned energy on some chain. Pass 1 to check the lot and
+   trust nothing. The verdict comes from kw_powq_finish, not from here. */
+long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp,
+                             kw_powq *q, uint32_t from_height);
 
 #endif /* KOINU_SYNC_H */

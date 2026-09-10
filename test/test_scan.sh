@@ -45,12 +45,16 @@ $C generatetoaddress 3 "$MINE" >/dev/null
 
 U="$D/u"
 J="$U.journal"
-SCAN="./kw --regtest scan $K --node 127.0.0.1 --port $P2P --spv --gap 5 --utxos $U"
+SCAN="./kw --regtest scan $K --node 127.0.0.1 --port $P2P --spv --gap 5 --utxos $U --validate-pow"
 
 OUT=$($SCAN)
 echo "$OUT"
 BAL=$(echo "$OUT" | awk '/^scanned/{print $7}')
 [ "$BAL" = "1500000000" ] || { echo "FAIL: scanned balance $BAL, want 1500000000" >&2; exit 1; }
+
+# --validate-pow hashes every header as it arrives, so the count must match the sync
+CHECKED=$(echo "$OUT" | awk '/^checked the work/{print $5}')
+[ "$CHECKED" = "104" ] || { echo "FAIL: checked $CHECKED headers, want 104" >&2; echo "$OUT" >&2; exit 1; }
 
 NU=$(awk '!/^#/{n++} END{print n+0}' "$U")   # the file carries a header line
 [ "$NU" = "2" ] || { echo "FAIL: utxo set has $NU entries, want 2" >&2; cat "$U" >&2; exit 1; }
@@ -83,5 +87,5 @@ $SCAN >/dev/null
 NJ3=$(awk 'END{print NR}' "$J")
 [ "$NJ3" = "3" ] || { echo "FAIL: a new receive did not append, journal has $NJ3" >&2; cat "$J" >&2; exit 1; }
 
-echo "scan ok: 15 DOGE over 2 addresses found and journaled with heights, a rescan"
-echo "  adds nothing, and a later payment appends"
+echo "scan ok: 104 headers proved their work, 15 DOGE over 2 addresses found and"
+echo "  journaled with heights, a rescan adds nothing, and a later payment appends"
