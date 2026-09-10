@@ -47,3 +47,4 @@
 /test/test_fee
 /test/test_journal
 /pow_chain
+/test/test_auxpow

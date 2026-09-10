@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "headers.h"
+#include "auxpow.h"
 #include "sha2.h"
 #include "mem.h"
 
@@ -74,80 +75,15 @@ static uint64_t r_varint(R *r)
     return v;
 }
 
-static void r_skip(R *r, uint64_t n)
-{
-    if (r->bad || n > (uint64_t)(r->len - r->off)) { r->bad = 1; return; }
-    r->off += (size_t)n;
-}
 
-/* A count that cannot exceed the bytes left (each item is >= 1 byte), which
-   also bounds the loops driven by it. */
-static uint64_t r_count(R *r)
-{
-    uint64_t v = r_varint(r);
-    if (v > (uint64_t)(r->len - r->off)) r->bad = 1;
-    return v;
-}
-
-static void skip_hashvec(R *r)          /* vector<uint256> */
-{
-    uint64_t n = r_varint(r);
-    if (n > (uint64_t)(r->len - r->off) / 32) { r->bad = 1; return; }
-    r_skip(r, n * 32);
-}
 
 /* Skip a serialized transaction, BIP144 auto-detecting the segwit marker the
    same way Core's deserializer does. Used only to step over the AuxPoW parent
    coinbase, which (Litecoin) can be segwit. */
-static void skip_tx(R *r)
-{
-    r_skip(r, 4);                        /* version */
-    uint64_t nin = r_count(r);
-    int segwit = 0;
-    if (nin == 0) {                      /* 0x00 marker, then flag, then real vin */
-        r_skip(r, 1);                    /* flag */
-        segwit = 1;
-        nin = r_count(r);
-    }
-    for (uint64_t i = 0; i < nin && !r->bad; i++) {
-        r_skip(r, 36);                   /* prevout */
-        r_skip(r, r_count(r));           /* scriptSig */
-        r_skip(r, 4);                    /* sequence */
-    }
-    uint64_t nout = r_count(r);
-    for (uint64_t i = 0; i < nout && !r->bad; i++) {
-        r_skip(r, 8);                    /* value */
-        r_skip(r, r_count(r));           /* scriptPubKey */
-    }
-    if (segwit) {
-        for (uint64_t i = 0; i < nin && !r->bad; i++) {
-            uint64_t items = r_count(r);
-            for (uint64_t j = 0; j < items && !r->bad; j++) r_skip(r, r_count(r));
-        }
-    }
-    r_skip(r, 4);                        /* locktime */
-}
-
 /* Skip a CAuxPow: parent coinbase (CMerkleTx) + chain merkle branch + parent
-   pure header, in Core's serialization order. */
-static void skip_auxpow(R *r)
+   pure header, in Core's serialization order. */int kw_auxpow_skip(const uint8_t *in, size_t len, size_t *off)
 {
-    skip_tx(r);                          /* CMerkleTx.tx (parent coinbase) */
-    r_skip(r, 32);                       /* CMerkleTx.hashBlock */
-    skip_hashvec(r);                     /* CMerkleTx.vMerkleBranch */
-    r_skip(r, 4);                        /* CMerkleTx.nIndex */
-    skip_hashvec(r);                     /* vChainMerkleBranch */
-    r_skip(r, 4);                        /* nChainIndex */
-    r_skip(r, KW_HEADER_LEN);            /* parentBlock (pure header) */
-}
-
-int kw_auxpow_skip(const uint8_t *in, size_t len, size_t *off)
-{
-    R r = { in, len, *off, 0 };
-    skip_auxpow(&r);
-    if (r.bad) return 0;
-    *off = r.off;
-    return 1;
+    return kw_auxpow_parse(in, len, off, NULL);
 }
 
 int kw_msg_headers_parse(const uint8_t *in, size_t len,
@@ -163,7 +99,9 @@ int kw_msg_headers_parse(const uint8_t *in, size_t len,
         uint32_t version = rd_le32(r.p + r.off);
         kw_block_header_parse(r.p + r.off, KW_HEADER_LEN, &out[i]);
         r.off += KW_HEADER_LEN;
-        if (version & KW_BLOCK_VERSION_AUXPOW) skip_auxpow(&r);  /* step over merged-mining data */
+        if (version & KW_BLOCK_VERSION_AUXPOW) {          /* step over merged-mining data */
+            if (!kw_auxpow_parse(r.p, r.len, &r.off, NULL)) r.bad = 1;
+        }
         (void)r_varint(&r);            /* tx count, 0 in a headers message */
         if (r.bad) return 0;
     }
