@@ -48,3 +48,4 @@
 /test/test_journal
 /pow_chain
 /test/test_auxpow
+/net_auxpow

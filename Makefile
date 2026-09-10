@@ -185,6 +185,10 @@ net_cf: test/net_cf.o $(LIB) $(SECP_LIB)
 net_multisig: test/net_multisig.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_multisig.o $(LIB) $(SECP_LIB)
 
+# fetches a block and checks its merged-mining proof against a real peer
+net_auxpow: test/net_auxpow.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -o $@ test/net_auxpow.o $(LIB) $(SECP_LIB)
+
 # live handshake tool, built on demand, not part of `make check`
 net_handshake: test/net_handshake.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_handshake.o $(LIB)
@@ -270,7 +274,7 @@ fuzz-asan:
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig pow_chain
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

@@ -19,6 +19,7 @@
 * test: scan against a regtest node, and the receives it records
 * pow: the retarget rule, both regimes and the switch between them
 * auxpow: verify the proof a merged-mined block borrows from its parent
+* test: three real mainnet merged-mining proofs, fetched from a peer
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed
