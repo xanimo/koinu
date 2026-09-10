@@ -210,9 +210,140 @@ static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int 
     }
     if (!shown) printf("  (no addresses to show; run kw scan to fill the utxo set)\r\n");
 
-    printf("\r\n j/k move   u %s   r refresh   s send   q quit\r\n",
+    printf("\r\n j/k move   enter address   c coins   u %s   r refresh   s send   q quit\r\n",
            used_only ? "show all" : "used only");
     fflush(stdout);
+}
+
+
+/* Display order for a txid, abbreviated: eight bytes are enough to find a
+   transaction in an explorer and 64 characters do not fit a column. */
+static void txid_short(const uint8_t txid[32], char *out, size_t cap)
+{
+    uint8_t d[32];
+    char full[65];
+    for (int i = 0; i < 32; i++) d[i] = txid[31 - i];
+    kw_hex_encode(d, 32, full, sizeof full);
+    snprintf(out, cap, "%.16s..", full);
+}
+
+/* Does this output pay (spk)? p2pkh only, which is all a row can be. */
+static int pays(const kw_utxo *u, const uint8_t spk[25])
+{
+    return u->spklen == 25 && memcmp(u->spk, spk, 25) == 0;
+}
+
+/* One address in full, its path, and the outputs paying it. This is the receive
+   screen as well: an unused receive row is what you hand to whoever is paying,
+   so the address is on its own line to be read out or copied without the
+   surrounding columns getting in the way. */
+static void addr_view(const kw_chainparams *cp, const row *r, const kw_utxoset *us)
+{
+    int top = 0;
+    for (;;) {
+        int nmine = 0;
+        for (size_t u = 0; u < us->count; u++) if (pays(&us->u[u], r->spk)) nmine++;
+
+        int per = page_rows() - 4;
+        if (per < 1) per = 1;
+        if (top > nmine - per) top = nmine - per;
+        if (top < 0) top = 0;
+
+        char b[32];
+        fmt_doge(r->balance, b, sizeof b);
+        printf("\033[H\033[2J\033[1m %s address\033[0m   %s\r\n\r\n",
+               r->change ? "change" : "receive", cp->name);
+        printf("   \033[1m%s\033[0m\r\n\r\n", r->addr);
+        printf("   path      m/44'/%u'/0'/%u/%u\r\n", cp->bip44_coin, r->change, r->index);
+        printf("   holds     %s DOGE across %d output(s)\r\n\r\n", b, r->nutxo);
+
+        if (!nmine) {
+            printf("   nothing has paid it yet%s\r\n",
+                   r->change ? "" : ", so it is safe to hand out");
+        } else {
+            printf("   %-8s %-20s %6s %18s\r\n", "height", "txid", "vout", "value");
+            int shown = 0, seen = 0;
+            for (size_t u = 0; u < us->count && shown < per; u++) {
+                if (!pays(&us->u[u], r->spk)) continue;
+                if (seen++ < top) continue;
+                char t[32], v[32];
+                txid_short(us->u[u].txid, t, sizeof t);
+                fmt_doge(us->u[u].value, v, sizeof v);
+                printf("   %-8u %-20s %6u %18s\r\n", us->u[u].height, t, us->u[u].vout, v);
+                shown++;
+            }
+            if (nmine > per)
+                printf("\r\n   showing %d..%d of %d\r\n", top + 1, top + shown, nmine);
+        }
+        printf("\r\n j/k scroll   q back\r\n");
+        fflush(stdout);
+
+        int c = getchar();
+        if (c == 'q' || c == '\n' || c == '\r' || c == 3 || c == EOF) return;
+        if (c == 'j' && top + per < nmine) top++;
+        if (c == 'k' && top > 0) top--;
+        if (c == '\033' && getchar() == '[') {
+            int d = getchar();
+            if (d == 'B' && top + per < nmine) top++;
+            if (d == 'A' && top > 0) top--;
+        }
+    }
+}
+
+/* Every output the wallet holds, newest first, with the address it pays. This is
+   what the stored set can answer: these are unspent receives. A spend leaves no
+   record anywhere, so it is not a transaction history and is not called one. */
+struct coin { uint32_t height; size_t at; };
+
+static int by_height_desc(const void *a, const void *b)
+{
+    const struct coin *x = a, *y = b;
+    if (x->height != y->height) return x->height < y->height ? 1 : -1;
+    return x->at < y->at ? -1 : (x->at > y->at);
+}
+
+static void coins_view(const kw_utxoset *us, const row *rows, int nrows)
+{
+    struct coin *c = us->count ? (struct coin *)calloc(us->count, sizeof *c) : NULL;
+    if (us->count && !c) return;
+    for (size_t u = 0; u < us->count; u++) { c[u].height = us->u[u].height; c[u].at = u; }
+    if (us->count) qsort(c, us->count, sizeof *c, by_height_desc);
+
+    int top = 0;
+    for (;;) {
+        int n = (int)us->count, per = page_rows() - 1;
+        if (per < 1) per = 1;
+        if (top > n - per) top = n - per;
+        if (top < 0) top = 0;
+
+        printf("\033[H\033[2J\033[1m coins\033[0m   %d unspent output(s), newest first\r\n\r\n", n);
+        printf("   %-8s %-20s %6s %18s %s\r\n", "height", "txid", "vout", "value", "address");
+        for (int i = top; i < n && i < top + per; i++) {
+            const kw_utxo *u = &us->u[c[i].at];
+            const char *addr = "(not a watched address)";
+            for (int r = 0; r < nrows; r++) if (pays(u, rows[r].spk)) { addr = rows[r].addr; break; }
+            char t[32], v[32];
+            txid_short(u->txid, t, sizeof t);
+            fmt_doge(u->value, v, sizeof v);
+            printf("   %-8u %-20s %6u %18s %s\r\n", u->height, t, u->vout, v, addr);
+        }
+        if (!n) printf("   nothing yet; run kw scan to fill the utxo set\r\n");
+        else if (n > per) printf("\r\n   showing %d..%d of %d\r\n", top + 1,
+                                 top + (n - top < per ? n - top : per), n);
+        printf("\r\n j/k scroll   q back\r\n");
+        fflush(stdout);
+
+        int k = getchar();
+        if (k == 'q' || k == '\n' || k == '\r' || k == 3 || k == EOF) break;
+        if (k == 'j' && top + per < n) top++;
+        if (k == 'k' && top > 0) top--;
+        if (k == '\033' && getchar() == '[') {
+            int d = getchar();
+            if (d == 'B' && top + per < n) top++;
+            if (d == 'A' && top > 0) top--;
+        }
+    }
+    free(c);
 }
 
 /* Read a line in cooked mode, so the terminal handles editing. */
@@ -498,6 +629,10 @@ int main(int argc, char **argv)
             break;
         }
         case 's': send_flow(cp, ks, utxos, &us, rows, n); break;
+        case 'c': coins_view(&us, rows, n); break;
+        case '\n': case '\r':
+            if (nvis) addr_view(cp, &rows[vis[sel]], &us);
+            break;
         case '\033':                       /* arrow keys arrive as ESC [ A/B */
             if (getchar() == '[') {
                 int d = getchar();
