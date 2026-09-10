@@ -11,6 +11,7 @@
 * pow: compact targets and the work a chain represents
 * test: hash a real header, not one that only looks like one
 * kwui: hold a spend to the same rules kw send does
+* kwui: refresh without restarting
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

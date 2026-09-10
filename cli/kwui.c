@@ -103,6 +103,25 @@ static int parse_doge(const char *str, uint64_t *out)
     return 1;
 }
 
+/* Total what the utxo set pays each row. Separate from deriving the rows because
+   a refresh re-tallies and derives nothing, so it needs no seed: the addresses
+   are already in hand and only what the chain pays them has moved. */
+static uint64_t tally_rows(const kw_utxoset *us, row *rows, int n)
+{
+    uint64_t total = 0;
+    for (int i = 0; i < n; i++) {
+        rows[i].balance = 0;
+        rows[i].nutxo = 0;
+        for (size_t u = 0; u < us->count; u++)
+            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk, rows[i].spk, 25) == 0) {
+                rows[i].balance += us->u[u].value;
+                rows[i].nutxo++;
+            }
+        total += rows[i].balance;
+    }
+    return total;
+}
+
 /* Derive (gap) receive then (gap) change addresses and total what the utxo set
    pays each, so a row is an address and what it holds. */
 static int build_rows(const kw_chainparams *cp, const uint8_t seed[64], int gap,
@@ -128,15 +147,11 @@ static int build_rows(const kw_chainparams *cp, const uint8_t seed[64], int gap,
             if (!kw_address_p2pkh(pub, cp->p2pkh, r->addr, sizeof r->addr)) continue;
             r->change = change; r->index = (uint32_t)i;
             memcpy(r->spk, spk, 25);
-            for (size_t u = 0; u < us->count; u++)
-                if (us->u[u].spklen == 25 && memcmp(us->u[u].spk, spk, 25) == 0) {
-                    r->balance += us->u[u].value; r->nutxo++;
-                }
-            *total += r->balance;
             n++;
         }
     }
     kw_secure_zero(&master, sizeof master);
+    *total = tally_rows(us, rows, n);
     return n;
 }
 
@@ -195,7 +210,7 @@ static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int 
     }
     if (!shown) printf("  (no addresses to show; run kw scan to fill the utxo set)\r\n");
 
-    printf("\r\n j/k move   u %s   s send   q quit\r\n",
+    printf("\r\n j/k move   u %s   r refresh   s send   q quit\r\n",
            used_only ? "show all" : "used only");
     fflush(stdout);
 }
@@ -467,6 +482,21 @@ int main(int argc, char **argv)
         case 'j': if (sel < nvis - 1) sel++; break;
         case 'k': if (sel > 0) sel--; break;
         case 'u': used_only = !used_only; top = 0; sel = 0; break;
+        case 'r': {
+            /* kw scan writes the file this reads, so a refresh is a reload. Into
+               a fresh set, since load appends, and the old one is only dropped
+               once the new one is read: a truncated file leaves what was there. */
+            kw_utxoset fresh;
+            if (!kw_utxoset_init(&fresh)) break;
+            if (kw_utxoset_load(&fresh, utxos)) {
+                kw_utxoset_free(&us);
+                us = fresh;
+                total = tally_rows(&us, rows, n);
+            } else {
+                kw_utxoset_free(&fresh);
+            }
+            break;
+        }
         case 's': send_flow(cp, ks, utxos, &us, rows, n); break;
         case '\033':                       /* arrow keys arrive as ESC [ A/B */
             if (getchar() == '[') {
