@@ -6,6 +6,7 @@
 * cf: anchor the filter-header chain to the release
 * psync: let the rate-aware picker actually pick
 * scrypt, the hash dogecoin's proof of work is built on
+* scrypt: eight headers at once on avx2
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

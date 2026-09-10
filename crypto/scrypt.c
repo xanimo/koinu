@@ -10,10 +10,12 @@
  * Salsa20/8 invocations per header: two per BlockMix, one BlockMix per
  * iteration, 2N iterations.
  *
- * Salsa20/8 is therefore the only hot function. It is written three times: an
- * SSE2 form, a NEON form, and a portable one. The SIMD forms keep the state in
- * the shuffled column-major layout Percival's reference uses, so the shuffle is
- * paid once on entry and once on exit rather than every round.
+ * Salsa20/8 is therefore the only hot function. It is written three times here:
+ * an SSE2 form, a NEON form, and a portable one. The SIMD forms keep the state
+ * in the shuffled column-major layout Percival's reference uses, so the shuffle
+ * is paid once on entry and once on exit rather than every round. A fourth form
+ * in scrypt_avx2.c does eight headers at once and is what the batch path uses
+ * when the CPU has AVX2.
  *
  * Verified against the RFC 7914 vectors and, at Dogecoin's parameters, against
  * OpenSSL, in test/test_scrypt.c. */
@@ -27,6 +29,10 @@
 
 /* -DKW_SCRYPT_PORTABLE forces the scalar core, so a test can hold the SIMD ones
    against it on any machine. */
+#if !defined(KW_SCRYPT_PORTABLE)
+#  include "scrypt_avx2.h"
+#endif
+
 #if defined(KW_SCRYPT_PORTABLE)
 #  define KW_SCRYPT_BACKEND "portable"
 #elif defined(__SSE2__)
@@ -40,6 +46,14 @@
 #endif
 
 const char *kw_scrypt_backend(void) { return KW_SCRYPT_BACKEND; }
+
+const char *kw_scrypt_batch_backend(void)
+{
+#if defined(KW_SCRYPT_AVX2)
+    if (kw_scrypt_avx2_available()) return "avx2x8";
+#endif
+    return KW_SCRYPT_BACKEND;
+}
 
 static inline uint32_t rd32(const uint8_t *p)
 {
@@ -319,31 +333,6 @@ done:
     return ok;
 }
 
-/* ROMix on KW_SCRYPT_BATCH independent states, stepped together. Each state's
-   second loop reads its scratchpad at a data-dependent index, which is a cache
-   miss that nothing in that state can cover; interleaving lets the other
-   states' Salsa rounds run underneath it. */
-static void romix_r1_batch(uint32_t X[][32], uint32_t *V[], uint64_t n, size_t lanes)
-{
-    for (uint64_t i = 0; i < n; i++)
-        for (size_t l = 0; l < lanes; l++) {
-            memcpy(V[l] + i * 32, X[l], 128);
-            blockmix_r1(X[l]);
-        }
-    for (uint64_t i = 0; i < n; i++) {
-        uint64_t j[KW_SCRYPT_BATCH];
-        for (size_t l = 0; l < lanes; l++) {
-            j[l] = X[l][16] & (n - 1);
-            __builtin_prefetch(V[l] + j[l] * 32, 0, 0);
-        }
-        for (size_t l = 0; l < lanes; l++) {
-            const uint32_t *Vj = V[l] + j[l] * 32;
-            for (int k = 0; k < 32; k++) X[l][k] ^= Vj[k];
-            blockmix_r1(X[l]);
-        }
-    }
-}
-
 int kw_scrypt_pow_batch(const uint8_t *headers, size_t count,
                         uint8_t *out, void *scratch)
 {
@@ -362,30 +351,37 @@ int kw_scrypt_pow_batch(const uint8_t *headers, size_t count,
     for (int l = 0; l < KW_SCRYPT_BATCH; l++)
         V[l] = (uint32_t *)(base + (size_t)l * KW_SCRYPT_SCRATCH);
 
-    uint8_t B[KW_SCRYPT_BATCH][128];
-    uint32_t X[KW_SCRYPT_BATCH][32];
     int ok = 1;
     size_t i = 0;
 
-    for (; i + KW_SCRYPT_BATCH <= count && ok; i += KW_SCRYPT_BATCH) {
-        for (int l = 0; l < KW_SCRYPT_BATCH; l++) {
-            const uint8_t *h = headers + (i + (size_t)l) * 80;
-            if (!kw_pbkdf2_hmac_sha256(h, 80, h, 80, 1, B[l], 128)) { ok = 0; break; }
-            for (int k = 0; k < 32; k++) X[l][k] = rd32(B[l] + k * 4);
+#if defined(KW_SCRYPT_AVX2)
+    _Static_assert(KW_SCRYPT_BATCH >= 8, "the AVX2 core needs eight scratchpads");
+    if (kw_scrypt_avx2_available()) {
+        uint8_t B[8][128];
+        uint32_t X[8][32];
+        for (; i + 8 <= count && ok; i += 8) {
+            for (int l = 0; l < 8; l++) {
+                const uint8_t *h = headers + (i + (size_t)l) * 80;
+                if (!kw_pbkdf2_hmac_sha256(h, 80, h, 80, 1, B[l], 128)) { ok = 0; break; }
+                for (int k = 0; k < 32; k++) X[l][k] = rd32(B[l] + k * 4);
+            }
+            if (!ok) break;
+            kw_scrypt_romix8_avx2(X, V, 1024);
+            for (int l = 0; l < 8; l++) {
+                const uint8_t *h = headers + (i + (size_t)l) * 80;
+                for (int k = 0; k < 32; k++) wr32(B[l] + k * 4, X[l][k]);
+                if (!kw_pbkdf2_hmac_sha256(h, 80, B[l], 128, 1, out + (i + (size_t)l) * 32, 32)) ok = 0;
+            }
         }
-        if (!ok) break;
-        romix_r1_batch(X, V, 1024, KW_SCRYPT_BATCH);
-        for (int l = 0; l < KW_SCRYPT_BATCH; l++) {
-            const uint8_t *h = headers + (i + (size_t)l) * 80;
-            for (int k = 0; k < 32; k++) wr32(B[l] + k * 4, X[l][k]);
-            if (!kw_pbkdf2_hmac_sha256(h, 80, B[l], 128, 1, out + (i + (size_t)l) * 32, 32)) ok = 0;
-        }
+        kw_secure_zero(B, sizeof B);
+        kw_secure_zero(X, sizeof X);
     }
+#endif
+
+    /* the remainder, and everything on a machine without the wide core */
     for (; i < count && ok; i++)
         ok = kw_scrypt_pow(headers + i * 80, out + i * 32, V[0]);
 
-    kw_secure_zero(B, sizeof B);
-    kw_secure_zero(X, sizeof X);
     free(owned);
     return ok;
 }

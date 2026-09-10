@@ -8,11 +8,9 @@
  * to Salsa20/8, so that core is where all the time goes.
  *
  * Header validation hashes many independent headers, which is what the batch
- * entry point is for. It currently interleaves only the scratchpad accesses,
- * which measures the same as the single form because the working set is L2
- * resident and there is no latency to hide; the interface exists so a core that
- * interleaves at register width can be dropped in behind it without touching
- * callers. Prefer it for that reason, not for a speedup it does not yet give. */
+ * entry point is for: on x86_64 with AVX2 it runs eight at once in a transposed
+ * layout (crypto/scrypt_avx2.c), which is several times the single form. Without
+ * AVX2 it is the single form in a loop, so it is never slower. */
 
 #ifndef KOINU_SCRYPT_H
 #define KOINU_SCRYPT_H
@@ -38,13 +36,24 @@ int kw_scrypt_pow(const uint8_t header[80], uint8_t out[32], void *scratch);
 /* The same for (count) headers at once, (out) holding (count) 32-byte results.
    (scratch) is KW_SCRYPT_SCRATCH * KW_SCRYPT_BATCH bytes, or NULL to allocate.
    (count) may be any size; it is processed KW_SCRYPT_BATCH at a time with the
-   remainder handled singly. Returns 1/0. */
-#define KW_SCRYPT_BATCH 4
+   remainder handled singly. Returns 1/0.
+
+   The batch width is how many scratchpads the wide core needs, so it is 8 where
+   that core exists and 1 elsewhere rather than making every platform reserve
+   1MB per thread for a core it does not have. */
+#if defined(__x86_64__)
+#define KW_SCRYPT_BATCH 8
+#else
+#define KW_SCRYPT_BATCH 1
+#endif
 
 int kw_scrypt_pow_batch(const uint8_t *headers, size_t count,
                         uint8_t *out, void *scratch);
 
 /* Which Salsa20/8 core the build selected: "sse2", "neon" or "portable". */
 const char *kw_scrypt_backend(void);
+
+/* What the batch path will use on this machine: "avx2x8", or the above. */
+const char *kw_scrypt_batch_backend(void);
 
 #endif /* KOINU_SCRYPT_H */

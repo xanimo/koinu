@@ -12,5 +12,6 @@
 #define kw_scrypt_pow        kw_scrypt_pow_portable
 #define kw_scrypt_pow_batch  kw_scrypt_pow_batch_portable
 #define kw_scrypt_backend    kw_scrypt_backend_portable
+#define kw_scrypt_batch_backend kw_scrypt_batch_backend_portable
 
 #include "../crypto/scrypt.c"

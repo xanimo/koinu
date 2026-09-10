@@ -23,7 +23,7 @@ CPPFLAGS += -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include -Icrypto/ven
             -Icrypto/vendor/argon2 -DARGON2_NO_THREADS
 
 CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
-           crypto/pbkdf2.c crypto/scrypt.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
+           crypto/pbkdf2.c crypto/scrypt.c crypto/scrypt_avx2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
            net/proto.c net/msg.c net/peer.c net/socks5.c net/headers.c net/sync.c net/psync.c net/seed.c net/spv.c net/gcs.c net/cf.c net/cfstore.c \

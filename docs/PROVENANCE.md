@@ -31,9 +31,21 @@ auditable from this tree.
     crypto/hmac.c  crypto/hmac.h   hmac-sha256 and hmac-sha512 (rfc 2104) over the
                                    sha-2 above, checked against the rfc 4231
                                    vectors in test/test_hmac.c
-    crypto/pbkdf2.c                pbkdf2-hmac-sha512 (rfc 8018), checked in
-    crypto/pbkdf2.h                test/test_pbkdf2.c against a one-round identity
-                                   and the canonical bip39 mnemonic-to-seed vector
+    crypto/pbkdf2.c                pbkdf2-hmac-sha512 and -sha256 (rfc 8018),
+    crypto/pbkdf2.h                checked in test/test_pbkdf2.c against a
+                                   one-round identity and the canonical bip39
+                                   mnemonic-to-seed vector, and in
+                                   test/test_scrypt.c against rfc 7914's sha256
+                                   vectors
+    crypto/scrypt.c                scrypt (rfc 7914) clean-room from the rfc, with
+    crypto/scrypt.h                an entry point at dogecoin's n=1024 r=1 p=1 over
+                                   an 80-byte header. salsa20/8 written four times,
+                                   sse2, neon, scalar, and the eight-at-once avx2
+                                   core in crypto/scrypt_avx2.c. checked in
+    crypto/scrypt_avx2.c           test/test_scrypt.c against the three rfc 7914
+    crypto/scrypt_avx2.h           vectors, against openssl at dogecoin's
+                                   parameters, and vector cores against the scalar
+                                   one over random headers
     crypto/base58.c                base58 and base58check (double-sha256 checksum),
     crypto/base58.h                checked in test/test_base58.c against bitcoin's
                                    raw vectors and the classic address examples

@@ -20,6 +20,7 @@
 int kw_scrypt_portable(const uint8_t *pass, size_t passlen, const uint8_t *salt, size_t saltlen,
                        uint64_t n, uint32_t r, uint32_t p, uint8_t *out, size_t outlen);
 int kw_scrypt_pow_portable(const uint8_t header[80], uint8_t out[32], void *scratch);
+int kw_scrypt_pow_batch_portable(const uint8_t *headers, size_t count, uint8_t *out, void *scratch);
 const char *kw_scrypt_backend_portable(void);
 
 static int eq(const char *what, const uint8_t *got, const char *wanthex, size_t n)
@@ -88,18 +89,27 @@ int main(void)
     if (!kw_scrypt(hdr, 80, hdr, 80, 1024, 1, 1, gen, 32)) { fprintf(stderr, "FAIL: general call\n"); return 1; }
     if (memcmp(pow, gen, 32) != 0) { fprintf(stderr, "FAIL: pow path disagrees with the general one\n"); return 1; }
 
-    /* the batch path must produce exactly what the single path does */
-    uint8_t hdrs[7 * 80], single[7 * 32], batched[7 * 32];
-    for (int i = 0; i < 7; i++) {
-        memcpy(hdrs + i * 80, hdr, 80);
-        hdrs[i * 80 + 76] = (uint8_t)i;              /* vary the nonce */
+    /* The batch path must produce exactly what the single path does. 19 is two
+       full eights and a remainder, and the headers are random rather than one
+       header renonced, so a lane that reads its neighbour's scratchpad shows up.
+       This is the test that covers the wide core: it runs the batch through
+       whatever the CPU has and the scalar core through the same headers. */
+#define NB 19
+    uint8_t hdrs[NB * 80], single[NB * 32], batched[NB * 32], portable[NB * 32];
+    unsigned bs = 7;
+    for (int k = 0; k < NB * 80; k++) { bs = bs * 1103515245u + 12345u; hdrs[k] = (uint8_t)(bs >> 16); }
+    for (int i = 0; i < NB; i++)
         if (!kw_scrypt_pow(hdrs + i * 80, single + i * 32, NULL))
             { fprintf(stderr, "FAIL: single %d\n", i); return 1; }
-    }
-    /* 7 exercises both the full batches and the odd remainder */
-    if (!kw_scrypt_pow_batch(hdrs, 7, batched, NULL)) { fprintf(stderr, "FAIL: batch call\n"); return 1; }
+
+    if (!kw_scrypt_pow_batch(hdrs, NB, batched, NULL)) { fprintf(stderr, "FAIL: batch call\n"); return 1; }
     if (memcmp(single, batched, sizeof single) != 0)
-        { fprintf(stderr, "FAIL: batch disagrees with single\n"); return 1; }
+        { fprintf(stderr, "FAIL: %s batch disagrees with single\n", kw_scrypt_batch_backend()); return 1; }
+
+    if (!kw_scrypt_pow_batch_portable(hdrs, NB, portable, NULL))
+        { fprintf(stderr, "FAIL: portable batch call\n"); return 1; }
+    if (memcmp(portable, batched, sizeof portable) != 0)
+        { fprintf(stderr, "FAIL: %s batch disagrees with the scalar core\n", kw_scrypt_batch_backend()); return 1; }
 
     /* the vector core must agree with the scalar one, which is where a bad lane
        or shuffle shows up: self-consistency alone would not catch it */
@@ -124,8 +134,9 @@ int main(void)
         if (memcmp(g1, g2, 64) != 0) { fprintf(stderr, "FAIL: general form disagrees with portable\n"); return 1; }
     }
 
-    printf("scrypt ok: 3 RFC 7914 vectors, 2 pbkdf2-sha256 vectors, dogecoin params, batch == single,\n"
-           "  %s core == portable over 64 random headers and r=4 p=3\n",
-           kw_scrypt_backend());
+    printf("scrypt ok: 3 RFC 7914 vectors, 2 pbkdf2-sha256 vectors, dogecoin params,\n"
+           "  %s core == portable over 64 random headers and r=4 p=3,\n"
+           "  %s batch == single == scalar over %d random headers\n",
+           kw_scrypt_backend(), kw_scrypt_batch_backend(), NB);
     return 0;
 }
