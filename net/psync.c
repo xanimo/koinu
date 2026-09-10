@@ -131,6 +131,38 @@ static void drop_host(psync_ctx *c, size_t host, int connect_failed)
     pthread_mutex_unlock(&c->lock);
 }
 
+/* A connect that succeeded clears the host's failure count, so "two straight
+   failures" means straight. Without this a host that refused twice early stays
+   benched for the rest of the run however well it served in between. */
+static void host_connected(psync_ctx *c, size_t host)
+{
+    pthread_mutex_lock(&c->lock);
+    c->host_fails[host] = 0;
+    pthread_mutex_unlock(&c->lock);
+}
+
+/* True when this worker sits on a host materially slower than one it could
+   reach instead. Every worker connects before any rate exists and then holds
+   that connection, so pick_host only ever sees the untried-scores-infinite case
+   and the rate-aware choice never happens; this is what makes it happen. Both
+   sides must have served for a second before the comparison means anything, and
+   the candidate must look twice as good to be worth a reconnect. */
+static int worth_switching(psync_ctx *c, size_t host)
+{
+    int yes = 0;
+    pthread_mutex_lock(&c->lock);
+    if (c->host_secs[host] > 1.0 && c->host_active[host] > 0) {
+        double mine = (double)c->host_srv[host] / c->host_secs[host] / (double)c->host_active[host];
+        for (size_t i = 0; i < c->nhosts && !yes; i++) {
+            if (i == host || c->host_fails[i] >= 2 || c->host_secs[i] <= 1.0) continue;
+            double r = (double)c->host_srv[i] / c->host_secs[i] / (double)(c->host_active[i] + 1);
+            if (r > 2.0 * mine) yes = 1;
+        }
+    }
+    pthread_mutex_unlock(&c->lock);
+    return yes;
+}
+
 /* The first pending segment, else the least-claimed in-flight one so an idle
    worker races the straggler holding it. 0 when there is nothing left to do. */
 static size_t get_work(psync_ctx *c)
@@ -185,6 +217,7 @@ static void *worker(void *arg)
                         : kw_peer_connect(&p, c->cp, hn, c->port, 10);
                     if (connected && !kw_peer_handshake(&p, 0)) { kw_peer_close(&p); connected = 0; }
                     if (!connected) { drop_host(c, host, 1); continue; }
+                    host_connected(c, host);
                 }
                 double t0 = now_mono();
                 if (kw_psync_segment(&p, buf, sh, h0, eh, h1)) { done = 1; dt = now_mono() - t0; }
@@ -218,6 +251,13 @@ static void *worker(void *arg)
                           4 + (off_t)h0 * KW_HDR_REC) != (ssize_t)((h1 - h0) * KW_HDR_REC)) {
             pthread_mutex_lock(&c->lock); c->failed = 1; pthread_mutex_unlock(&c->lock);
             break;
+        }
+
+        /* between segments, not during one, so a switch costs only a reconnect */
+        if (connected && worth_switching(c, host)) {
+            if (kw_net_verbose)
+                fprintf(stderr, "[psync] leaving %s for a faster host\n", c->hosts[host]);
+            kw_peer_close(&p); connected = 0; drop_host(c, host, 0);
         }
     }
 
