@@ -43,3 +43,4 @@
 /fuzz_replay
 /test/test_scrypt
 /test/test_cpu
+/test/test_pow

@@ -26,7 +26,7 @@ CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c cry
            crypto/pbkdf2.c crypto/scrypt.c crypto/scrypt_avx2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
-           net/proto.c net/msg.c net/peer.c net/socks5.c net/headers.c net/sync.c net/psync.c net/seed.c net/spv.c net/gcs.c net/cf.c net/cfstore.c \
+           net/pow.c net/proto.c net/msg.c net/peer.c net/socks5.c net/headers.c net/sync.c net/psync.c net/seed.c net/spv.c net/gcs.c net/cf.c net/cfstore.c \
            wallet/utxo.c \
            crypto/vendor/poly1305-donna/poly1305-donna.c \
            crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
@@ -38,7 +38,7 @@ LIB   = libkw.a
 TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
         test/test_pbkdf2 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
-        test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
+        test/test_pow test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
         test/test_utxo test/test_spv test/test_gcs test/test_cf test/test_cfstore
 
 all: $(LIB) kw
@@ -116,6 +116,9 @@ test/test_tx: test/test_tx.o $(LIB) $(SECP_LIB)
 
 test/test_psbt: test/test_psbt.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_psbt.o $(LIB) $(SECP_LIB)
+
+test/test_pow: test/test_pow.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_pow.o test/testutil.o $(LIB)
 
 test/test_proto: test/test_proto.o test/testutil.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_proto.o test/testutil.o $(LIB)
@@ -218,6 +221,7 @@ check: $(TESTS) kw
 	./test/test_keystore
 	./test/test_tx
 	./test/test_psbt
+	./test/test_pow
 	./test/test_proto
 	./test/test_msg
 	./test/test_peer

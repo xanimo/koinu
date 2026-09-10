@@ -8,6 +8,8 @@
 * scrypt, the hash dogecoin's proof of work is built on
 * scrypt: eight headers at once on avx2
 * cpu: one place that asks what the machine can run
+* pow: compact targets and the work a chain represents
+* test: hash a real header, not one that only looks like one
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed
