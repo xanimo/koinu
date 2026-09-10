@@ -20,6 +20,8 @@
 * pow: the retarget rule, both regimes and the switch between them
 * auxpow: verify the proof a merged-mined block borrows from its parent
 * test: three real mainnet merged-mining proofs, fetched from a peer
+* powq: check proof of work off the download's back, in parallel
+* cpu: the feature cache is atomic, since threads share it
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

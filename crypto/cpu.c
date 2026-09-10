@@ -17,6 +17,8 @@
 
 #include "cpu.h"
 
+#include <stdatomic.h>
+
 #define KW_CPU_DETECTED (1u << 31)      /* so the cache is one word, 0 meaning unasked */
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -169,17 +171,19 @@ static uint32_t detect(void) { return 0; }
 
 #endif
 
-/* One word, written once. A race detects twice and stores the same value, which
-   is why this is not two variables: a separate "done" flag could be seen set
-   before the value it guards. */
-static uint32_t cache;
+/* One word, written once, and atomic because more than one thread asks: the
+   validator pool dispatches on these bits from every worker. Relaxed is the whole
+   ordering needed, since the value is the same whoever computes it and nothing else
+   is published through it. Two variables would be worse than one whatever the
+   ordering: a separate "done" flag can be seen set before the value it guards. */
+static _Atomic uint32_t cache;
 
 uint32_t kw_cpu_features(void)
 {
-    uint32_t f = cache;
+    uint32_t f = atomic_load_explicit(&cache, memory_order_relaxed);
     if (!f) {
         f = detect() | KW_CPU_DETECTED;
-        cache = f;
+        atomic_store_explicit(&cache, f, memory_order_relaxed);
     }
     return f & ~KW_CPU_DETECTED;
 }

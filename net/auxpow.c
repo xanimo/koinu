@@ -179,8 +179,8 @@ static uint32_t rd32le(const uint8_t *p)
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-int kw_auxpow_check(const kw_auxpow *ap, const uint8_t aux_hash[32], uint32_t aux_bits,
-                    int32_t chain_id, void *scratch)
+int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
+                              int32_t chain_id)
 {
     static const uint8_t tag[4] = { 0xfa, 0xbe, 'm', 'm' };
 
@@ -232,6 +232,14 @@ int kw_auxpow_check(const kw_auxpow *ap, const uint8_t aux_hash[32], uint32_t au
     if ((uint32_t)ap->chain_index != kw_auxpow_expected_index(nonce, chain_id,
                                                               (unsigned)ap->nchain))
         return 0;
+
+    return 1;
+}
+
+int kw_auxpow_check(const kw_auxpow *ap, const uint8_t aux_hash[32], uint32_t aux_bits,
+                    int32_t chain_id, void *scratch)
+{
+    if (!kw_auxpow_check_structure(ap, aux_hash, chain_id)) return 0;
 
     /* and the parent's own work has to meet the target this chain asked for */
     uint8_t pow[32];
