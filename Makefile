@@ -22,7 +22,7 @@ override CFLAGS += -pthread
 CPPFLAGS += -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna \
             -Icrypto/vendor/argon2 -DARGON2_NO_THREADS
 
-CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
+CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
            crypto/pbkdf2.c crypto/scrypt.c crypto/scrypt_avx2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
@@ -35,7 +35,7 @@ CORE_SRC = crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/ripemd160
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
 LIB   = libkw.a
-TESTS = test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
+TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
         test/test_pbkdf2 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
         test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
@@ -62,6 +62,9 @@ kwui: cli/kwui.o $(LIB) $(SECP_LIB)
 $(SECP_LIB):
 	cd $(SECP_DIR) && ./autogen.sh && ./configure --enable-static --disable-shared \
 	    --disable-tests --disable-exhaustive-tests --disable-benchmark && $(MAKE)
+
+test/test_cpu: test/test_cpu.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
 test/test_rng: test/test_rng.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB)
@@ -197,6 +200,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 -include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
 check: $(TESTS) kw
+	./test/test_cpu
 	./test/test_rng
 	./test/test_sha2
 	./test/test_ripemd160

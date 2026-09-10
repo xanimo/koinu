@@ -42,3 +42,4 @@
 /fuzz_parse
 /fuzz_replay
 /test/test_scrypt
+/test/test_cpu

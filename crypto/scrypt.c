@@ -31,6 +31,7 @@
    against it on any machine. */
 #if !defined(KW_SCRYPT_PORTABLE)
 #  include "scrypt_avx2.h"
+#  include "cpu.h"
 #endif
 
 #if defined(KW_SCRYPT_PORTABLE)
@@ -50,7 +51,7 @@ const char *kw_scrypt_backend(void) { return KW_SCRYPT_BACKEND; }
 const char *kw_scrypt_batch_backend(void)
 {
 #if defined(KW_SCRYPT_AVX2)
-    if (kw_scrypt_avx2_available()) return "avx2x8";
+    if (kw_cpu_has(KW_CPU_AVX2)) return "avx2x8";
 #endif
     return KW_SCRYPT_BACKEND;
 }
@@ -356,7 +357,7 @@ int kw_scrypt_pow_batch(const uint8_t *headers, size_t count,
 
 #if defined(KW_SCRYPT_AVX2)
     _Static_assert(KW_SCRYPT_BATCH >= 8, "the AVX2 core needs eight scratchpads");
-    if (kw_scrypt_avx2_available()) {
+    if (kw_cpu_has(KW_CPU_AVX2)) {
         uint8_t B[8][128];
         uint32_t X[8][32];
         for (; i + 8 <= count && ok; i += 8) {

@@ -172,13 +172,6 @@ AVX2 void kw_scrypt_romix8_avx2(uint32_t X[8][32], uint32_t *const V[8], uint64_
     storeT(wr, T);
 }
 
-int kw_scrypt_avx2_available(void)
-{
-    static int have = -1;                               /* races write the same value */
-    if (have < 0) have = __builtin_cpu_supports("avx2") ? 1 : 0;
-    return have;
-}
-
 #else
 
 /* not x86_64: nothing here, and scrypt.c never refers to it */

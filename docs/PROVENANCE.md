@@ -13,6 +13,11 @@ auditable from this tree.
 
 ## written here
 
+    crypto/cpu.c   crypto/cpu.h    runtime cpu feature detection, cpuid leaf 1 and
+                                   leaf 7 bit numbers from the intel sdm, xcr0 for
+                                   whether the os enabled ymm state, at_hwcap and
+                                   sysctl on arm. held against the compiler's own
+                                   __builtin_cpu_supports in test/test_cpu.c
     crypto/rng.c   crypto/rng.h    getrandom(2), /dev/urandom fallback, fails closed
     crypto/mem.c   crypto/mem.h    volatile zero, constant-time compare, mlock
     crypto/hex.c   crypto/hex.h    hex encode/decode, the one place the library
