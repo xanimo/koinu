@@ -244,6 +244,7 @@ check: $(TESTS) kw kwd kwui
 	./test/test_cfstore
 	./test/test_cli.sh
 	./test/test_sweep.sh
+	./test/test_scan.sh
 	./test/test_kwui.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
