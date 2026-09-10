@@ -27,7 +27,7 @@ CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c cry
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
            net/pow.c net/proto.c net/msg.c net/peer.c net/socks5.c net/headers.c net/sync.c net/psync.c net/seed.c net/spv.c net/gcs.c net/cf.c net/cfstore.c \
-           wallet/utxo.c wallet/fee.c \
+           wallet/utxo.c wallet/fee.c wallet/journal.c \
            crypto/vendor/poly1305-donna/poly1305-donna.c \
            crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
            crypto/vendor/argon2/encoding.c crypto/vendor/argon2/ref.c \
@@ -39,7 +39,7 @@ TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test
         test/test_pbkdf2 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
         test/test_pow test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
-        test/test_utxo test/test_fee test/test_spv test/test_gcs test/test_cf test/test_cfstore
+        test/test_utxo test/test_fee test/test_journal test/test_spv test/test_gcs test/test_cf test/test_cfstore
 
 all: $(LIB) kw
 
@@ -147,6 +147,9 @@ test/test_utxo: test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_fee: test/test_fee.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
+test/test_journal: test/test_journal.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+
 test/test_spv: test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
 
@@ -205,7 +208,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 # fails at runtime looking like a logic bug rather than at the build.
 -include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
-check: $(TESTS) kw
+check: $(TESTS) kw kwd kwui
 	./test/test_cpu
 	./test/test_rng
 	./test/test_sha2
@@ -234,12 +237,14 @@ check: $(TESTS) kw
 	./test/test_psync
 	./test/test_utxo
 	./test/test_fee
+	./test/test_journal
 	./test/test_spv
 	./test/test_gcs
 	./test/test_cf
 	./test/test_cfstore
 	./test/test_cli.sh
 	./test/test_sweep.sh
+	./test/test_kwui.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 asan:

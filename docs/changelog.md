@@ -13,6 +13,9 @@
 * kwui: hold a spend to the same rules kw send does
 * kwui: refresh without restarting
 * kwui: an address screen and a coins screen
+* wallet: a journal, so a spend and a receive leave a record
+* kw: address --spk prints the scriptPubKey
+* ci: build kwui everywhere and drive it through a fifo
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

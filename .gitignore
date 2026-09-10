@@ -45,3 +45,4 @@
 /test/test_cpu
 /test/test_pow
 /test/test_fee
+/test/test_journal

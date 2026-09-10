@@ -28,6 +28,7 @@
 #include "spv.h"
 #include "cf.h"
 #include "fee.h"
+#include "journal.h"
 #include "cfstore.h"
 #include "utxo.h"
 
@@ -35,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <termios.h>
@@ -50,7 +52,7 @@ static void usage(void)
       "  new      --keystore PATH [--passphrase @FILE|-] [--words 12|24]\n"
       "  restore  --keystore PATH [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
-      "                                          [--index N] [--change]\n"
+      "                                          [--index N] [--change] [--spk]\n"
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
       "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH]\n"
       "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
@@ -430,8 +432,10 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     return rc;
 }
 
+/* (spk) prints the scriptPubKey instead of the address, which is the form
+   `outpoint --watch` takes and the form a utxo set records. */
 static int cmd_address(const kw_chainparams *cp, const char *path, const char *pass_arg,
-                       uint32_t account, uint32_t change, uint32_t index)
+                       uint32_t account, uint32_t change, uint32_t index, int spk)
 {
     if (!path) { usage(); return 2; }
     uint8_t blob[8192]; size_t n = 0;
@@ -450,8 +454,78 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
     int ok = derive_address(cp, seed, account, change, index, addr, sizeof addr);
     kw_secure_zero(seed, sizeof seed);
     if (!ok) { fprintf(stderr, "kw: derivation failed\n"); return 1; }
+    if (spk) {
+        uint8_t s[25]; size_t sl = 0;
+        char hex[64];
+        if (!addr_to_spk(cp, addr, s, &sl)) { fprintf(stderr, "kw: cannot script it\n"); return 1; }
+        kw_hex_encode(s, sl, hex, sizeof hex);
+        printf("%s\n", hex);
+        return 0;
+    }
     printf("%s\n", addr);
     return 0;
+}
+
+/* Record every tracked output the journal has not seen as a receive. The utxo set
+   holds only what is unspent, so this is the last chance to note that an output
+   arrived: once it is spent it is gone from the set with nothing left behind.
+   Deriving the watched addresses once and matching gives each entry the address of
+   ours that was paid. */
+static void record_receives(const kw_chainparams *cp, const kw_bip32_key *master,
+                            int watched, const kw_utxoset *us, const char *utxos)
+{
+    char jpath[4200];
+    kw_journal_path(utxos, jpath, sizeof jpath);
+
+    kw_journal j;
+    if (!kw_journal_init(&j)) return;
+    if (!kw_journal_load(&j, jpath)) {          /* malformed: add nothing to it */
+        fprintf(stderr, "kw: %s is not readable as a journal, leaving it alone\n", jpath);
+        kw_journal_free(&j);
+        return;
+    }
+
+    struct known { uint8_t spk[25]; char addr[80]; };
+    size_t nk = (size_t)(watched > 0 ? watched : 0) * 2;
+    struct known *k = nk ? (struct known *)calloc(nk, sizeof *k) : NULL;
+    size_t m = 0;
+    for (uint32_t chg = 0; k && chg < 2; chg++)
+        for (int i = 0; i < watched; i++) {
+            kw_bip32_key key;
+            uint8_t pub[33], h[20];
+            if (!kw_bip44_derive(master, cp->bip44_coin, 0, chg, (uint32_t)i, &key)) continue;
+            kw_bip32_pubkey(&key, pub);
+            kw_hash160(pub, 33, h);
+            h160_to_spk(h, k[m].spk);
+            kw_address_p2pkh(pub, cp->p2pkh, k[m].addr, sizeof k[m].addr);
+            kw_secure_zero(&key, sizeof key);
+            m++;
+        }
+
+    int added = 0;
+    for (size_t u = 0; u < us->count; u++) {
+        if (kw_journal_has(&j, us->u[u].txid, us->u[u].vout, KW_JOURNAL_IN)) continue;
+        kw_journal_entry e;
+        memset(&e, 0, sizeof e);
+        e.when = (uint64_t)time(NULL);
+        e.dir = KW_JOURNAL_IN;
+        memcpy(e.txid, us->u[u].txid, 32);
+        e.vout = us->u[u].vout;
+        e.height = us->u[u].height;
+        e.amount = us->u[u].value;
+        snprintf(e.addr, sizeof e.addr, "-");
+        for (size_t q = 0; q < m; q++)
+            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk, k[q].spk, 25) == 0) {
+                snprintf(e.addr, sizeof e.addr, "%s", k[q].addr);
+                break;
+            }
+        if (kw_journal_append(jpath, &e)) added++;
+        else { fprintf(stderr, "kw: could not append to %s\n", jpath); break; }
+    }
+    if (added) printf("recorded %d new receive(s) in %s\n", added, jpath);
+
+    free(k);
+    kw_journal_free(&j);
 }
 
 /* Watch the first (gap) receive and change addresses, sync from (node), and
@@ -540,6 +614,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (kw_utxoset_save(&us, utxos_path)) {
         write_scan_meta(utxos_path, p.peer_feerate, watched);
+        record_receives(cp, &master, watched, &us, utxos_path);
         printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
                nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
         printf("watched %d addresses per chain, saved to %s\n", watched, utxos_path);
@@ -564,6 +639,11 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                     const char *change_arg, const char *utxos_path, int gap)
 {
     if (!path || !to_arg) { usage(); return 2; }
+
+    char upath[4100], jpath[4200];
+    snprintf(upath, sizeof upath, "%s", utxos_path ? utxos_path : "");
+    if (!upath[0]) snprintf(upath, sizeof upath, "%s.utxos", path);
+    kw_journal_path(upath, jpath, sizeof jpath);
 
     uint8_t seed[64];
     if (!open_seed(path, pass_arg, seed)) return 1;
@@ -730,8 +810,23 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
         printf("txid  %s\n", txidhex);
         printf("raw   %s\n", hex);
-        printf("fee   %llu koinu, %zu bytes\n",
-               (unsigned long long)(total_in - send_amt - (has_change ? change : 0)), rn);
+        uint64_t paid = total_in - send_amt - (has_change ? change : 0);
+        printf("fee   %llu koinu, %zu bytes\n", (unsigned long long)paid, rn);
+
+        /* Recorded as signed, not as confirmed: the transaction has not been
+           broadcast yet and may never be. A failure to record is reported and
+           does not fail the spend, which is already signed and printed. */
+        kw_journal_entry je;
+        memset(&je, 0, sizeof je);
+        je.when = (uint64_t)time(NULL);
+        je.dir = KW_JOURNAL_OUT;
+        memcpy(je.txid, txid, 32);
+        je.vout = 0;                      /* the destination is output 0 */
+        je.amount = send_amt;
+        je.fee = paid;
+        snprintf(je.addr, sizeof je.addr, "%s", daddr);
+        if (!kw_journal_record(jpath, &je))
+            fprintf(stderr, "kw: could not record the spend in %s\n", jpath);
         rc = 0;
     }
 out:
@@ -1385,7 +1480,7 @@ out:
 
 int main(int argc, char **argv)
 {
-    int net = 0, words = 12, change = 0, ninputs = 0;
+    int net = 0, words = 12, change = 0, ninputs = 0, want_spk = 0;
     int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
@@ -1412,6 +1507,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--account"))  { const char *v = NEXT(); account = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
         else if (!strcmp(a, "--index"))    { const char *v = NEXT(); index = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
         else if (!strcmp(a, "--change"))     change = 1;
+        else if (!strcmp(a, "--spk"))        want_spk = 1;
         else if (!strcmp(a, "--input"))    { const char *v = NEXT(); if (v && ninputs < KW_TX_MAX_IN) inputs[ninputs++] = v; }
         else if (!strcmp(a, "--to"))         to_arg = NEXT();
         else if (!strcmp(a, "--fee"))        fee_arg = NEXT();
@@ -1460,7 +1556,7 @@ int main(int argc, char **argv)
     int rc;
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, words);
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
-    else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index);
+    else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg);

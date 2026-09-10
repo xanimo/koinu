@@ -23,6 +23,7 @@
 #include "bip39.h"
 #include "base58.h"
 #include "fee.h"
+#include "journal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,7 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAXADDR 200
@@ -210,7 +212,7 @@ static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int 
     }
     if (!shown) printf("  (no addresses to show; run kw scan to fill the utxo set)\r\n");
 
-    printf("\r\n j/k move   enter address   c coins   u %s   r refresh   s send   q quit\r\n",
+    printf("\r\n j/k move  enter address  c coins  h history  u %s  r refresh  s send  q quit\r\n",
            used_only ? "show all" : "used only");
     fflush(stdout);
 }
@@ -344,6 +346,65 @@ static void coins_view(const kw_utxoset *us, const row *rows, int nrows)
         }
     }
     free(c);
+}
+
+/* What has happened, newest first: spends signed here and receives a scan saw.
+   Reads the journal rather than the utxo set, which is the only way a payment out
+   or an output since spent can appear at all. */
+static void history_view(const char *utxos)
+{
+    char jpath[4200];
+    kw_journal j;
+    kw_journal_path(utxos, jpath, sizeof jpath);
+    if (!kw_journal_init(&j)) return;
+    int loaded = kw_journal_load(&j, jpath);
+
+    int top = 0;
+    for (;;) {
+        int n = (int)j.count, per = page_rows() - 1;
+        if (per < 1) per = 1;
+        if (top > n - per) top = n - per;
+        if (top < 0) top = 0;
+
+        printf("\033[H\033[2J\033[1m history\033[0m   %d entr%s, newest first\r\n\r\n",
+               n, n == 1 ? "y" : "ies");
+        if (!loaded) {
+            printf("   %s is not readable as a journal\r\n", jpath);
+        } else if (!n) {
+            printf("   nothing recorded yet. a spend is recorded when it is signed\r\n");
+            printf("   and a receive when kw scan first sees it, so a wallet older\r\n");
+            printf("   than the journal starts empty here.\r\n");
+        } else {
+            printf("   %-3s %-8s %-20s %18s %s\r\n", "dir", "height", "txid", "amount", "address");
+            /* the file is append-ordered, so newest first is the reverse of it */
+            for (int i = 0; i < per && top + i < n; i++) {
+                const kw_journal_entry *e = &j.e[n - 1 - (top + i)];
+                char t[32], v[32], h[16];
+                txid_short(e->txid, t, sizeof t);
+                fmt_doge(e->amount, v, sizeof v);
+                if (e->height) snprintf(h, sizeof h, "%u", e->height);
+                else           snprintf(h, sizeof h, "%s", "-");
+                printf("   %-3s %-8s %-20s %18s %s\r\n",
+                       e->dir == KW_JOURNAL_OUT ? "out" : "in", h, t, v, e->addr);
+            }
+            if (n > per) printf("\r\n   showing %d..%d of %d\r\n", top + 1,
+                                top + (n - top < per ? n - top : per), n);
+            printf("\r\n   a spend here was signed, not confirmed\r\n");
+        }
+        printf("\r\n j/k scroll   q back\r\n");
+        fflush(stdout);
+
+        int c = getchar();
+        if (c == 'q' || c == '\n' || c == '\r' || c == 3 || c == EOF) break;
+        if (c == 'j' && top + per < n) top++;
+        if (c == 'k' && top > 0) top--;
+        if (c == '\033' && getchar() == '[') {
+            int d = getchar();
+            if (d == 'B' && top + per < n) top++;
+            if (d == 'A' && top > 0) top--;
+        }
+    }
+    kw_journal_free(&j);
 }
 
 /* Read a line in cooked mode, so the terminal handles editing. */
@@ -536,10 +597,27 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         char *hex = (char *)malloc(rn * 2 + 2);
         if (hex) { kw_hex_encode(raw, rn, hex, rn * 2 + 1); fprintf(o, "%s\n", hex); free(hex); }
         fclose(o);
+        /* recorded as signed, not as confirmed: it has not been broadcast */
+        char jpath[4200];
+        kw_journal_entry je;
+        uint8_t txid[32];
+        kw_journal_path(utxos, jpath, sizeof jpath);
+        kw_tx_txid(&tx, txid);
+        memset(&je, 0, sizeof je);
+        je.when = (uint64_t)time(NULL);
+        je.dir = KW_JOURNAL_OUT;
+        memcpy(je.txid, txid, 32);
+        je.amount = want;
+        je.fee = fee;
+        snprintf(je.addr, sizeof je.addr, "%s", to);
+        int recorded = kw_journal_record(jpath, &je);
+
         char m[9000];
         snprintf(m, sizeof m, "\r\n   signed, %zu bytes, written to %s\r\n"
                               "   broadcast with: kw send --tx @%s --node NODE\r\n"
-                              "   enter to go back ", rn, path, path);
+                              "%s"
+                              "   enter to go back ", rn, path, path,
+                 recorded ? "" : "   (could not record it in the journal)\r\n");
         ask_line(m, yes, sizeof yes);
     } else {
         if (o) fclose(o);
@@ -630,6 +708,7 @@ int main(int argc, char **argv)
         }
         case 's': send_flow(cp, ks, utxos, &us, rows, n); break;
         case 'c': coins_view(&us, rows, n); break;
+        case 'h': history_view(utxos); break;
         case '\n': case '\r':
             if (nvis) addr_view(cp, &rows[vis[sel]], &us);
             break;

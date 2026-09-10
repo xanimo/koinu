@@ -45,6 +45,20 @@ RAW2=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
 RAW3=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
        --input "$IN" --to "$ADDR1:8.0" --fee 0.001 | awk '/^raw/{print $2}')
 [ "$RAW1" != "$RAW3" ] || { echo "FAIL: amount change did not alter the tx" >&2; exit 1; }
+
+# signing records the spend, and signing the same spend twice records it once:
+# three signs above, two of them identical, so two entries
+J="$WORK/ks.utxos.journal"
+[ -f "$J" ] || { echo "FAIL: sign wrote no journal at $J" >&2; exit 1; }
+NJ=$(awk 'END{print NR}' "$J")
+[ "$NJ" = "2" ] || { echo "FAIL: journal has $NJ entries, want 2" >&2; cat "$J" >&2; exit 1; }
+awk '$2 != "out" { exit 1 }' "$J" || { echo "FAIL: a signed spend is not an out entry" >&2; exit 1; }
+grep -q "$ADDR1" "$J" || { echo "FAIL: the journal does not name the destination" >&2; exit 1; }
+# it names amounts and addresses, so it is not world-readable
+case $(ls -l "$J") in
+    -rw-------*) ;;
+    *) echo "FAIL: journal is $(ls -l "$J" | cut -c1-10), want -rw-------" >&2; exit 1;;
+esac
 # insufficient inputs must fail
 if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
        --input "$IN" --to "$ADDR1:20.0" --fee 0.001 >/dev/null 2>&1; then
@@ -132,4 +146,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic and journaled once per spend, cosign 2-of-2, psbt roles agree with cosign"
