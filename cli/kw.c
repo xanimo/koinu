@@ -27,6 +27,7 @@
 #include "seed.h"
 #include "spv.h"
 #include "cf.h"
+#include "fee.h"
 #include "cfstore.h"
 #include "utxo.h"
 
@@ -198,36 +199,17 @@ static int parse_doge(const char *s, uint64_t *out)
     return 1;
 }
 
-/* Dogecoin's minrelaytxfee: the lowest rate a default node will relay. The
-   recommended (mined) rate is ten times this. Both are per 1000 bytes. */
-#define KW_MIN_RELAY_FEE_PER_KB   100000ULL     /* 0.001 DOGE/kB */
+#define est_fee(nin, nout, rate) kw_est_fee((nin), (nout), (rate))
 
-/* A signed p2pkh tx's size: ~148 bytes per input, 34 per output, 10 overhead.
-   The input estimate rounds up (a der signature is 71-72 bytes), so the fee is
-   never short. */
-static uint64_t est_fee(int nin, int nout, uint64_t rate_per_kb)
-{
-    uint64_t size = 10 + 148ULL * (uint64_t)nin + 34ULL * (uint64_t)nout;
-    return (size * rate_per_kb + 999) / 1000;    /* round up */
-}
-
-/* Dogecoin's RECOMMENDED_MIN_TX_FEE, the rate a miner prefers, per 1000 bytes. */
-#define KW_RECOMMENDED_FEE_PER_KB       1000000ULL   /* 0.01 DOGE/kB */
-#define KW_MAX_FEE_MULTIPLE                    100
-
-/* An over-large --fee or --feerate is unrecoverable once the transaction
-   confirms, so bound what a spend may pay: KW_MAX_FEE_MULTIPLE times the
-   recommended fee for a transaction this size. Scaling by size rather than by
-   a flat cap catches a mistyped fee on a small spend while leaving a large
-   consolidation room to pay what its bytes actually cost. Returns 1 if the fee
-   is allowed. */
+/* The ceiling is wallet/fee.c, shared with kwui so both refuse the same spends.
+   Only the message is local. Returns 1 if the fee is allowed. */
 static int fee_ok(uint64_t fee, size_t nbytes, const char *maxfee_arg)
 {
     uint64_t cap;
     if (maxfee_arg) {
         if (!parse_doge(maxfee_arg, &cap)) { fprintf(stderr, "kw: bad --maxfee\n"); return 0; }
     } else {
-        cap = ((uint64_t)nbytes * KW_RECOMMENDED_FEE_PER_KB + 999) / 1000 * KW_MAX_FEE_MULTIPLE;
+        cap = kw_fee_cap(nbytes);
     }
     if (fee > cap) {
         /* in DOGE as well as koinu: an absurd fee is only obvious in the unit

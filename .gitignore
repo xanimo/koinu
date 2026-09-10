@@ -44,3 +44,4 @@
 /test/test_scrypt
 /test/test_cpu
 /test/test_pow
+/test/test_fee

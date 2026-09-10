@@ -22,11 +22,14 @@
 #include "tx.h"
 #include "bip39.h"
 #include "base58.h"
+#include "fee.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #define MAXADDR 200
@@ -77,13 +80,6 @@ typedef struct {
     int      nutxo;
     uint8_t  spk[25];
 } row;
-
-/* a signed p2pkh spend's size: 148 a input, 34 an output, 10 over */
-static uint64_t est_fee(int nin, int nout, uint64_t rate_per_kb)
-{
-    uint64_t size = 10 + 148ULL * (uint64_t)nin + 34ULL * (uint64_t)nout;
-    return (size * rate_per_kb + 999) / 1000;
-}
 
 /* decimal DOGE to koinu, no floating point */
 static int parse_doge(const char *str, uint64_t *out)
@@ -165,10 +161,23 @@ static void screen_enter(void)
     printf("\033[?1049h\033[?25l");            /* alternate screen, hide cursor */
 }
 
-/* One frame: a header, then the rows from (top), then the keys. (used_only)
-   hides addresses the chain has never paid. */
-static void draw(const kw_chainparams *cp, const row *rows, int n, int top, int sel,
-                 uint64_t total, size_t nutxo, int used_only, const char *ks)
+/* How many rows fit, from the terminal rather than a guess. Asked every frame,
+   which is how a resize is handled without a signal handler. */
+static int page_rows(void)
+{
+    struct winsize w;
+    int h = 24;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_row > 0) h = w.ws_row;
+    h -= 8;                                     /* header, column titles, key line */
+    return h < 1 ? 1 : h;
+}
+
+/* One frame. (vis) holds the indices of the rows to show, so (top) and (sel)
+   index what is on screen and not the unfiltered array: with the filter on, a
+   selection into the array could land on a hidden row. */
+static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int nvis,
+                 int top, int sel, uint64_t total, size_t nutxo, int used_only,
+                 const char *ks)
 {
     printf("\033[H\033[2J");
     char bal[32]; fmt_doge(total, bal, sizeof bal);
@@ -176,15 +185,13 @@ static void draw(const kw_chainparams *cp, const row *rows, int n, int top, int 
     printf(" balance %s DOGE across %zu outputs\r\n\r\n", bal, nutxo);
     printf("  %-38s %-8s %18s %s\r\n", "address", "path", "balance", "utxos");
 
-    int shown = 0;
-    for (int i = top; i < n && shown < 15; i++) {
-        if (used_only && rows[i].nutxo == 0) continue;
-        char b[32]; fmt_doge(rows[i].balance, b, sizeof b);
+    int per = page_rows(), shown = 0;
+    for (int v = top; v < nvis && shown < per; v++, shown++) {
+        const row *r = &rows[vis[v]];
+        char b[32]; fmt_doge(r->balance, b, sizeof b);
         printf("%s %-38s %c/%-6u %18s %5d\033[0m\r\n",
-               i == sel ? "\033[7m>" : " ",
-               rows[i].addr, rows[i].change ? 'c' : 'r', rows[i].index,
-               b, rows[i].nutxo);
-        shown++;
+               v == sel ? "\033[7m>" : " ",
+               r->addr, r->change ? 'c' : 'r', r->index, b, r->nutxo);
     }
     if (!shown) printf("  (no addresses to show; run kw scan to fill the utxo set)\r\n");
 
@@ -246,27 +253,31 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         return;
     }
 
-    /* oldest first, so mature coinbase goes before recent change */
+    /* Oldest first, so mature coinbase goes before recent change. (used) is
+       allocated rather than fixed: a wallet with more outputs than the array
+       would otherwise have the rest treated as absent, refusing a spend it can
+       afford. */
     int order[KW_TX_MAX_IN]; int nin = 0;
     uint64_t in_total = 0, fee = 0;
-    for (;;) {
-        nin = 0; in_total = 0;
-        uint32_t best_h;
-        int used[512] = {0};
-        while (nin < KW_TX_MAX_IN) {
-            int pick = -1; best_h = 0xffffffffu;
-            for (size_t u = 0; u < us->count && u < 512; u++)
-                if (!used[u] && us->u[u].spklen == 25 && us->u[u].height <= best_h) {
-                    best_h = us->u[u].height; pick = (int)u;
-                }
-            if (pick < 0) break;
-            used[pick] = 1; order[nin++] = pick;
-            in_total += us->u[pick].value;
-            fee = est_fee(nin, 2, 100000ULL);
-            if (in_total >= want + fee) break;
-        }
-        break;
+    char *used = us->count ? (char *)calloc(us->count, 1) : NULL;
+    if (us->count && !used) {
+        ask_line("   out of memory. enter to go back ", to, sizeof to);
+        return;
     }
+    while (nin < KW_TX_MAX_IN) {
+        int pick = -1;
+        uint32_t best_h = 0xffffffffu;
+        for (size_t u = 0; u < us->count; u++)
+            if (!used[u] && us->u[u].spklen == 25 && us->u[u].height <= best_h) {
+                best_h = us->u[u].height; pick = (int)u;
+            }
+        if (pick < 0) break;
+        used[pick] = 1; order[nin++] = pick;
+        in_total += us->u[pick].value;
+        fee = kw_est_fee(nin, 2, KW_MIN_RELAY_FEE_PER_KB);
+        if (in_total >= want + fee) break;
+    }
+    free(used);
     if (in_total < want + fee) {
         char m[160]; char b[32]; fmt_doge(in_total, b, sizeof b);
         snprintf(m, sizeof m, "only %s DOGE selectable, need more. enter to go back ", b);
@@ -276,6 +287,19 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     uint64_t change = in_total - want - fee;
     int with_change = change >= 1000000ULL;
     if (!with_change) { fee += change; change = 0; }   /* dust change goes to fee */
+
+    /* the ceiling kw send applies, applied here too: signing from a screen is
+       the path least likely to have the number read twice */
+    size_t nbytes = kw_est_size(nin, with_change ? 2 : 1);
+    if (fee > kw_fee_cap(nbytes)) {
+        char m[200], bf[32], bcap[32];
+        fmt_doge(fee, bf, sizeof bf);
+        fmt_doge(kw_fee_cap(nbytes), bcap, sizeof bcap);
+        snprintf(m, sizeof m, "   fee %s DOGE is over the %s DOGE limit for about %zu bytes."
+                              " enter to go back ", bf, bcap, nbytes);
+        ask_line(m, to, sizeof to);
+        return;
+    }
 
     char bw[32], bf[32], bc[32], bt[32];
     fmt_doge(want, bw, sizeof bw); fmt_doge(fee, bf, sizeof bf);
@@ -349,7 +373,19 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);
     char path[4300];
     snprintf(path, sizeof path, "%s.tx", utxos);
-    FILE *o = fopen(path, "w");
+    /* O_EXCL and 0600, as kw does for a keystore: a signed spend that has not
+       been broadcast is not something to overwrite, and it authorises a payment
+       until it is. */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) {
+        char m[4400];
+        snprintf(m, sizeof m, "   %s already exists, so nothing was written."
+                              " broadcast or remove it first. enter to go back ", path);
+        ask_line(m, yes, sizeof yes);
+        return;
+    }
+    FILE *o = fdopen(fd, "w");
+    if (!o) close(fd);
     if (rn && o) {
         char *hex = (char *)malloc(rn * 2 + 2);
         if (hex) { kw_hex_encode(raw, rn, hex, rn * 2 + 1); fprintf(o, "%s\n", hex); free(hex); }
@@ -414,30 +450,40 @@ int main(int argc, char **argv)
     int n = build_rows(cp, seed, gap, &us, rows, MAXADDR, &total);
     kw_secure_zero(seed, sizeof seed);     /* addresses are derived; the seed is done */
 
+    int *vis = (int *)calloc((size_t)(n > 0 ? n : 1), sizeof *vis);
+    if (!vis) { free(rows); kw_utxoset_free(&us); kw_ec_stop(); return 1; }
+
     screen_enter();
     int top = 0, sel = 0, used_only = 0, running = 1;
     while (running) {
-        draw(cp, rows, n, top, sel, total, us.count, used_only, ks);
+        int nvis = 0;
+        for (int i = 0; i < n; i++) if (!used_only || rows[i].nutxo) vis[nvis++] = i;
+        if (sel >= nvis) sel = nvis ? nvis - 1 : 0;
+
+        draw(cp, rows, vis, nvis, top, sel, total, us.count, used_only, ks);
         int c = getchar();
         switch (c) {
         case 'q': case 3: case EOF: running = 0; break;
-        case 'j': if (sel < n - 1) sel++; break;
+        case 'j': if (sel < nvis - 1) sel++; break;
         case 'k': if (sel > 0) sel--; break;
         case 'u': used_only = !used_only; top = 0; sel = 0; break;
         case 's': send_flow(cp, ks, utxos, &us, rows, n); break;
         case '\033':                       /* arrow keys arrive as ESC [ A/B */
             if (getchar() == '[') {
                 int d = getchar();
-                if (d == 'B' && sel < n - 1) sel++;
+                if (d == 'B' && sel < nvis - 1) sel++;
                 if (d == 'A' && sel > 0) sel--;
             }
             break;
         default: break;
         }
+        int per = page_rows();
         if (sel < top) top = sel;
-        if (sel > top + 14) top = sel - 14;
+        if (sel > top + per - 1) top = sel - per + 1;
+        if (top < 0) top = 0;
     }
     screen_leave();
+    free(vis);
 
     free(rows);
     kw_utxoset_free(&us);
