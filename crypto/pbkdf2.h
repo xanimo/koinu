@@ -1,4 +1,4 @@
-/* koinu.dog - PBKDF2-HMAC-SHA512 (RFC 8018)
+/* koinu.dog - PBKDF2-HMAC-SHA256/512 (RFC 8018)
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
@@ -13,6 +13,12 @@
    "mnemonic"+passphrase, 2048 rounds, 64-byte output). Returns 1 on success,
    0 on a bad argument. */
 int kw_pbkdf2_hmac_sha512(const uint8_t *pass, size_t passlen,
+                          const uint8_t *salt, size_t saltlen,
+                          uint32_t iterations,
+                          uint8_t *out, size_t outlen);
+
+/* The same over HMAC-SHA256, which is what scrypt's PRF is (RFC 7914). */
+int kw_pbkdf2_hmac_sha256(const uint8_t *pass, size_t passlen,
                           const uint8_t *salt, size_t saltlen,
                           uint32_t iterations,
                           uint8_t *out, size_t outlen);
