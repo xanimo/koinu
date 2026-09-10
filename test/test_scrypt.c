@@ -73,17 +73,21 @@ int main(void)
             "7023bdcb3afd7348461c06cd81fd38ebfda8fbba904f8e3ea9b543f6545da1f2"
             "d5432955613f0fcf62d49705242a9af9e61e85dc0d651e40dfcf017b45575887", 64)) return 1;
 
-    /* Dogecoin's parameters. The header is block 1's, and the expected digest
-       was produced by OpenSSL's scrypt at N=1024 r=1 p=1 over the same bytes. */
+    /* Dogecoin's parameters over Dogecoin's genesis header, with the digest
+       produced by OpenSSL 3.0.2 at N=1024 r=1 p=1 over the same 80 bytes, so this
+       is a real header against an outside implementation rather than two paths
+       here agreeing. test/test_pow.c proves these bytes are genesis. */
     uint8_t hdr[80];
     if (kw_test_unhex(
-            "010000009156352c1818b32e90c9e792efd6a11a82fe7956a630f03bbee236ce"
-            "dae3911a1c9ba9daaadde0fd9b32ae7cc0cf6df4e1e94edb17f8b8c65b7e6cb2"
-            "d6b70a1ea0f3ad52f0ff0f1e00fd5b03", hdr) != 80)
+            "010000000000000000000000000000000000000000000000000000000000000000"
+            "000000696ad20e2dd4365c7459b4a4a5af743d5e92c6da3229e6532cd605f6533f"
+            "2a5b24a6a152f0ff0f1e67860100", hdr) != 80)
         { fprintf(stderr, "FAIL: header vector\n"); return 1; }
 
     uint8_t pow[32];
     if (!kw_scrypt_pow(hdr, pow, NULL)) { fprintf(stderr, "FAIL: scrypt_pow call\n"); return 1; }
+    if (!eq("scrypt_pow(genesis) against openssl", pow,
+            "48b41053487d4159cfaacf3adad783cf2f2dedea1413250cca74783f6f020000", 32)) return 1;
 
     uint8_t gen[32];
     if (!kw_scrypt(hdr, 80, hdr, 80, 1024, 1, 1, gen, 32)) { fprintf(stderr, "FAIL: general call\n"); return 1; }
