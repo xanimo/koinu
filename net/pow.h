@@ -7,11 +7,17 @@
  * and summing the work a chain represents both need 256-bit integers, which is
  * all this file is besides the two rules.
  *
- * What is here is per-header: this hash against this nBits. What is not here is
- * whether that nBits is the one the chain's own retarget rule demands, which
- * needs the height and the timestamps of the blocks before it, or the floor a
- * network puts under nBits. Both belong with the retarget rules. So this alone
- * proves work was done, not that it was done on the right chain. */
+ * The retarget rule is here too: what nBits the chain demands at a height, which
+ * is what turns "work was done" into "work was done on this chain". Dogecoin has
+ * two regimes, a Litecoin-style 240-block period before height 145000 and
+ * DigiShield every block from 145001, and the switch is not one condition: the
+ * timespan and the damping come from the height being validated while the period
+ * length comes from the height before it. Mainnet only, since testnet and regtest
+ * permit minimum-difficulty blocks, which needs a walk back to the last block that
+ * was not one.
+ *
+ * Still not here: AuxPoW. A merged-mined block's work is proved by its parent, and
+ * nothing in this file looks at the parent. */
 
 #ifndef KOINU_POW_H
 #define KOINU_POW_H
@@ -52,7 +58,32 @@ int  kw_bits_work(uint32_t bits, kw_u256 *out);
    encodes. 0 if it is above, or if (bits) is not a usable target. */
 int  kw_pow_check(const uint8_t pow_hash[32], uint32_t bits);
 
-/* nBits out of an 80-byte header, which is bytes 72..75 little-endian. */
+/* nBits out of an 80-byte header, which is bytes 72..75 little-endian, and the
+   timestamp, which is bytes 68..71. */
 uint32_t kw_header_bits(const uint8_t header[80]);
+uint32_t kw_header_time(const uint8_t header[80]);
+
+/* ── the retarget rule ─────────────────────────────────────────────────── */
+
+typedef struct {
+    uint32_t digishield_height;  /* the first height whose period is one block */
+    uint32_t powlimit_bits;      /* the easiest target the chain will accept */
+    int32_t  timespan_pre;       /* seconds a period should take, before and after */
+    int32_t  timespan_post;
+    int32_t  spacing;            /* seconds a block should take */
+} kw_pow_rules;
+
+extern const kw_pow_rules KW_POW_MAIN;
+
+/* Does the block at (height) recompute its target, and if so which earlier
+   block's timestamp does the computation need? Returns 1 and sets *first_height,
+   or 0 when the block simply carries the previous block's nBits. */
+int kw_pow_retargets(const kw_pow_rules *r, uint32_t height, uint32_t *first_height);
+
+/* The nBits the rule demands at (height), given the previous block's bits and
+   time and the timestamp of the block kw_pow_retargets named. When it does not
+   retarget this returns (last_bits), so it can be called at every height. */
+uint32_t kw_pow_next_bits(const kw_pow_rules *r, uint32_t height, uint32_t last_bits,
+                          uint32_t last_time, uint32_t first_time);
 
 #endif /* KOINU_POW_H */

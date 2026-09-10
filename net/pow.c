@@ -84,6 +84,30 @@ static int bit(const kw_u256 *a, int i) { return (a->w[i / 32] >> (i % 32)) & 1;
 
 static void set_bit(kw_u256 *a, int i) { a->w[i / 32] |= 1u << (i % 32); }
 
+/* a * m, 0 on overflow, and a / d. Both divisors and multipliers here are small
+   enough that a limb at a time is exact in 64 bits. */
+static int mul_small(kw_u256 *a, uint64_t m)
+{
+    uint64_t carry = 0;
+    for (int i = 0; i < 8; i++) {
+        uint64_t p = (uint64_t)a->w[i] * m + carry;
+        a->w[i] = (uint32_t)p;
+        carry = p >> 32;
+    }
+    return carry == 0;
+}
+
+static void div_small(kw_u256 *a, uint64_t d)
+{
+    uint64_t rem = 0;
+    if (!d) return;
+    for (int i = 7; i >= 0; i--) {
+        uint64_t cur = (rem << 32) | a->w[i];
+        a->w[i] = (uint32_t)(cur / d);
+        rem = cur % d;
+    }
+}
+
 /* q = num / den, den nonzero. No remainder is wanted anywhere here. */
 static void divide(const kw_u256 *num, const kw_u256 *den, kw_u256 *q)
 {
@@ -182,4 +206,94 @@ uint32_t kw_header_bits(const uint8_t header[80])
 {
     return (uint32_t)header[72] | ((uint32_t)header[73] << 8) |
            ((uint32_t)header[74] << 16) | ((uint32_t)header[75] << 24);
+}
+
+uint32_t kw_header_time(const uint8_t header[80])
+{
+    return (uint32_t)header[68] | ((uint32_t)header[69] << 8) |
+           ((uint32_t)header[70] << 16) | ((uint32_t)header[71] << 24);
+}
+
+/* ── the retarget rule ───────────────────────────────────────────────────
+   Dogecoin's, from src/pow.cpp and src/dogecoin.cpp: a 240-block period at four
+   hours before 145000, then DigiShield's one-block period at one minute. */
+
+const kw_pow_rules KW_POW_MAIN = {
+    145000,             /* the first height the per-block period applies to */
+    0x1e0fffffu,        /* ~uint256(0) >> 20, compact */
+    4 * 60 * 60,        /* pre-digishield: four hours a period */
+    60,                 /* post: one minute */
+    60                  /* a block a minute either way */
+};
+
+/* The two conditions differ by one block, which is the whole subtlety. The period
+   length comes from the previous block's height, so height 145000 still belongs to
+   a 240-block period, and 145000 % 240 is 40, so it retargets nothing and carries
+   144999's nBits. The damping and the timespan come from the height being
+   validated, so 145000 would have used them had it retargeted. 145001 is the first
+   height that actually recomputes every block. */
+static int per_block(const kw_pow_rules *r, uint32_t height)
+{
+    return height >= 1 && (height - 1) >= r->digishield_height;
+}
+
+static int digishield(const kw_pow_rules *r, uint32_t height)
+{
+    return height >= r->digishield_height;
+}
+
+int kw_pow_retargets(const kw_pow_rules *r, uint32_t height, uint32_t *first_height)
+{
+    if (!r || !first_height || height == 0) return 0;   /* genesis carries its own */
+
+    uint32_t interval = per_block(r, height)
+                        ? 1u : (uint32_t)(r->timespan_pre / r->spacing);
+    if (interval == 0) return 0;
+    if (height % interval != 0) return 0;
+
+    /* Go back a whole period, except for the first retarget after genesis, which
+       goes back one less. Litecoin's fix for a difficulty attack, inherited. */
+    uint32_t back = (height == interval) ? interval - 1 : interval;
+    if (back > height - 1) return 0;
+    *first_height = (height - 1) - back;
+    return 1;
+}
+
+uint32_t kw_pow_next_bits(const kw_pow_rules *r, uint32_t height, uint32_t last_bits,
+                          uint32_t last_time, uint32_t first_time)
+{
+    uint32_t first_height;
+    if (!r || !kw_pow_retargets(r, height, &first_height)) return last_bits;
+
+    int64_t span = digishield(r, height) ? r->timespan_post : r->timespan_pre;
+    int64_t actual = (int64_t)last_time - (int64_t)first_time;
+    int64_t lo, hi;
+
+    if (digishield(r, height)) {
+        actual = span + (actual - span) / 8;        /* the amplitude filter */
+        lo = span - span / 4;
+        hi = span + span / 2;
+    } else if (height > 10000) {
+        lo = span / 4;  hi = span * 4;
+    } else if (height > 5000) {
+        lo = span / 8;  hi = span * 4;
+    } else {
+        lo = span / 16; hi = span * 4;
+    }
+    if (actual < lo) actual = lo;
+    else if (actual > hi) actual = hi;
+
+    kw_u256 target, limit;
+    if (!kw_bits_target(last_bits, &target)) return last_bits;
+    if (!kw_bits_target(r->powlimit_bits, &limit)) return last_bits;
+
+    /* actual is at most four times a four-hour period, so this cannot overflow a
+       target that is already at or below the limit. It is checked rather than
+       assumed: an overflow would wrap to a small number, which reads as a
+       harder target than the chain asked for. */
+    if (!mul_small(&target, (uint64_t)actual)) return r->powlimit_bits;
+    div_small(&target, (uint64_t)span);
+
+    if (kw_u256_cmp(&target, &limit) > 0) return r->powlimit_bits;
+    return kw_target_bits(&target);
 }

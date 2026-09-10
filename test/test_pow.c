@@ -55,6 +55,12 @@ static void rejects(uint32_t bits)
     if (kw_bits_target(bits, &t)) { fprintf(stderr, "FAIL: %08x accepted\n", bits); fail = 1; }
 }
 
+static void bad_retarget(const char *what)
+{
+    fprintf(stderr, "FAIL: %s\n", what);
+    fail = 1;
+}
+
 static void work_is(uint32_t bits, const char *want)
 {
     kw_u256 w;
@@ -196,8 +202,61 @@ int main(void)
     if (kw_pow_check(pow, 0x1d00ffff))
         { fprintf(stderr, "FAIL: genesis met bitcoin's difficulty 1\n"); return 1; }
 
+    /* The retarget rule, on real mainnet headers. Every one of these is taken from
+       the chain: the previous block's nBits and time, the timestamp of the block
+       the rule reaches back to, and the nBits the block itself carries. Heights are
+       chosen for the switches: the first retarget after genesis, which clamps to the
+       pow limit, the three pre-digishield minimum-timespan bands at 5000 and 10000,
+       the last 240-block retarget, then 145000 inheriting rather than retargeting
+       and 145001 being the first block to recompute on its own. */
+    {
+        static const struct {
+            uint32_t height, last_bits, last_time, first_time, want;
+        } chain[] = {
+            {        1, 0x1e0ffff0, 1386325540,          0, 0x1e0ffff0 },
+            {      240, 0x1e0ffff0, 1386475638, 1386325540, 0x1e0fffff },
+            {      480, 0x1e0fffff, 1386475840, 1386475638, 0x1e00ffff },
+            {     4800, 0x1c4631d2, 1386677036, 1386663632, 0x1c4156e8 },
+            {     5040, 0x1c4156e8, 1386691587, 1386677036, 0x1c42064e },
+            {    10080, 0x1c145dba, 1386980084, 1386967495, 0x1c11ce07 },
+            {   144960, 0x1b3abe5c, 1395092404, 1395074358, 0x1b499dfd },
+            {   145000, 0x1b499dfd, 1395094427,          0, 0x1b499dfd },
+            {   145001, 0x1b499dfd, 1395094679, 1395094427, 0x1b671062 },
+            {   145002, 0x1b671062, 1395094727, 1395094679, 0x1b6558a4 },
+            {   371520, 0x1b1650eb, 1410475350, 1410475273, 0x1b170f59 },
+            {  6000000, 0x192bf979, 1765676657, 1765676553, 0x192fa398 }
+        };
+        for (size_t i = 0; i < sizeof chain / sizeof *chain; i++) {
+            uint32_t got = kw_pow_next_bits(&KW_POW_MAIN, chain[i].height, chain[i].last_bits,
+                                            chain[i].last_time, chain[i].first_time);
+            if (got != chain[i].want) {
+                fprintf(stderr, "FAIL: height %u wants %08x, rule gave %08x\n",
+                        chain[i].height, chain[i].want, got);
+                fail = 1;
+            }
+        }
+
+        /* which heights retarget at all, and how far back they reach */
+        uint32_t f = 0;
+        if (kw_pow_retargets(&KW_POW_MAIN, 1, &f))       bad_retarget("1 must inherit");
+        if (kw_pow_retargets(&KW_POW_MAIN, 239, &f))     bad_retarget("239 must inherit");
+        if (!kw_pow_retargets(&KW_POW_MAIN, 240, &f) || f != 0)
+            bad_retarget("240 is the first retarget and reaches genesis");
+        if (!kw_pow_retargets(&KW_POW_MAIN, 480, &f) || f != 239)
+            bad_retarget("480 reaches back a full period less one");
+        if (kw_pow_retargets(&KW_POW_MAIN, 145000, &f))
+            bad_retarget("145000 still belongs to a 240-block period, and 145000 % 240 is 40");
+        if (!kw_pow_retargets(&KW_POW_MAIN, 145001, &f) || f != 144999)
+            bad_retarget("145001 is the first per-block retarget");
+        if (!kw_pow_retargets(&KW_POW_MAIN, 145002, &f) || f != 145000)
+            bad_retarget("145002 reaches back two");
+        if (kw_pow_retargets(&KW_POW_MAIN, 0, &f))       bad_retarget("genesis retargets nothing");
+    }
+
     if (fail) return 1;
     printf("pow ok: 10 rejected encodings, 10 targets, 4 work values, 6 round trips and 2 lossy,\n"
-           "  genesis verified by sha256d against chainparams, meets 1e0ffff0 under scrypt,\n  and misses it with the nonce moved\n");
+           "  genesis verified by sha256d against chainparams, meets 1e0ffff0 under scrypt\n"
+           "  and misses it with the nonce moved,\n"
+           "  12 real mainnet retargets over both regimes, 8 period boundaries\n");
     return 0;
 }

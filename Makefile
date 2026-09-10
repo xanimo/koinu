@@ -162,6 +162,11 @@ test/test_cf: test/test_cf.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_cfstore: test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
 
+# checks the retarget rule against a KWH2 header cache, built on demand: the
+# cache is 700MB for mainnet and ships nowhere
+pow_chain: test/pow_chain.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+
 net_sync: test/net_sync.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_sync.o $(LIB)
 
@@ -261,7 +266,7 @@ fuzz-asan:
 	    -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig pow_chain
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

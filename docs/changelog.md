@@ -17,6 +17,7 @@
 * kw: address --spk prints the scriptPubKey
 * ci: build kwui everywhere and drive it through a fifo
 * test: scan against a regtest node, and the receives it records
+* pow: the retarget rule, both regimes and the switch between them
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed
