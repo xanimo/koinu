@@ -24,6 +24,7 @@
 * cpu: the feature cache is atomic, since threads share it
 * kw: scan checks the work of every header past the last anchor
 * sha2: unroll the compression, and stop double hashing the long way round
+* sha2: the sha-256 instructions, where the cpu has them and they agree
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed

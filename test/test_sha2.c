@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "sha2.h"
+#include "cpu.h"
 #include "testutil.h"
 
 #include <stdio.h>
@@ -66,6 +67,50 @@ int main(void)
         "5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456");
 
     if (kw_test_fails()) { fprintf(stderr, "%d sha2 vector(s) failed\n", kw_test_fails()); return 1; }
-    printf("sha2 ok: sha256, sha512, 1e6-byte, streamed, hash256 vectors match\n");
+    /* The hardware core, where there is one. A core that disagrees with the scalar
+       one is switched off at first use, which would leave this passing while quietly
+       hashing the slow way, so the point of this check is the other direction: if the
+       CPU advertises the instructions, the backend must actually be using them. A
+       core I got wrong fails here rather than shipping as "works, just slower". */
+    {
+        uint32_t want_hw = 0;
+#if defined(__x86_64__) || defined(__i386__)
+        want_hw = kw_cpu_has(KW_CPU_SHANI | KW_CPU_SSE41 | KW_CPU_SSSE3);
+#elif defined(__aarch64__)
+        want_hw = kw_cpu_has(KW_CPU_SHA2);
+#endif
+        if (want_hw && !kw_sha256_hw()) {
+            fprintf(stderr, "FAIL: this cpu has the sha-256 instructions but the core "
+                            "disagreed with the scalar one and was refused\n");
+            return 1;
+        }
+        if (!want_hw && kw_sha256_hw()) {
+            fprintf(stderr, "FAIL: the hardware core is on without the instructions\n");
+            return 1;
+        }
+
+        /* and where it is in use, hold it against the scalar core over random blocks,
+           which is what caught a transposed register in the scrypt core */
+        if (kw_sha256_hw()) {
+            unsigned seed = 3;
+            for (int i = 0; i < 256; i++) {
+                uint8_t blk[64];
+                uint32_t a[8], b[8];
+                for (int k = 0; k < 64; k++) { seed = seed * 1103515245u + 12345u; blk[k] = (uint8_t)(seed >> 16); }
+                for (int k = 0; k < 8; k++) { seed = seed * 1103515245u + 12345u; a[k] = b[k] = seed; }
+                kw_sha256_compress_hw(a, blk);
+                kw_sha256_compress_scalar(b, blk);
+                if (memcmp(a, b, sizeof a) != 0) {
+                    fprintf(stderr, "FAIL: the %s core disagrees with the scalar one at block %d\n",
+                            kw_sha256_backend(), i);
+                    return 1;
+                }
+            }
+        }
+    }
+
+    printf("sha2 ok: sha256, sha512, 1e6-byte, streamed, hash256 vectors match,\n"
+       "  %s core%s\n", kw_sha256_backend(),
+       kw_sha256_hw() ? " == scalar over 256 random blocks" : " (no sha-256 instructions here)");
     return 0;
 }

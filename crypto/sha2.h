@@ -27,8 +27,15 @@ void kw_sha256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN]);
 
 /* One compression, exposed so a validator can drive it directly and so the hardware
    cores can be held against this one. (h) is the eight-word state, updated in place;
-   (p) is one 64-byte block. */
+   (p) is one 64-byte block. kw_sha256_compress dispatches; _scalar never does. */
 void kw_sha256_compress(uint32_t h[8], const uint8_t *p);
+void kw_sha256_compress_scalar(uint32_t h[8], const uint8_t *p);
+
+/* The SHA-256 instructions, where the CPU has them and they agree with the scalar
+   core on a known block. A core that disagrees is refused: see crypto/sha2_hw.c. */
+int         kw_sha256_hw(void);
+void        kw_sha256_compress_hw(uint32_t h[8], const uint8_t *p);
+const char *kw_sha256_backend(void);
 
 /* Bitcoin's hash256: SHA-256 applied twice. */
 void kw_hash256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN]);

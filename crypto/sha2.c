@@ -17,7 +17,7 @@ static uint64_t rotr64(uint64_t x, int n) { return (x >> n) | (x << (64 - n)); }
 
 /* ── SHA-256 ─────────────────────────────────────────────────── */
 
-static const uint32_t K256[64] = {
+const uint32_t kw_sha256_k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
     0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
     0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
@@ -66,17 +66,17 @@ void kw_sha256_init(kw_sha256_ctx *c)
      (w[((i) - 2) & 15] >> 10)))
 
 #define SHA256_EIGHT(i, W0, W1, W2, W3, W4, W5, W6, W7) do {              \
-    SHA256_R(a, b, cc, d, e, f, g, hh, K256[(i) + 0], W0);                \
-    SHA256_R(hh, a, b, cc, d, e, f, g, K256[(i) + 1], W1);                \
-    SHA256_R(g, hh, a, b, cc, d, e, f, K256[(i) + 2], W2);                \
-    SHA256_R(f, g, hh, a, b, cc, d, e, K256[(i) + 3], W3);                \
-    SHA256_R(e, f, g, hh, a, b, cc, d, K256[(i) + 4], W4);                \
-    SHA256_R(d, e, f, g, hh, a, b, cc, K256[(i) + 5], W5);                \
-    SHA256_R(cc, d, e, f, g, hh, a, b, K256[(i) + 6], W6);                \
-    SHA256_R(b, cc, d, e, f, g, hh, a, K256[(i) + 7], W7);                \
+    SHA256_R(a, b, cc, d, e, f, g, hh, kw_sha256_k[(i) + 0], W0);                \
+    SHA256_R(hh, a, b, cc, d, e, f, g, kw_sha256_k[(i) + 1], W1);                \
+    SHA256_R(g, hh, a, b, cc, d, e, f, kw_sha256_k[(i) + 2], W2);                \
+    SHA256_R(f, g, hh, a, b, cc, d, e, kw_sha256_k[(i) + 3], W3);                \
+    SHA256_R(e, f, g, hh, a, b, cc, d, kw_sha256_k[(i) + 4], W4);                \
+    SHA256_R(d, e, f, g, hh, a, b, cc, kw_sha256_k[(i) + 5], W5);                \
+    SHA256_R(cc, d, e, f, g, hh, a, b, kw_sha256_k[(i) + 6], W6);                \
+    SHA256_R(b, cc, d, e, f, g, hh, a, kw_sha256_k[(i) + 7], W7);                \
 } while (0)
 
-void kw_sha256_compress(uint32_t h[8], const uint8_t *p)
+void kw_sha256_compress_scalar(uint32_t h[8], const uint8_t *p)
 {
     uint32_t w[16];
     for (int i = 0; i < 16; i++)
@@ -95,6 +95,14 @@ void kw_sha256_compress(uint32_t h[8], const uint8_t *p)
     h[0] += a; h[1] += b; h[2] += cc; h[3] += d;
     h[4] += e; h[5] += f; h[6] += g;  h[7] += hh;
     kw_secure_zero(w, sizeof w);
+}
+
+/* One test for the hardware core per call is a predictable branch against several
+   hundred cycles of hashing, so it is not worth caching here. */
+void kw_sha256_compress(uint32_t h[8], const uint8_t *p)
+{
+    if (kw_sha256_hw()) kw_sha256_compress_hw(h, p);
+    else                kw_sha256_compress_scalar(h, p);
 }
 
 static void sha256_block(kw_sha256_ctx *c, const uint8_t *p)
