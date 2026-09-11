@@ -31,41 +31,75 @@ static const uint32_t K256[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
+static const uint32_t SHA256_IV[8] = {
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+};
+
 void kw_sha256_init(kw_sha256_ctx *c)
 {
-    c->h[0] = 0x6a09e667; c->h[1] = 0xbb67ae85;
-    c->h[2] = 0x3c6ef372; c->h[3] = 0xa54ff53a;
-    c->h[4] = 0x510e527f; c->h[5] = 0x9b05688c;
-    c->h[6] = 0x1f83d9ab; c->h[7] = 0x5be0cd19;
+    memcpy(c->h, SHA256_IV, sizeof c->h);
     c->bits = 0;
     c->n = 0;
 }
 
-static void sha256_block(kw_sha256_ctx *c, const uint8_t *p)
+/* One round, with the working variables passed by name so the caller rotates them
+   at compile time. Written out eight at a time below: rolled, the compiler emits the
+   a-through-h shuffle every round, which is most of what a round costs. */
+#define SHA256_R(a, b, c, d, e, f, g, h, k, w) do {                       \
+    uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);           \
+    uint32_t ch = (e & f) ^ (~e & g);                                     \
+    uint32_t t1 = (h) + S1 + ch + (k) + (w);                              \
+    uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);           \
+    uint32_t mj = ((a) & (b)) ^ ((a) & (c)) ^ ((b) & (c));                \
+    (d) += t1;                                                            \
+    (h) = t1 + S0 + mj;                                                   \
+} while (0)
+
+/* The schedule as a sixteen-word window rather than a sixty-four word array: each
+   word is only read by the fifteen rounds after it, so the rest is dead weight and
+   sixteen words of secret to wipe instead of sixty-four. */
+#define SHA256_W(i) (w[(i) & 15] +=                                                \
+    (rotr32(w[((i) - 15) & 15], 7) ^ rotr32(w[((i) - 15) & 15], 18) ^              \
+     (w[((i) - 15) & 15] >> 3)) + w[((i) - 7) & 15] +                              \
+    (rotr32(w[((i) - 2) & 15], 17) ^ rotr32(w[((i) - 2) & 15], 19) ^               \
+     (w[((i) - 2) & 15] >> 10)))
+
+#define SHA256_EIGHT(i, W0, W1, W2, W3, W4, W5, W6, W7) do {              \
+    SHA256_R(a, b, cc, d, e, f, g, hh, K256[(i) + 0], W0);                \
+    SHA256_R(hh, a, b, cc, d, e, f, g, K256[(i) + 1], W1);                \
+    SHA256_R(g, hh, a, b, cc, d, e, f, K256[(i) + 2], W2);                \
+    SHA256_R(f, g, hh, a, b, cc, d, e, K256[(i) + 3], W3);                \
+    SHA256_R(e, f, g, hh, a, b, cc, d, K256[(i) + 4], W4);                \
+    SHA256_R(d, e, f, g, hh, a, b, cc, K256[(i) + 5], W5);                \
+    SHA256_R(cc, d, e, f, g, hh, a, b, K256[(i) + 6], W6);                \
+    SHA256_R(b, cc, d, e, f, g, hh, a, K256[(i) + 7], W7);                \
+} while (0)
+
+void kw_sha256_compress(uint32_t h[8], const uint8_t *p)
 {
-    uint32_t w[64];
+    uint32_t w[16];
     for (int i = 0; i < 16; i++)
         w[i] = (uint32_t)p[i*4] << 24 | (uint32_t)p[i*4+1] << 16 |
                (uint32_t)p[i*4+2] << 8 | (uint32_t)p[i*4+3];
-    for (int i = 16; i < 64; i++) {
-        uint32_t s0 = rotr32(w[i-15], 7) ^ rotr32(w[i-15], 18) ^ (w[i-15] >> 3);
-        uint32_t s1 = rotr32(w[i-2], 17) ^ rotr32(w[i-2], 19) ^ (w[i-2] >> 10);
-        w[i] = w[i-16] + s0 + w[i-7] + s1;
-    }
-    uint32_t a = c->h[0], b = c->h[1], cc = c->h[2], d = c->h[3];
-    uint32_t e = c->h[4], f = c->h[5], g = c->h[6], hh = c->h[7];
-    for (int i = 0; i < 64; i++) {
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
-        uint32_t ch = (e & f) ^ (~e & g);
-        uint32_t t1 = hh + S1 + ch + K256[i] + w[i];
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
-        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
-        uint32_t t2 = S0 + maj;
-        hh = g; g = f; f = e; e = d + t1; d = cc; cc = b; b = a; a = t1 + t2;
-    }
-    c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
-    c->h[4] += e; c->h[5] += f; c->h[6] += g;  c->h[7] += hh;
+
+    uint32_t a = h[0], b = h[1], cc = h[2], d = h[3];
+    uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+
+    SHA256_EIGHT(0,  w[0],  w[1],  w[2],  w[3],  w[4],  w[5],  w[6],  w[7]);
+    SHA256_EIGHT(8,  w[8],  w[9],  w[10], w[11], w[12], w[13], w[14], w[15]);
+    for (int i = 16; i < 64; i += 8)
+        SHA256_EIGHT(i, SHA256_W(i + 0), SHA256_W(i + 1), SHA256_W(i + 2), SHA256_W(i + 3),
+                        SHA256_W(i + 4), SHA256_W(i + 5), SHA256_W(i + 6), SHA256_W(i + 7));
+
+    h[0] += a; h[1] += b; h[2] += cc; h[3] += d;
+    h[4] += e; h[5] += f; h[6] += g;  h[7] += hh;
     kw_secure_zero(w, sizeof w);
+}
+
+static void sha256_block(kw_sha256_ctx *c, const uint8_t *p)
+{
+    kw_sha256_compress(c->h, p);
 }
 
 void kw_sha256_update(kw_sha256_ctx *c, const void *data, size_t len)
@@ -110,12 +144,63 @@ void kw_sha256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN])
     kw_sha256_final(&c, out);
 }
 
+/* Pad (len) bytes into (blocks) and return how many 64-byte blocks that is. Only
+   for lengths that fit two blocks, which is every double hash on the hot paths: an
+   80-byte header, a 64-byte merkle node, a 32-byte digest. */
+static size_t pad_short(uint8_t *blocks, const void *data, size_t len)
+{
+    size_t nb = len <= 55 ? 1 : 2;
+    size_t total = nb * KW_SHA256_BLOCK;
+    memcpy(blocks, data, len);
+    blocks[len] = 0x80;
+    memset(blocks + len + 1, 0, total - len - 1);
+    uint64_t bits = (uint64_t)len * 8;
+    for (int i = 0; i < 8; i++) blocks[total - 1 - i] = (uint8_t)(bits >> (8 * i));
+    return nb;
+}
+
+/* Two hashes, without going round the streaming path twice for them. At these
+   lengths the context setup, the copy into its buffer, the padding and the wipe cost
+   about as much as the compressions do, and a block header is hashed six million
+   times in a sync. */
 void kw_hash256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN])
 {
-    uint8_t t[KW_SHA256_LEN];
-    kw_sha256(data, len, t);
-    kw_sha256(t, sizeof t, out);
-    kw_secure_zero(t, sizeof t);
+    uint8_t blocks[2 * KW_SHA256_BLOCK];
+    uint32_t h[8];
+
+    if (len > 119) {                       /* long enough that the padding is not the cost */
+        uint8_t t[KW_SHA256_LEN];
+        kw_sha256(data, len, t);
+        kw_sha256(t, sizeof t, out);
+        kw_secure_zero(t, sizeof t);
+        return;
+    }
+
+    size_t nb = pad_short(blocks, data, len);
+    memcpy(h, SHA256_IV, sizeof h);
+    kw_sha256_compress(h, blocks);
+    if (nb == 2) kw_sha256_compress(h, blocks + KW_SHA256_BLOCK);
+
+    /* the digest of the first hash, big-endian, is the second hash's only 32 bytes */
+    uint8_t inner[KW_SHA256_LEN];
+    for (int i = 0; i < 8; i++) {
+        inner[i*4]     = (uint8_t)(h[i] >> 24);
+        inner[i*4 + 1] = (uint8_t)(h[i] >> 16);
+        inner[i*4 + 2] = (uint8_t)(h[i] >> 8);
+        inner[i*4 + 3] = (uint8_t)h[i];
+    }
+    pad_short(blocks, inner, sizeof inner);
+    memcpy(h, SHA256_IV, sizeof h);
+    kw_sha256_compress(h, blocks);
+    for (int i = 0; i < 8; i++) {
+        out[i*4]     = (uint8_t)(h[i] >> 24);
+        out[i*4 + 1] = (uint8_t)(h[i] >> 16);
+        out[i*4 + 2] = (uint8_t)(h[i] >> 8);
+        out[i*4 + 3] = (uint8_t)h[i];
+    }
+    kw_secure_zero(blocks, sizeof blocks);
+    kw_secure_zero(h, sizeof h);
+    kw_secure_zero(inner, sizeof inner);
 }
 
 /* ── SHA-512 ─────────────────────────────────────────────────── */

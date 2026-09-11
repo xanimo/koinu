@@ -25,6 +25,11 @@ void kw_sha256_update(kw_sha256_ctx *c, const void *data, size_t len);
 void kw_sha256_final(kw_sha256_ctx *c, uint8_t out[KW_SHA256_LEN]);
 void kw_sha256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN]);
 
+/* One compression, exposed so a validator can drive it directly and so the hardware
+   cores can be held against this one. (h) is the eight-word state, updated in place;
+   (p) is one 64-byte block. */
+void kw_sha256_compress(uint32_t h[8], const uint8_t *p);
+
 /* Bitcoin's hash256: SHA-256 applied twice. */
 void kw_hash256(const void *data, size_t len, uint8_t out[KW_SHA256_LEN]);
 
