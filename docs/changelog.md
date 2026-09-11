@@ -1,11 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.2.3] - 2026-09-11
 ## What's Changed
 * kw: bound the fee a spend may pay
 * cf: anchor the filter-header chain to the release
 * psync: let the rate-aware picker actually pick
 * scrypt, the hash dogecoin's proof of work is built on
+* gitignore the scrypt test binary
 * scrypt: eight headers at once on avx2
 * cpu: one place that asks what the machine can run
 * pow: compact targets and the work a chain represents
@@ -14,17 +17,17 @@
 * kwui: refresh without restarting
 * kwui: an address screen and a coins screen
 * wallet: a journal, so a spend and a receive leave a record
-* kw: address --spk prints the scriptPubKey
-* ci: build kwui everywhere and drive it through a fifo
 * test: scan against a regtest node, and the receives it records
 * pow: the retarget rule, both regimes and the switch between them
 * auxpow: verify the proof a merged-mined block borrows from its parent
 * test: three real mainnet merged-mining proofs, fetched from a peer
 * powq: check proof of work off the download's back, in parallel
-* cpu: the feature cache is atomic, since threads share it
 * kw: scan checks the work of every header past the last anchor
 * sha2: unroll the compression, and stop double hashing the long way round
 * sha2: the sha-256 instructions, where the cpu has them and they agree
+* docs: say how the anchors get refreshed, and add the tool that does it
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.2.2...v0.2.3
 
 ## [0.2.2] - 2026-09-09
 ## What's Changed
