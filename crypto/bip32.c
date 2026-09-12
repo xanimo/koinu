@@ -21,18 +21,20 @@ static uint32_t rd_be32(const uint8_t *p)
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
-void kw_bip32_pubkey(const kw_bip32_key *k, uint8_t pub[33])
+int kw_bip32_pubkey(const kw_bip32_key *k, uint8_t pub[33])
 {
-    if (k->is_private) kw_ec_pubkey(k->key + 1, pub);
-    else               memcpy(pub, k->key, 33);
+    if (k->is_private) return kw_ec_pubkey(k->key + 1, pub);
+    memcpy(pub, k->key, 33);
+    return 1;
 }
 
-static void fingerprint(const kw_bip32_key *k, uint8_t fp[4])
+static int fingerprint(const kw_bip32_key *k, uint8_t fp[4])
 {
     uint8_t pub[33], h[KW_RIPEMD160_LEN];
-    kw_bip32_pubkey(k, pub);
+    if (!kw_bip32_pubkey(k, pub)) return 0;
     kw_hash160(pub, 33, h);
     memcpy(fp, h, 4);
+    return 1;
 }
 
 int kw_bip32_from_seed(const uint8_t *seed, size_t seedlen,
@@ -62,8 +64,9 @@ int kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *
     if (index >= KW_BIP32_HARDENED) {
         data[0] = 0x00;
         memcpy(data + 1, parent->key + 1, 32);      /* the secret */
-    } else {
-        kw_bip32_pubkey(parent, data);              /* compressed pub */
+    } else if (!kw_bip32_pubkey(parent, data)) {    /* compressed pub */
+        kw_secure_zero(data, sizeof data);
+        return 0;
     }
     be32(data + 33, index);
     kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
@@ -81,7 +84,11 @@ int kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *
     memcpy(c.chain_code, I + 32, 32);
     c.depth = parent->depth + 1;
     c.child_number = index;
-    fingerprint(parent, c.parent_fp);
+    if (!fingerprint(parent, c.parent_fp)) {
+        kw_secure_zero(I, sizeof I); kw_secure_zero(data, sizeof data);
+        kw_secure_zero(&c, sizeof c);
+        return 0;
+    }
     c.ver = parent->ver;
 
     *out = c;
@@ -96,14 +103,14 @@ int kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *o
     if (index >= KW_BIP32_HARDENED) return 0;         /* impossible without the secret */
 
     uint8_t data[37], I[64];
-    kw_bip32_pubkey(parent, data);
+    if (!kw_bip32_pubkey(parent, data)) return 0;
     be32(data + 33, index);
     kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
 
     kw_bip32_key c;
     memset(&c, 0, sizeof c);
     c.is_private = 0;
-    kw_bip32_pubkey(parent, c.key);
+    if (!kw_bip32_pubkey(parent, c.key)) { kw_secure_zero(I, sizeof I); return 0; }
     if (!kw_ec_pubkey_tweak_add(c.key, I)) {          /* Ki = IL*G + Kpar */
         kw_secure_zero(I, sizeof I);
         return 0;
@@ -111,7 +118,7 @@ int kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *o
     memcpy(c.chain_code, I + 32, 32);
     c.depth = parent->depth + 1;
     c.child_number = index;
-    fingerprint(parent, c.parent_fp);
+    if (!fingerprint(parent, c.parent_fp)) { kw_secure_zero(I, sizeof I); return 0; }
     c.ver = parent->ver;
 
     *out = c;
@@ -119,7 +126,7 @@ int kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *o
     return 1;
 }
 
-void kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub)
+int kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub)
 {
     kw_bip32_key p;
     memset(&p, 0, sizeof p);
@@ -128,9 +135,10 @@ void kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub)
     memcpy(p.parent_fp, prv->parent_fp, 4);
     p.child_number = prv->child_number;
     memcpy(p.chain_code, prv->chain_code, 32);
-    kw_bip32_pubkey(prv, p.key);
+    if (!kw_bip32_pubkey(prv, p.key)) return 0;
     p.ver = prv->ver;
     *pub = p;
+    return 1;
 }
 
 size_t kw_bip32_serialize(const kw_bip32_key *k, char *out, size_t outcap)

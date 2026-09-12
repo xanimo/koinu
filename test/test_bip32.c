@@ -80,6 +80,29 @@ int main(void)
 
     kw_ec_stop();
     if (fails) { fprintf(stderr, "%d bip32 vector(s) failed\n", fails); return 1; }
-    printf("bip32 ok: vector 1 (m, m/0', m/0'/1), path parse, priv/pub agreement, round trip\n");
+
+    /* With no curve context, every operation that needs one must refuse rather than
+       leave the caller's buffer as it found it. kw_bip32_pubkey used to return void
+       and drop kw_ec_pubkey's failure, so a caller hashed its own stack: the context
+       is down whenever the rng is, which a seccomp filter with no getrandom and no
+       /dev/urandom is enough to cause. */
+    kw_ec_stop();
+    {
+        uint8_t pub[33];
+        memset(pub, 0xa5, sizeof pub);
+        if (kw_bip32_pubkey(&m, pub)) { fprintf(stderr, "FAIL: pubkey without a context\n"); return 1; }
+        for (int i = 0; i < 33; i++)
+            if (pub[i] != 0xa5) { fprintf(stderr, "FAIL: the buffer was written anyway\n"); return 1; }
+
+        kw_bip32_key child, neutered;
+        if (kw_bip32_ckd_priv(&m, 0, &child))
+            { fprintf(stderr, "FAIL: unhardened derivation without a context\n"); return 1; }
+        if (kw_bip32_neuter(&m, &neutered))
+            { fprintf(stderr, "FAIL: neuter without a context\n"); return 1; }
+    }
+    if (!kw_ec_start()) { fprintf(stderr, "FAIL: ec restart\n"); return 1; }
+
+    printf("bip32 ok: vector 1 (m, m/0', m/0'/1), path parse, priv/pub agreement, round trip,\n"
+           "  and every public-key operation refuses with no curve context\n");
     return 0;
 }

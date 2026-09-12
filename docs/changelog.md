@@ -6,6 +6,7 @@
 * sync: a header must carry the difficulty the chain demands of it
 * make asan: put the tree back in release shape when it passes
 * test: the sighash against 322 spends the network already accepted
+* bip32: propagate the failure a void return was throwing away
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed

@@ -62,8 +62,17 @@ static void mark_bad(kw_powq *q, uint32_t height)
 static void *worker(void *arg)
 {
     kw_powq *q = (kw_powq *)arg;
-    void *scratch = malloc((size_t)KW_SCRYPT_SCRATCH * KW_SCRYPT_BATCH);
     job mine[KW_SCRYPT_BATCH];
+
+    /* Without a scratchpad the scrypt calls would allocate one per header, which is
+       slow but correct; a NULL that reached them would not be. Report and stop. */
+    void *scratch = malloc((size_t)KW_SCRYPT_SCRATCH * KW_SCRYPT_BATCH);
+    if (!scratch) {
+        pthread_mutex_lock(&q->m);
+        mark_bad(q, 0);
+        pthread_mutex_unlock(&q->m);
+        return NULL;
+    }
 
     for (;;) {
         size_t n = 0;

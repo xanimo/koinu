@@ -1684,7 +1684,11 @@ int main(int argc, char **argv)
     if (!cmd) { usage(); return 2; }
     if (gap < 1) gap = 1;
 
-    kw_ec_start();
+    /* Every derivation and signature needs the curve context, and it fails when the
+       rng does. Without this check a machine with no getrandom, which is a seccomp
+       filter and no /dev/urandom away, would run every command with the context down.
+       kwui has always checked; this did not. */
+    if (!kw_ec_start()) { fprintf(stderr, "kw: no entropy, so no curve context\n"); return 1; }
     const kw_chainparams *cp = chain_for(net);
     /* parallel sync with no --node: the dns seeds supply the peers */
     if (g_nnodes == 0 && peers > 1) {

@@ -32,7 +32,10 @@ int  kw_bip32_from_seed(const uint8_t *seed, size_t seedlen,
                         kw_bip32_version ver, kw_bip32_key *out);
 
 /* The compressed public key for (k), whether it holds a secret or not. */
-void kw_bip32_pubkey(const kw_bip32_key *k, uint8_t pub[33]);
+/* The compressed public key for (k). Returns 1, or 0 when the curve context is not
+   up or the key is not on the curve, in which case (pub) is untouched: a caller that
+   ignores this and hashes the buffer anyway is hashing whatever was on its stack. */
+int kw_bip32_pubkey(const kw_bip32_key *k, uint8_t pub[33]);
 
 /* Child derivation. CKDpriv needs a private parent; CKDpub cannot do a hardened
    index. Both return 0 when the index is unusable (tweak out of range), which
@@ -41,7 +44,7 @@ int  kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key 
 int  kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *out);
 
 /* Strip the secret, leaving the matching extended public key. */
-void kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub);
+int kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub);
 
 /* xprv/xpub base58check. serialize returns the string length or 0; parse
    returns 1 on success and sets only the version half matching the key type. */
