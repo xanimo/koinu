@@ -51,3 +51,5 @@
 /net_auxpow
 /test/test_powq
 /gen_checkpoints
+/mkvectors_chain
+/test/test_sighash

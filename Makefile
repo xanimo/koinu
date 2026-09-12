@@ -39,7 +39,7 @@ TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test
         test/test_pbkdf2 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
         test/test_pow test/test_auxpow test/test_powq test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
-        test/test_utxo test/test_fee test/test_journal test/test_spv test/test_gcs test/test_cf test/test_cfstore
+        test/test_sighash test/test_utxo test/test_fee test/test_journal test/test_spv test/test_gcs test/test_cf test/test_cfstore
 
 all: $(LIB) kw
 
@@ -147,6 +147,9 @@ test/test_sync: test/test_sync.o test/testutil.o $(LIB)
 test/test_psync: test/test_psync.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_psync.o $(LIB)
 
+test/test_sighash: test/test_sighash.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECP_LIB)
+
 test/test_utxo: test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 
@@ -167,6 +170,10 @@ test/test_cf: test/test_cf.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_cfstore: test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
+
+# writes sighash vectors from a run of mainnet blocks, over p2p
+mkvectors_chain: test/mkvectors_chain.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECP_LIB)
 
 # regenerates the block-header anchor table from a synced header cache
 gen_checkpoints: test/gen_checkpoints.o $(LIB)
@@ -256,6 +263,7 @@ check: $(TESTS) kw kwd kwui
 	./test/test_headers
 	./test/test_sync
 	./test/test_psync
+	./test/test_sighash
 	./test/test_utxo
 	./test/test_fee
 	./test/test_journal
@@ -316,7 +324,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain gen_checkpoints
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain gen_checkpoints mkvectors_chain
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
