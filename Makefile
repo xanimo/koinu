@@ -269,10 +269,25 @@ check: $(TESTS) kw kwd kwui
 	./test/test_kwui.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
+#
+# $(LIB) is a shared artifact: other trees link this one in place, and a sanitized
+# archive left sitting there fails their link with undefined __asan symbols. So a run
+# that passes puts the tree back into release shape. A run that fails leaves
+# everything, because the sanitized binaries are the point of a failure, and says so
+# loudly: the object files are sanitized too, so a plain make after a failed run
+# relinks them into $(LIB).
 asan:
 	$(MAKE) clean
-	$(MAKE) check CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-	    -fsanitize=address,undefined -fno-omit-frame-pointer"
+	@if $(MAKE) check CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+	    -fsanitize=address,undefined -fno-omit-frame-pointer"; then \
+	    $(MAKE) clean && $(MAKE) $(LIB); \
+	else \
+	    echo "" >&2; \
+	    echo "asan failed: this tree now holds sanitized objects and a sanitized $(LIB)." >&2; \
+	    echo "They are kept so the failure can be debugged. Run make clean before" >&2; \
+	    echo "building anything that links $(LIB), here or in another tree." >&2; \
+	    exit 1; \
+	fi
 
 # ThreadSanitizer over the threaded code: the validator pool and the parallel
 # header download. It cannot be combined with address sanitizer, so it is its own
@@ -290,8 +305,15 @@ tsan:
 # read is silently harmless and the run reports success.
 fuzz-asan:
 	$(MAKE) clean
-	$(MAKE) fuzz-run CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-	    -fsanitize=address,undefined -fno-omit-frame-pointer"
+	@if $(MAKE) fuzz-run CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+	    -fsanitize=address,undefined -fno-omit-frame-pointer"; then \
+	    $(MAKE) clean && $(MAKE) $(LIB); \
+	else \
+	    echo "" >&2; \
+	    echo "fuzz-asan failed: sanitized objects and $(LIB) are left in place to debug." >&2; \
+	    echo "Run make clean before building anything that links $(LIB)." >&2; \
+	    exit 1; \
+	fi
 
 clean:
 	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain gen_checkpoints

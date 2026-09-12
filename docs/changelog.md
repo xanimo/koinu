@@ -4,6 +4,7 @@
 ## What's Changed
 * kw: send decodes what it is about to broadcast
 * sync: a header must carry the difficulty the chain demands of it
+* make asan: put the tree back in release shape when it passes
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed
