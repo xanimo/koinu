@@ -9,6 +9,47 @@
 #include <stdio.h>
 #include <string.h>
 
+/* S -> n-S, re-encoded as DER. The other valid signature over the same message: what
+   a third party can produce without the key, and what low-S exists to refuse. */
+static size_t flip_s(const uint8_t *in, size_t inlen, uint8_t *out)
+{
+    static const uint8_t N[32] = {
+        0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe,
+        0xba,0xae,0xdc,0xe6,0xaf,0x48,0xa0,0x3b,0xbf,0xd2,0x5e,0x8c,0xd0,0x36,0x41,0x41
+    };
+    if (inlen < 8 || in[0] != 0x30) return 0;
+    size_t rl = in[3], sl = in[5 + rl];
+    const uint8_t *S = in + 6 + rl;
+    if (sl > 33 || 6 + rl + sl != inlen) return 0;
+
+    uint8_t s32[32], flipped[32];
+    memset(s32, 0, sizeof s32);
+    size_t skip = (sl == 33) ? 1 : 0;
+    memcpy(s32 + 32 - (sl - skip), S + skip, sl - skip);
+
+    int borrow = 0;
+    for (int i = 31; i >= 0; i--) {
+        int d = (int)N[i] - (int)s32[i] - borrow;
+        borrow = d < 0;
+        flipped[i] = (uint8_t)(d + (borrow ? 256 : 0));
+    }
+
+    size_t lead = 0;
+    while (lead < 31 && flipped[lead] == 0) lead++;
+    int pad = (flipped[lead] & 0x80) ? 1 : 0;
+    size_t hs = 32 - lead + (size_t)pad, n = 0;
+    out[n++] = 0x30;
+    out[n++] = (uint8_t)(4 + rl + hs);
+    out[n++] = 0x02;
+    out[n++] = (uint8_t)rl;
+    memcpy(out + n, in + 4, rl); n += rl;
+    out[n++] = 0x02;
+    out[n++] = (uint8_t)hs;
+    if (pad) out[n++] = 0x00;
+    memcpy(out + n, flipped + lead, 32 - lead); n += 32 - lead;
+    return n;
+}
+
 int main(void)
 {
     if (!kw_ec_start()) { fprintf(stderr, "FAIL: ec_start\n"); return 1; }
@@ -43,6 +84,45 @@ int main(void)
     if (kw_ec_verify(pk, h, sig, siglen))   { fprintf(stderr, "FAIL: verify accepted tampered hash\n"); return 1; }
     h[0] ^= 1;
 
+
+    /* Strict DER and low-S are not conveniences, they are what stops a third party
+       flipping S to n-S and relaying the same spend under a different txid. A
+       downstream now leans on this being enforced here, so a change that relaxed
+       either would have to fail something: it fails this.
+       The high-S form of a valid signature is still a valid ECDSA signature over the
+       same message, which is the point. */
+    {
+        uint8_t high[KW_EC_SIG_DER_MAX], back[KW_EC_SIG_DER_MAX];
+        size_t hn = flip_s(sig, siglen, high);
+        if (!hn) { fprintf(stderr, "FAIL: could not build the high-S form\n"); return 1; }
+
+        if (kw_ec_verify(pk, h, high, hn))
+            { fprintf(stderr, "FAIL: a high-S signature was accepted\n"); return 1; }
+
+        /* and it is refused for being high-S, not for being malformed: flipping it
+           back has to reproduce the signature that does verify */
+        size_t bn = flip_s(high, hn, back);
+        if (bn != siglen || memcmp(back, sig, siglen) != 0)
+            { fprintf(stderr, "FAIL: the flip is not its own inverse, so the high-S form is junk\n"); return 1; }
+        if (!kw_ec_verify(pk, h, back, bn))
+            { fprintf(stderr, "FAIL: flipped back and it no longer verifies\n"); return 1; }
+
+        /* and the encoding itself has to be strict */
+        uint8_t bad[KW_EC_SIG_DER_MAX];
+        memcpy(bad, sig, siglen);
+        bad[0] = 0x31;
+        if (kw_ec_verify(pk, h, bad, siglen)) { fprintf(stderr, "FAIL: a bad DER tag was accepted\n"); return 1; }
+        memcpy(bad, sig, siglen);
+        bad[1]++;
+        if (kw_ec_verify(pk, h, bad, siglen)) { fprintf(stderr, "FAIL: a wrong DER length was accepted\n"); return 1; }
+        if (kw_ec_verify(pk, h, sig, siglen - 1))
+            { fprintf(stderr, "FAIL: a truncated signature was accepted\n"); return 1; }
+        memcpy(bad, sig, siglen);
+        bad[siglen] = 0x00;
+        if (kw_ec_verify(pk, h, bad, siglen + 1))
+            { fprintf(stderr, "FAIL: a trailing byte was accepted\n"); return 1; }
+    }
+
     /* RFC 6979 determinism: signing the same thing twice is byte-identical */
     uint8_t sig2[KW_EC_SIG_DER_MAX]; size_t siglen2 = 0;
     kw_ec_sign(sk, h, sig2, &siglen2);
@@ -66,6 +146,7 @@ int main(void)
 
     kw_ec_stop();
     if (kw_test_fails()) { fprintf(stderr, "%d ec vector(s) failed\n", kw_test_fails()); return 1; }
-    printf("ec ok: G/2G vectors, sign+verify, rfc6979 determinism, tweak agreement\n");
+    printf("ec ok: G/2G vectors, sign+verify, rfc6979 determinism, tweak agreement,\n"
+           "  high-S refused and its flip reversible, four malformed encodings refused\n");
     return 0;
 }
