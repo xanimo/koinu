@@ -159,7 +159,7 @@ static size_t pad_short(uint8_t *blocks, const void *data, size_t len)
 {
     size_t nb = len <= 55 ? 1 : 2;
     size_t total = nb * KW_SHA256_BLOCK;
-    memcpy(blocks, data, len);
+    if (len) memcpy(blocks, data, len);   /* memcpy from NULL is undefined even at zero */
     blocks[len] = 0x80;
     memset(blocks + len + 1, 0, total - len - 1);
     uint64_t bits = (uint64_t)len * 8;

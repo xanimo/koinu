@@ -15,6 +15,7 @@
 #include "testutil.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -76,9 +77,55 @@ int main(void)
     int c = kw_msg_parse(magic, back, got > 0 ? (size_t)got : 0, cmd, &pl, &gl);
     if (c <= 0 || strcmp(cmd, "getheaders") != 0) { fprintf(stderr, "FAIL: no getheaders sent\n"); return 1; }
 
+
+    /* The retarget rule as the sync applies it, on a store rather than on values
+       handed straight to net/pow.c. The numbers are mainnet's: height 240 is the
+       first retarget, it reaches back to genesis for its start time, and the chain
+       says its answer is 1e0fffff. Heights below it inherit, so 239 must still carry
+       what genesis did.
+
+       The store is fabricated because 239 real headers do not fit in a test, and the
+       rule reads nothing from a header but its nBits and timestamp. */
+    {
+        kw_headerstore t;
+        if (!kw_headerstore_init(&t)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+        free(t.h);                              /* replacing the store's own array */
+        t.h = (kw_block_header *)calloc(240, sizeof *t.h);
+        if (!t.h) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        t.cap = 240;
+
+        for (int i = 0; i < 239; i++) {
+            uint8_t *raw = t.h[i].raw;
+            uint32_t when = 1386325540u + (uint32_t)(i + 1) * 30u;
+            if (i == 238) when = 1386475638u;          /* height 239, from the chain */
+            raw[68] = (uint8_t)when;       raw[69] = (uint8_t)(when >> 8);
+            raw[70] = (uint8_t)(when >> 16); raw[71] = (uint8_t)(when >> 24);
+            raw[72] = 0xf0; raw[73] = 0xff; raw[74] = 0x0f; raw[75] = 0x1e;   /* 1e0ffff0 */
+        }
+
+        t.count = 5;
+        if (!kw_sync_bits_ok(&t, &KW_DOGE_MAINNET, 6, 0x1e0ffff0u))
+            { fprintf(stderr, "FAIL: height 6 must inherit genesis nBits\n"); return 1; }
+        if (kw_sync_bits_ok(&t, &KW_DOGE_MAINNET, 6, 0x1d00ffffu))
+            { fprintf(stderr, "FAIL: height 6 accepted a difficulty it was not owed\n"); return 1; }
+
+        t.count = 239;
+        if (!kw_sync_bits_ok(&t, &KW_DOGE_MAINNET, 240, 0x1e0fffffu))
+            { fprintf(stderr, "FAIL: the first retarget must demand 1e0fffff\n"); return 1; }
+        if (kw_sync_bits_ok(&t, &KW_DOGE_MAINNET, 240, 0x1e0ffff0u))
+            { fprintf(stderr, "FAIL: 240 accepted the difficulty it was retargeting away from\n"); return 1; }
+
+        /* a chain whose rules are not written is not checked, rather than checked wrongly */
+        if (!kw_sync_bits_ok(&t, &KW_DOGE_TESTNET, 240, 0x1d00ffffu))
+            { fprintf(stderr, "FAIL: testnet must not be judged by mainnet's rule\n"); return 1; }
+
+        kw_headerstore_free(&t);
+    }
+
     kw_headerstore_free(&s);
     kw_peer_close(&p);
     close(sv[1]);
-    printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2\n");
+    printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
+       "  mainnet's first retarget demanded at height 240 and inheritance below it\n");
     return 0;
 }

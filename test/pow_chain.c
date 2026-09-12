@@ -12,7 +12,9 @@
  */
 
 #include "pow.h"
+#include "chainparams.h"
 #include "headers.h"
+#include "sync.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +62,57 @@ int main(int argc, char **argv)
         bits[h]  = kw_header_bits(rec);
     }
     fclose(f);
+
+    /* The same heights again through the enforcement path, which is what a sync
+       actually calls: the store lookups and the genesis special case included, rather
+       than the rule alone with timestamps handed to it. */
+    kw_headerstore st;
+    if (kw_headerstore_init(&st)) {
+        free(st.h);                             /* replacing the store's own array */
+        st.h = (kw_block_header *)malloc((limit + 1) * sizeof *st.h);
+        if (st.h) {
+            st.cap = limit + 1;
+            FILE *g = fopen(argv[1], "rb");
+            unsigned long enforced = 0, refused = 0;
+            if (g && fseek(g, 4, SEEK_SET) == 0) {
+                for (unsigned long h = 1; h <= limit; h++) {
+                    uint8_t rec[KW_HDR_REC];
+                    if (fread(rec, 1, KW_HDR_REC, g) != KW_HDR_REC) break;
+                    memcpy(st.h[h - 1].raw, rec, KW_HEADER_LEN);
+                    memcpy(st.h[h - 1].hash, rec + KW_HEADER_LEN, 32);
+                    st.count = h - 1;          /* as it stands when the header arrives */
+                    if (!kw_sync_bits_ok(&st, &KW_DOGE_MAINNET, (uint32_t)h, kw_header_bits(rec))) {
+                        if (refused < 10) fprintf(stderr, "REFUSED height %lu\n", h);
+                        refused++;
+                    }
+                    st.count = h;
+                    enforced++;
+                }
+                fclose(g);
+            }
+            printf("%lu heights through kw_sync_bits_ok, %lu refused\n", enforced, refused);
+            if (refused) { free(st.h); free(times); free(bits); return 1; }
+
+            /* and it has to refuse something, or the pass above means nothing: a
+               wrapper that returned 1 unconditionally would read the same */
+            if (enforced > 300) {
+                st.count = 299;
+                uint32_t real = kw_header_bits(st.h[299].raw);
+                if (kw_sync_bits_ok(&st, &KW_DOGE_MAINNET, 300, real ^ 1u)) {
+                    fprintf(stderr, "REFUSED nothing: a bent nBits at 300 was accepted\n");
+                    free(st.h); free(times); free(bits);
+                    return 1;
+                }
+                if (!kw_sync_bits_ok(&st, &KW_DOGE_MAINNET, 300, real)) {
+                    fprintf(stderr, "the real nBits at 300 was refused\n");
+                    free(st.h); free(times); free(bits);
+                    return 1;
+                }
+                printf("a bent nBits at height 300 is refused, the real one is not\n");
+            }
+            free(st.h);
+        }
+    }
 
     unsigned long checked = 0, retargets = 0, bad = 0;
     for (unsigned long h = 1; h <= limit; h++) {

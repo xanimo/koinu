@@ -35,6 +35,8 @@ typedef struct {
     uint32_t         magic;      /* p2p message-start bytes, little-endian */
     uint16_t         p2p_port;   /* default p2p port */
     const char      *genesis;    /* genesis block hash, display (reversed) hex */
+    uint32_t         genesis_time;  /* its timestamp and nBits, which the retarget */
+    uint32_t         genesis_bits;  /* rule needs for the first period of the chain */
     const kw_checkpoint *checkpoints;  /* ascending by height, [0] is genesis; NULL if none */
     size_t           ncheckpoints;
     const char *const *dns_seeds;      /* seeder hostnames; NULL if none */
