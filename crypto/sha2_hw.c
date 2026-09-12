@@ -10,15 +10,24 @@
  * attribute, so the build stays one flat source list and the binary still runs where
  * the instructions are absent. crypto/cpu.c decides at run time.
  *
- * These two cores are the only code in the tree I have not executed. This laptop has
- * no SHA extension, and no emulator was to hand, so the x86 core has been read
- * against Intel's sequence and compiled but never run by me; the ARM core runs on
- * macOS arm64 in CI. That is the reason for the self-check below rather than a
- * comment promising care: before either core is used for anything, it hashes a block
- * and is held against the scalar core, and a core that disagrees is switched off for
- * the life of the process. A wrong hash is not a performance problem, it is a wallet
- * that agrees with nobody, so the cost of one compression at startup is not a
- * question worth asking. */
+ * Neither core was written on a machine that could run it. The ARM one is exercised
+ * on arm64 by this tree's own tests; the x86 one was read against Intel's sequence
+ * and compiled, and until v0.2.3 nothing had executed it, because no machine here and
+ * no CI runner of this tree has the extension.
+ *
+ * It has since been run on one. An external suite that pins koinu checks 156 mainnet
+ * sighash vectors, 6 from Dogecoin Core's tx_valid.json and 150 read out of blk*.dat,
+ * each carrying a signature the network already accepted, and each digest is
+ * double-SHA256 through this file. On a runner with sha_ni all 156 pass, so the x86
+ * core has produced the same bytes as the rest of the network against evidence that
+ * did not come from here. That is worth more than the self-check below, because it is
+ * not this code agreeing with itself.
+ *
+ * The self-check stays regardless. Before either core is used for anything it hashes
+ * a known block and is held against the scalar core, and a core that disagrees is
+ * switched off for the life of the process, because a wrong hash is not a slow wallet
+ * but one that agrees with nobody. Neither 156 vectors nor a green CI run says
+ * anything about the next CPU stepping. */
 
 #include "sha2.h"
 #include "cpu.h"
