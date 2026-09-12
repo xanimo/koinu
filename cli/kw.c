@@ -68,7 +68,7 @@ static void usage(void)
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
-      "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor]\n"
+      "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor] [--yes]\n"
       "  psbt     create --tx HEX | tx --psbt HEX | sigs --psbt HEX [--vin N]\n"
       "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--vin N]\n"
       "           combine --psbt HEX --psbt HEX ... | extract --psbt HEX\n"
@@ -1243,7 +1243,85 @@ static char *read_text(const char *arg)
 /* Broadcast a raw transaction and confirm the peer took it: send the tx, then
    ask for it back by txid. A returned tx means it is in the peer's mempool; a
    notfound or reject means it was refused. */
-static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node, int port, int tor)
+/* koinu to a DOGE string. cli/kwui.c has the same six lines, as it does for
+   parse_doge: display formatting, not policy, so it is left alone. */
+static void fmt_doge(uint64_t v, char *out, size_t cap)
+{
+    snprintf(out, cap, "%llu.%08llu", (unsigned long long)(v / 100000000ULL),
+             (unsigned long long)(v % 100000000ULL));
+}
+
+/* A scriptPubKey back to the address it pays, which is the reverse of addr_to_spk
+   above. Returns 0 for anything that is not p2pkh or p2sh, and the caller says so
+   rather than pretending it knows where the money went. */
+static int spk_to_addr(const kw_chainparams *cp, const uint8_t *spk, size_t len,
+                       char *out, size_t outcap)
+{
+    uint8_t pay[21];
+    if (len == 25 && spk[0] == 0x76 && spk[1] == 0xa9 && spk[2] == 0x14 &&
+        spk[23] == 0x88 && spk[24] == 0xac) {
+        pay[0] = cp->p2pkh;
+        memcpy(pay + 1, spk + 3, 20);
+    } else if (len == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87) {
+        pay[0] = cp->p2sh;
+        memcpy(pay + 1, spk + 2, 20);
+    } else {
+        return 0;
+    }
+    return kw_base58check_encode(pay, sizeof pay, out, outcap) != 0;
+}
+
+/* Show what is about to be broadcast. A raw transaction is opaque hex, and the one
+   way left to lose money by typing is to broadcast the wrong one, so this decodes it
+   and names every destination before anything goes on the wire. Returns 0 if the
+   bytes are not a transaction at all, which is itself worth refusing. */
+static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
+                   const char *txidhex)
+{
+    kw_tx tx;
+    size_t used = kw_tx_parse(raw, rawlen, &tx);
+    if (!used) {
+        fprintf(stderr, "kw: --tx does not decode as a transaction, refusing to "
+                        "broadcast %zu bytes blind\n", rawlen);
+        return 0;
+    }
+    if (used != rawlen)
+        fprintf(stderr, "kw: warning, %zu bytes trail the transaction\n", rawlen - used);
+
+    printf("txid    %s\n", txidhex);
+    printf("size    %zu bytes, %zu input(s), %zu output(s)\n", rawlen, tx.nin, tx.nout);
+
+    for (size_t i = 0; i < tx.nin; i++) {
+        uint8_t d[32];
+        char h[65];
+        for (int k = 0; k < 32; k++) d[k] = tx.vin[i].prevout[31 - k];
+        kw_hex_encode(d, 32, h, sizeof h);
+        printf("spends  %s:%u\n", h, tx.vin[i].vout);
+    }
+
+    uint64_t total = 0;
+    for (size_t i = 0; i < tx.nout; i++) {
+        char addr[128];
+        char amt[32];
+        total += tx.vout[i].value;
+        fmt_doge(tx.vout[i].value, amt, sizeof amt);
+        if (spk_to_addr(cp, tx.vout[i].script, tx.vout[i].scriptlen, addr, sizeof addr))
+            printf("pays    %s DOGE to %s\n", amt, addr);
+        else {
+            char hex[2 * KW_TX_SCRIPT_MAX + 1];
+            kw_hex_encode(tx.vout[i].script, tx.vout[i].scriptlen, hex, sizeof hex);
+            printf("pays    %s DOGE to an unrecognised script: %s\n", amt, hex);
+        }
+    }
+    char t[32];
+    fmt_doge(total, t, sizeof t);
+    printf("total   %s DOGE out; the fee is the inputs less this, which the "
+           "transaction does not carry\n", t);
+    return 1;
+}
+
+static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node,
+                    int port, int tor, int assume_yes)
 {
     if (!tx_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -1262,6 +1340,25 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
     kw_hash256(raw, rawlen, txid);
     for (int i = 0; i < 32; i++) disp[i] = txid[31 - i];
     char txidhex[65]; kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
+
+    if (!show_tx(cp, raw, rawlen, txidhex)) return 1;
+
+    /* --tx - has already eaten stdin, and a pipe cannot answer, so a script has to
+       say --yes rather than have the prompt silently skipped for it */
+    if (!assume_yes) {
+        int from_stdin = (tx_arg[0] == '-' && tx_arg[1] == '\0');
+        if (from_stdin || !isatty(STDIN_FILENO)) {
+            fprintf(stderr, "kw: refusing to broadcast without a confirmation; "
+                            "pass --yes\n");
+            return 1;
+        }
+        printf("broadcast to %s:%d? type yes: ", node, port);
+        fflush(stdout);
+        char answer[16] = "";
+        if (!fgets(answer, sizeof answer, stdin)) return 1;
+        answer[strcspn(answer, "\r\n")] = '\0';
+        if (strcmp(answer, "yes") != 0) { fprintf(stderr, "kw: not broadcast\n"); return 1; }
+    }
 
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
@@ -1519,6 +1616,7 @@ out:
 int main(int argc, char **argv)
 {
     int net = 0, words = 12, change = 0, ninputs = 0, want_spk = 0, validate_pow = 0;
+    int assume_yes = 0;
     int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
@@ -1575,6 +1673,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--finish"))     finish = 1;
         else if (!strcmp(a, "--peers"))    { const char *v = NEXT(); peers = v ? atoi(v) : 1; }
         else if (!strcmp(a, "--validate-pow")) validate_pow = 1;
+        else if (!strcmp(a, "--yes"))        assume_yes = 1;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (!strcmp(a, "--version")) { printf("kw %s\n", KW_VERSION); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
@@ -1602,7 +1701,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers);
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers);
-    else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor);
+    else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }

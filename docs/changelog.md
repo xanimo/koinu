@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+## What's Changed
+* kw: send decodes what it is about to broadcast
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed

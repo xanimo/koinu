@@ -59,6 +59,32 @@ case $(ls -l "$J") in
     -rw-------*) ;;
     *) echo "FAIL: journal is $(ls -l "$J" | cut -c1-10), want -rw-------" >&2; exit 1;;
 esac
+
+# send decodes what it is about to broadcast rather than pushing opaque hex. The
+# destination it prints has to be the one that was signed for, since the whole point
+# is catching a transaction that pays somewhere else.
+echo "$RAW1" > "$WORK/tx.hex"
+SEND="./kw --regtest send --tx @$WORK/tx.hex --node 127.0.0.1 --port 1"
+SHOWN=$($SEND 2>/dev/null | awk '/^pays/{print $NF; exit}')
+[ "$SHOWN" = "$ADDR1" ] || { echo "FAIL: send shows $SHOWN, signed for $ADDR1" >&2; exit 1; }
+$SEND 2>/dev/null | grep -q "^spends  0000000000000000000000000000000000000000000000000000000000000001:0" \
+    || { echo "FAIL: send does not name the outpoint it spends" >&2; exit 1; }
+
+# without a way to confirm, it refuses rather than broadcasting anyway
+$SEND >/dev/null 2>"$WORK/err" || true          # refusing is the pass here
+grep -q "pass --yes" "$WORK/err" \
+    || { echo "FAIL: send did not refuse an unconfirmed broadcast" >&2; cat "$WORK/err" >&2; exit 1; }
+
+# with --yes it gets as far as the network, which is refused on port 1
+$SEND --yes >/dev/null 2>"$WORK/err2" || true   # the connect is meant to fail
+grep -q "connect to 127.0.0.1:1 failed" "$WORK/err2" \
+    || { echo "FAIL: --yes did not reach the broadcast" >&2; cat "$WORK/err2" >&2; exit 1; }
+
+# and bytes that are not a transaction are refused before any of that
+echo deadbeef > "$WORK/junk.hex"
+./kw --regtest send --tx "@$WORK/junk.hex" --node 127.0.0.1 --port 1 --yes >/dev/null 2>"$WORK/err3" || true
+grep -q "does not decode as a transaction" "$WORK/err3" \
+    || { echo "FAIL: send accepted bytes that are not a transaction" >&2; cat "$WORK/err3" >&2; exit 1; }
 # insufficient inputs must fail
 if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
        --input "$IN" --to "$ADDR1:20.0" --fee 0.001 >/dev/null 2>&1; then
@@ -146,4 +172,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic and journaled once per spend, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic and journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"

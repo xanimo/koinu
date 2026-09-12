@@ -39,7 +39,7 @@ selects inputs from that set and builds the transaction. send broadcasts it.
 
     kw scan --keystore w.ks --node NODE --headers h --filters f
     kw sign --keystore w.ks --to DEST:100
-    kw send --tx @tx.hex --node NODE
+    kw send --tx @tx.hex --node NODE          decodes it and asks first
 
 the fee defaults to the peer's advertised relay floor, captured during scan;
 --feerate sets a rate and --fee an exact amount. change below the dust limit
