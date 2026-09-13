@@ -17,9 +17,13 @@
 /* Bounds on the KDF parameters a keystore may ask for. They are read out of the file
    header and drive argon2 before the tag can be checked, so authentication cannot
    help: a tampered t_cost is a uint32 and turns opening a wallet into a hang of years.
-   Generous against the defaults of 3 passes and 64 MiB, so raising them later needs no
-   change here. */
-#define KW_KEYSTORE_MAX_T_COST      32
+   The two knobs are not worth the same headroom. Memory is the parameter that buys
+   resistance, and argon2's own guidance is to raise it before passes, so it keeps 16x
+   over the 64 MiB default while passes keep under 3x over 3. Measured against the
+   alternative: 32 passes at 1 GiB is 28.8s, 8 at 1 GiB is 7.4s, 32 at 256 MiB is 6.9s.
+   The last two cost the same and the middle one is the one that still opens a keystore
+   written by a future release that raised its memory. */
+#define KW_KEYSTORE_MAX_T_COST      8
 #define KW_KEYSTORE_MAX_M_COST_KIB  (1u << 20)   /* 1 GiB */
 #define KW_KEYSTORE_MAX_PARALLELISM 8
 

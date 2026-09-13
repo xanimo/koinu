@@ -53,6 +53,43 @@ int main(void)
         fprintf(stderr, "FAIL: second seal does not open\n"); return 1;
     }
 
-    printf("keystore ok: round trip, wrong passphrase, tamper rejection, randomized seals\n");
+
+    /* The KDF parameters come out of the file header and drive argon2 before the tag
+       can be checked, so a tampered t_cost is a hang rather than a rejection. The
+       bounds are what stops that, and they are checked here rather than by noticing a
+       test got slow: one past either knob must be refused. */
+    {
+        uint8_t t[sizeof blob];
+        memcpy(t, blob, n);
+        static const struct { size_t at; uint32_t v; const char *what; } over[] = {
+            { 8,  KW_KEYSTORE_MAX_T_COST + 1,      "t_cost" },
+            { 8,  0xffffffffu,                     "t_cost at the top of the type" },
+            { 12, KW_KEYSTORE_MAX_M_COST_KIB + 1,  "m_cost" },
+            { 16, KW_KEYSTORE_MAX_PARALLELISM + 1, "parallelism" }
+        };
+        for (size_t i = 0; i < sizeof over / sizeof *over; i++) {
+            uint8_t out2[64];
+            size_t got = 0;
+            memcpy(t, blob, n);
+            t[over[i].at + 0] = (uint8_t)over[i].v;
+            t[over[i].at + 1] = (uint8_t)(over[i].v >> 8);
+            t[over[i].at + 2] = (uint8_t)(over[i].v >> 16);
+            t[over[i].at + 3] = (uint8_t)(over[i].v >> 24);
+            if (kw_keystore_open(t, n, pass, out2, sizeof out2, &got)) {
+                fprintf(stderr, "FAIL: an out-of-range %s was accepted\n", over[i].what);
+                return 1;
+            }
+        }
+        /* and the parameters it writes are inside them, or the defaults are unopenable */
+        if (KW_KEYSTORE_DEFAULT.t_cost > KW_KEYSTORE_MAX_T_COST ||
+            KW_KEYSTORE_DEFAULT.m_cost_kib > KW_KEYSTORE_MAX_M_COST_KIB ||
+            KW_KEYSTORE_DEFAULT.parallelism > KW_KEYSTORE_MAX_PARALLELISM) {
+            fprintf(stderr, "FAIL: the default parameters are outside the accepted range\n");
+            return 1;
+        }
+    }
+
+    printf("keystore ok: round trip, wrong passphrase, tamper rejection, randomized seals,\n"
+           "  kdf parameters bounded\n");
     return 0;
 }
