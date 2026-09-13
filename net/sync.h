@@ -41,4 +41,15 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits);
 
+/* Every anchor at or below the store's tip must name the block the store holds.
+   Returns 1, or 0 with *bad_height set to the first anchor that does not match.
+
+   For a cache read off disk this is the whole of the check. The sync verifies an
+   anchor as the header passes, which does nothing for heights already present when it
+   starts, and a cache is the persisted result of an earlier serving: not trusting a
+   chain a peer served is the point, and a chain a peer served last week is the same
+   chain. */
+int kw_sync_anchors_ok(const kw_headerstore *s, const kw_chainparams *cp,
+                       uint32_t *bad_height);
+
 #endif /* KOINU_SYNC_H */

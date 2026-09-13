@@ -8,6 +8,14 @@ way to make it report something untrue about a chain or a balance, report it.
 bluezr@dogecoin.com, PGP `00D7BCFF57782D5D91D6281A0DC64171D69D92F4`, the same key that
 signs the release tags. Encrypt anything you would not put in a public issue.
 
+A source archive has no git history, so that claim cannot be checked from one. From a
+clone it can:
+
+    git tag -v v0.2.3
+
+which prints `Good signature` and the fingerprint above, or fails. Check it before
+trusting either the code or this address.
+
 Do not open a GitHub issue for a bug that costs someone money until it is fixed.
 
 ## What to expect

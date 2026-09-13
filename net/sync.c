@@ -67,6 +67,23 @@ int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
     return bits == kw_pow_next_bits(&KW_POW_MAIN, height, last_bits, last_time, first_time);
 }
 
+int kw_sync_anchors_ok(const kw_headerstore *s, const kw_chainparams *cp,
+                       uint32_t *bad_height)
+{
+    if (!s || !cp) return 0;
+    for (size_t i = 0; i < cp->ncheckpoints; i++) {
+        uint32_t h = cp->checkpoints[i].height;
+        if (h == 0 || h > s->count) continue;          /* genesis is not stored */
+        uint8_t want[32];
+        if (!unhex_rev(cp->checkpoints[i].hash, want) ||
+            memcmp(want, s->h[h - 1].hash, 32) != 0) {
+            if (bad_height) *bad_height = h;
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Submitting to the pool as headers are parsed, counting heights from the store's
    current tip. A refusal here abandons the parse: the queue only refuses once a
    header has already failed, and there is no point downloading the rest. */

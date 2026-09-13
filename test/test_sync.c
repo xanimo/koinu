@@ -198,8 +198,57 @@ int main(void)
         if (feed_two(&anchored) != -1) { fprintf(stderr, "FAIL: a chain ending below the last anchor was accepted\n"); return 1; }
     }
 
+
+    /* A cache is a chain a peer served an earlier run, and the live sync only checks
+       heights it downloads itself, which a cache is by definition not. So the anchors
+       are applied on load too: a store that disagrees with a pin below its tip is
+       refused however well it links together. */
+    {
+        kw_headerstore c;
+        uint8_t b1[80], b2[80];
+        kw_test_unhex(B1_HDR, b1);
+        kw_test_unhex(B2_HDR, b2);
+        if (!kw_headerstore_init(&c)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+        kw_block_header h1, h2;
+        kw_block_header_parse(b1, 80, &h1);
+        kw_block_header_parse(b2, 80, &h2);
+        if (!kw_headerstore_append(&c, &h1) || !kw_headerstore_append(&c, &h2))
+            { fprintf(stderr, "FAIL: could not build a store\n"); return 1; }
+
+        char b1disp[65];
+        uint8_t d2[32];
+        for (int i = 0; i < 32; i++) d2[i] = h1.hash[31 - i];
+        kw_hex_encode(d2, 32, b1disp, sizeof b1disp);
+
+        kw_checkpoint good[2] = { { 1, b1disp }, { 2, B2_DISP } };
+        kw_chainparams anchored = KW_DOGE_REGTEST;
+        anchored.checkpoints = good;
+        anchored.ncheckpoints = 2;
+        uint32_t bad = 0;
+        if (!kw_sync_anchors_ok(&c, &anchored, &bad))
+            { fprintf(stderr, "FAIL: a cache matching its anchors was refused at %u\n", bad); return 1; }
+
+        char bent[65];
+        memcpy(bent, b1disp, sizeof bent);
+        bent[0] = (bent[0] == 'a') ? 'b' : 'a';
+        kw_checkpoint wrong[2] = { { 1, bent }, { 2, B2_DISP } };
+        anchored.checkpoints = wrong;
+        if (kw_sync_anchors_ok(&c, &anchored, &bad))
+            { fprintf(stderr, "FAIL: a cache disagreeing with a pin was accepted\n"); return 1; }
+        if (bad != 1) { fprintf(stderr, "FAIL: reported height %u, want 1\n", bad); return 1; }
+
+        /* an anchor above the tip says nothing about what is below it */
+        kw_checkpoint far[1] = { { 9999, B2_DISP } };
+        anchored.checkpoints = far;
+        anchored.ncheckpoints = 1;
+        if (!kw_sync_anchors_ok(&c, &anchored, &bad))
+            { fprintf(stderr, "FAIL: an anchor past the tip was treated as a mismatch\n"); return 1; }
+        kw_headerstore_free(&c);
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
-       "  anchors enforced on the default path and a chain short of the last one refused\n");
+       "  anchors enforced on the default path, a chain short of the last one refused,\n"
+       "  and a cached chain checked against the pins on load\n");
     return 0;
 }

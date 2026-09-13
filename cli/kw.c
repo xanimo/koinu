@@ -369,11 +369,22 @@ static const char *headers_parallel_fill(const kw_chainparams *cp, const char *n
 
 /* Init a header store, loading a cache from (path) if given so a sync resumes
    from the stored tip. A corrupt cache is ignored, not fatal. */
-static void headers_open(kw_headerstore *s, const char *path)
+/* A cache is a chain some peer served an earlier run, so it gets the same anchors the
+   live sync applies. Without this the sync only checks heights it downloads itself,
+   and a cache is by definition the heights it will not. */
+static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char *path)
 {
     kw_headerstore_init(s);
     if (path && !kw_headerstore_load(s, path)) {
         fprintf(stderr, "kw: header cache %s is corrupt, ignoring\n", path);
+        kw_headerstore_free(s);
+        kw_headerstore_init(s);
+        return;
+    }
+    uint32_t bad = 0;
+    if (s->count && !kw_sync_anchors_ok(s, cp, &bad)) {
+        fprintf(stderr, "kw: header cache %s does not match the block this release "
+                        "pins at height %u, ignoring it\n", path, bad);
         kw_headerstore_free(s);
         kw_headerstore_init(s);
     }
@@ -614,7 +625,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
 
-    kw_headerstore s; headers_open(&s, headers_path);
+    kw_headerstore s; headers_open(&s, cp, headers_path);
 
     /* Work is checked from the last compiled-in anchor by default. Below one, a block
        hash pins the chain already, which is the stronger claim: a hash names one
@@ -1089,7 +1100,7 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
     uint8_t (*fh)[32] = NULL;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
-    headers_open(&s, headers_path);
+    headers_open(&s, cp, headers_path);
     {
         long nh = kw_sync_headers(&p, &s, cp);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); goto out; }
@@ -1154,7 +1165,7 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     int rc = 1;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
-        kw_headerstore s; headers_open(&s, headers_path);
+        kw_headerstore s; headers_open(&s, cp, headers_path);
         long nh = kw_sync_headers(&p, &s, cp);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
         if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
@@ -1239,7 +1250,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     size_t tipheight = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
-    kw_headerstore s; headers_open(&s, headers_path);
+    kw_headerstore s; headers_open(&s, cp, headers_path);
     long nh = kw_sync_headers(&p, &s, cp);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
     if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);   /* only if it grew */

@@ -12,8 +12,14 @@
 * keystore: spend the headroom on memory, not passes
 * utxo: refuse a value that would wrap the total, and say when a load is partial
 * kw: no key in memory while a peer socket is open
+  scan derives its watch addresses before opening a socket, four times --gap per
+  chain, and a wallet whose used addresses run past that is asked to re-run with a
+  larger --gap rather than being watched short. Deriving costs 0.24s at --gap 20,
+  0.88s at 500 and 6.8s at 5000. sweep needs --wif @FILE to re-read the key after
+  the peer is closed.
 * SECURITY.md: where to send a bug that costs money
 * sync: check the anchors on the default path, not only the parallel one
+* sync: check a cached chain against the anchors when it is loaded
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed
