@@ -101,6 +101,9 @@ int kw_keystore_open(const uint8_t *blob, size_t bloblen,
 
     uint32_t t = get_le32(blob + 8), m = get_le32(blob + 12), p = get_le32(blob + 16);
     if (t == 0 || m == 0 || p == 0) return 0;
+    /* before the KDF runs, since the tag is only checkable after it */
+    if (t > KW_KEYSTORE_MAX_T_COST || m > KW_KEYSTORE_MAX_M_COST_KIB ||
+        p > KW_KEYSTORE_MAX_PARALLELISM) return 0;
     const uint8_t *salt = blob + 20;
     const uint8_t *nonce = blob + 36;
     uint32_t ctlen = get_le32(blob + 48);

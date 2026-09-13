@@ -8,6 +8,7 @@
 * test: the sighash against 322 spends the network already accepted
 * bip32: propagate the failure a void return was throwing away
 * ec: pin low-S and strict DER, which a downstream now depends on
+* fix a stack overflow in the utxo loader, and fuzz the files it forgot
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed

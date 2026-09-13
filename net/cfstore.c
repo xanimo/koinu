@@ -103,6 +103,12 @@ static int wr_varint(FILE *f, uint64_t v)
     return fwrite(b, 1, n, f) == n;
 }
 
+/* A basic filter is a byte or two per element and a block is bounded, so nothing
+   legitimate comes near this. It exists because the length is read out of the cache:
+   cast to long an unbounded value can go negative and seek backwards, which turns the
+   rewrite loop below into one that never ends. */
+#define KW_CFSTORE_MAX_FILTER (4u << 20)
+
 static int rd_varint(FILE *f, uint64_t *out)
 {
     int c = fgetc(f);
@@ -142,7 +148,8 @@ long kw_cfstore_count(const char *path)
         if (r == 0) break;
         if (r != 32) { fclose(f); return -1; }
         uint64_t fl;
-        if (!rd_varint(f, &fl) || fseek(f, (long)fl, SEEK_CUR) != 0) { fclose(f); return -1; }
+        if (!rd_varint(f, &fl) || fl > KW_CFSTORE_MAX_FILTER ||
+            fseek(f, (long)fl, SEEK_CUR) != 0) { fclose(f); return -1; }
         n++;
     }
     fclose(f);
@@ -239,7 +246,10 @@ static int index_write_from(FILE *cf, FILE *of, long from, long csize)
         if (r == 0) break;
         if (r != 32) { ok = 0; break; }
         uint64_t fl;
-        if (!rd_varint(cf, &fl) || fseek(cf, (long)fl, SEEK_CUR) != 0) { ok = 0; break; }
+        /* fl comes off the cache. Cast to long it could go negative and seek
+           backwards, and the loop that follows would rewrite the index forever. */
+        if (!rd_varint(cf, &fl) || fl > KW_CFSTORE_MAX_FILTER ||
+            fseek(cf, (long)fl, SEEK_CUR) != 0) { ok = 0; break; }
         uint8_t ob[8];
         for (int i = 0; i < 8; i++) ob[i] = (uint8_t)((uint64_t)pos >> (8 * i));
         if (fwrite(ob, 1, 8, of) != 8) { ok = 0; break; }
@@ -358,6 +368,7 @@ long kw_cfstore_match_range(const char *path, const kw_headerstore *s, uint32_t 
         if (r != 32) { free(buf); fclose(f); return -1; }
         uint64_t fl;
         if (!rd_varint(f, &fl)) { free(buf); fclose(f); return -1; }
+        if (fl > KW_CFSTORE_MAX_FILTER) { free(buf); fclose(f); return -1; }
         if (fl > bcap) { uint8_t *nb = realloc(buf, (size_t)fl); if (!nb) { free(buf); fclose(f); return -1; } buf = nb; bcap = (size_t)fl; }
         if (fl && fread(buf, 1, (size_t)fl, f) != (size_t)fl) { free(buf); fclose(f); return -1; }
 

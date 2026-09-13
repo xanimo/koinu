@@ -2,10 +2,16 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
- * Every one of these consumes input a peer chose: a p2p frame, a transaction
- * or block off the wire, a compact filter, a psbt from a counterparty. Each
- * target must not crash, read out of bounds, or leak, whatever the bytes say;
- * returning "malformed" is always a valid answer.
+ * Every one of these consumes input this process did not write: a p2p frame, a
+ * transaction or block off the wire, a compact filter, a psbt from a counterparty,
+ * and the files a previous run left behind. Each target must not crash, read out of
+ * bounds, or leak, whatever the bytes say; returning "malformed" is always a valid
+ * answer.
+ *
+ * The file parsers belong here as much as the wire ones. What is in those files came
+ * off the wire to begin with, nothing but this program and whoever can write the
+ * directory edits them, and a wallet reads them with the seed in memory. An unbounded
+ * %s in the utxo loader lived a long time because only the wire parsers were covered.
  *
  * Built with libFuzzer (make fuzz), or standalone (make fuzz-run) where main()
  * below feeds it files, so a corpus can be replayed without clang. */
@@ -19,7 +25,11 @@
 #include "headers.h"
 #include "cf.h"
 #include "utxo.h"
+#include "journal.h"
+#include "cfstore.h"
 #include "ec.h"
+
+#include <unistd.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -35,7 +45,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const uint8_t *in = data + 1;
     size_t len = size - 1;
 
-    switch (which % 6) {
+    switch (which % 10) {
     case 0: {                                  /* a transaction off the wire */
         kw_tx tx;
         if (kw_tx_parse(in, len, &tx) > 0) {
@@ -88,6 +98,34 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         kw_msg_cfilter_parse(in, len, &type, bh, &f, &fl);
         uint8_t stop[32], prev[32]; const uint8_t *hh; size_t nh;
         kw_msg_cfheaders_parse(in, len, &type, stop, prev, &hh, &nh);
+        break;
+    }
+    case 6:                                    /* the tracked utxo set */
+    case 7:                                    /* the wallet journal */
+    case 8:                                    /* a header cache */
+    case 9: {                                  /* the compact filter store */
+        /* These take a path rather than a buffer, so the bytes go through a file.
+           One name per process, removed after, so a long run does not fill the disk. */
+        char path[64];
+        snprintf(path, sizeof path, "/tmp/kwfuzz-%d", (int)getpid());
+        FILE *f = fopen(path, "wb");
+        if (!f) break;
+        if (len) fwrite(in, 1, len, f);
+        fclose(f);
+
+        if (which % 10 == 6) {
+            kw_utxoset us;
+            if (kw_utxoset_init(&us)) { kw_utxoset_load(&us, path); kw_utxoset_free(&us); }
+        } else if (which % 10 == 7) {
+            kw_journal j;
+            if (kw_journal_init(&j)) { kw_journal_load(&j, path); kw_journal_free(&j); }
+        } else if (which % 10 == 8) {
+            kw_headerstore hs;
+            if (kw_headerstore_init(&hs)) { kw_headerstore_load(&hs, path); kw_headerstore_free(&hs); }
+        } else {
+            kw_cfstore_count(path);            /* walks every record's varint length */
+        }
+        unlink(path);
         break;
     }
     }

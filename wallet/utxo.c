@@ -159,9 +159,15 @@ int kw_utxoset_load(kw_utxoset *us, const char *path)
     int ok = 1;
     while (ok && fgets(line, sizeof line, f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
-        char txidhex[128], spkhex[2 * KW_SPK_MAX + 1];
+        /* Every conversion is width-limited, including the last: a bare %s here let
+           a long line in a tampered file write past spkhex and into the frame. The
+           buffer is one over the longest legitimate script so an overlong token comes
+           back at full width and is refused rather than silently truncated into a
+           shorter script that parses. */
+        char txidhex[128], spkhex[2 * KW_SPK_MAX + 2];
         unsigned vout, height; unsigned long long value;
-        if (sscanf(line, "%127s %u %llu %u %s", txidhex, &vout, &value, &height, spkhex) != 5) { ok = 0; break; }
+        if (sscanf(line, "%127s %u %llu %u %129s", txidhex, &vout, &value, &height, spkhex) != 5) { ok = 0; break; }
+        if (strlen(spkhex) > 2 * KW_SPK_MAX) { ok = 0; break; }
         uint8_t txid[32], spk[KW_SPK_MAX];
         size_t spklen = strlen(spkhex) / 2;
         if (strlen(txidhex) != 64 || spklen == 0 || spklen > KW_SPK_MAX ||

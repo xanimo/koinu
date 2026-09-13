@@ -14,6 +14,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Bounds on the KDF parameters a keystore may ask for. They are read out of the file
+   header and drive argon2 before the tag can be checked, so authentication cannot
+   help: a tampered t_cost is a uint32 and turns opening a wallet into a hang of years.
+   Generous against the defaults of 3 passes and 64 MiB, so raising them later needs no
+   change here. */
+#define KW_KEYSTORE_MAX_T_COST      32
+#define KW_KEYSTORE_MAX_M_COST_KIB  (1u << 20)   /* 1 GiB */
+#define KW_KEYSTORE_MAX_PARALLELISM 8
+
 typedef struct {
     uint32_t t_cost;        /* argon2 passes            */
     uint32_t m_cost_kib;    /* argon2 memory, KiB       */

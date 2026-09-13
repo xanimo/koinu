@@ -890,6 +890,9 @@ static int wif_decode(const kw_chainparams *cp, const char *wif_arg, uint8_t sk[
     int okdec = kw_base58check_decode(wif, pay, sizeof pay, &plen);
     secret_free(wif);
     if (!okdec) { fprintf(stderr, "kw: bad wif\n"); return 0; }
+    /* the length first: base58check will decode an empty payload happily, and then
+       pay[0] is whatever the stack held */
+    if (plen != 33 && plen != 34) { fprintf(stderr, "kw: bad wif\n"); kw_secure_zero(pay, sizeof pay); return 0; }
     if (pay[0] != cp->wif) { fprintf(stderr, "kw: wif is for another network\n"); kw_secure_zero(pay, sizeof pay); return 0; }
     int comp;
     if (plen == 33) comp = 0;
