@@ -52,6 +52,7 @@ void kw_watchset_free(kw_watchset *ws)
 int kw_utxoset_init(kw_utxoset *us)
 {
     us->count = 0;
+    us->total = 0;
     us->cap = 16;
     us->u = (kw_utxo *)malloc(us->cap * sizeof *us->u);
     return us->u != NULL;
@@ -65,17 +66,13 @@ void kw_utxoset_free(kw_utxoset *us)
 
 size_t kw_utxoset_count(const kw_utxoset *us) { return us->count; }
 
-uint64_t kw_utxoset_balance(const kw_utxoset *us)
-{
-    uint64_t sum = 0;
-    for (size_t i = 0; i < us->count; i++) sum += us->u[i].value;
-    return sum;
-}
+uint64_t kw_utxoset_balance(const kw_utxoset *us) { return us->total; }
 
 static void utxo_remove(kw_utxoset *us, const uint8_t txid[32], uint32_t vout)
 {
     for (size_t i = 0; i < us->count; i++) {
         if (us->u[i].vout == vout && memcmp(us->u[i].txid, txid, 32) == 0) {
+            us->total -= us->u[i].value;
             us->u[i] = us->u[us->count - 1];   /* swap-remove; order does not matter */
             us->count--;
             return;
@@ -87,6 +84,11 @@ int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
                    uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen)
 {
     if (spklen > KW_SPK_MAX) return 0;
+    /* Refuse anything that would carry the total past what a uint64 holds. Dogecoin
+       issues forever and its supply is already most of the range, so this is the
+       check that keeps every balance and every input selection below from wrapping:
+       a subset of a total that fits cannot itself overflow. */
+    if (value > UINT64_MAX - us->total) return 0;
     if (us->count == us->cap) {
         size_t nc = us->cap * 2;
         kw_utxo *nu = (kw_utxo *)realloc(us->u, nc * sizeof *nu);
@@ -100,6 +102,7 @@ int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
     e->height = height;
     memcpy(e->spk, spk, spklen);
     e->spklen = spklen;
+    us->total += value;
     return 1;
 }
 

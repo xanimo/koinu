@@ -113,6 +113,31 @@ int main(void)
 
     kw_utxoset_free(&us);
     kw_watchset_free(&ws);
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation, save/load\n");
+
+    /* A value that would carry the total past what a uint64 holds is refused, so no
+       later sum of a subset can wrap. Dogecoin issues forever and its supply is
+       already 81% of the range, so the headroom is smaller than it looks. */
+    {
+        kw_utxoset o;
+        uint8_t t1[32], t2[32], spk[25] = { 0x76, 0xa9, 0x14 };
+        memset(t1, 0x11, 32);
+        memset(t2, 0x22, 32);
+        if (!kw_utxoset_init(&o)) { fprintf(stderr, "FAIL: init\n"); return 1; }
+        if (!kw_utxoset_add(&o, t1, 0, (uint64_t)1 << 63, 100, spk, sizeof spk))
+            { fprintf(stderr, "FAIL: a lone huge value should be accepted\n"); return 1; }
+        if (kw_utxoset_add(&o, t2, 1, (uint64_t)1 << 63, 101, spk, sizeof spk))
+            { fprintf(stderr, "FAIL: a second one wrapped the total and was accepted\n"); return 1; }
+        if (kw_utxoset_count(&o) != 1) { fprintf(stderr, "FAIL: the refused entry was stored\n"); return 1; }
+        if (kw_utxoset_balance(&o) != ((uint64_t)1 << 63))
+            { fprintf(stderr, "FAIL: balance %llu after the refusal\n",
+                      (unsigned long long)kw_utxoset_balance(&o)); return 1; }
+        /* and room freed by a spend is usable again */
+        if (!kw_utxoset_add(&o, t2, 1, 1000, 101, spk, sizeof spk))
+            { fprintf(stderr, "FAIL: a value that fits was refused\n"); return 1; }
+        kw_utxoset_free(&o);
+    }
+
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation, save/load,\n"
+           "  and a value that would wrap the total refused\n");
     return 0;
 }

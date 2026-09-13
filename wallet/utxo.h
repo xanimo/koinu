@@ -34,14 +34,20 @@ typedef struct {
     size_t   spklen;
 } kw_utxo;
 
-typedef struct { kw_utxo *u; size_t count, cap; } kw_utxoset;
+/* (total) is the sum of every value held, maintained on add and remove. It exists so
+   the sum cannot wrap: an entry that would carry it past UINT64_MAX is refused, which
+   makes every subset a caller sums afterwards safe by construction. Dogecoin has no
+   supply cap and its issued supply is already 81% of what a uint64 holds, so this is
+   nearer than it reads. */
+typedef struct { kw_utxo *u; size_t count, cap; uint64_t total; } kw_utxoset;
 
 int      kw_utxoset_init(kw_utxoset *us);
 void     kw_utxoset_free(kw_utxoset *us);
 size_t   kw_utxoset_count(const kw_utxoset *us);
 uint64_t kw_utxoset_balance(const kw_utxoset *us);
 
-/* Insert one UTXO. Returns 1, or 0 on a too-long script or out of memory. */
+/* Insert one UTXO. Returns 1, or 0 on a too-long script, out of memory, or a value
+   that would carry the set's total past what a uint64 holds. */
 int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
                    uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen);
 

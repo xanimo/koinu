@@ -10,6 +10,7 @@
 * ec: pin low-S and strict DER, which a downstream now depends on
 * fix a stack overflow in the utxo loader, and fuzz the files it forgot
 * keystore: spend the headroom on memory, not passes
+* utxo: refuse a value that would wrap the total, and say when a load is partial
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed

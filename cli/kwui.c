@@ -194,12 +194,15 @@ static int page_rows(void)
    selection into the array could land on a hidden row. */
 static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int nvis,
                  int top, int sel, uint64_t total, size_t nutxo, int used_only,
-                 const char *ks)
+                 const char *ks, int partial)
 {
     printf("\033[H\033[2J");
     char bal[32]; fmt_doge(total, bal, sizeof bal);
     printf("\033[1m koinu \033[0m %s   %s\r\n", cp->name, ks);
-    printf(" balance %s DOGE across %zu outputs\r\n\r\n", bal, nutxo);
+    printf(" balance %s DOGE across %zu outputs\r\n", bal, nutxo);
+    if (partial)
+        printf(" \033[7m the utxo file did not read to the end: this is part of it \033[0m\r\n");
+    printf("\r\n");
     printf("  %-38s %-8s %18s %s\r\n", "address", "path", "balance", "utxos");
 
     int per = page_rows(), shown = 0;
@@ -666,7 +669,18 @@ int main(int argc, char **argv)
     char defpath[4200];
     if (!utxos) { snprintf(defpath, sizeof defpath, "%s.utxos", ks); utxos = defpath; }
     kw_utxoset us; kw_utxoset_init(&us);
-    kw_utxoset_load(&us, utxos);          /* absent is not fatal: no coins yet */
+    /* Absent is not fatal, since a wallet that has never scanned has no coins. A file
+       that exists and does not load is different: the set is whatever was read before
+       the bad line, and showing that as a balance is showing the wrong number without
+       saying so. */
+    int utxos_partial = 0;
+    {
+        FILE *probe = fopen(utxos, "r");
+        if (probe) {
+            fclose(probe);
+            if (!kw_utxoset_load(&us, utxos)) utxos_partial = 1;
+        }
+    }
 
     row *rows = (row *)calloc(MAXADDR, sizeof *rows);
     if (!rows) { kw_utxoset_free(&us); kw_secure_zero(seed, sizeof seed); return 1; }
@@ -684,7 +698,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; i++) if (!used_only || rows[i].nutxo) vis[nvis++] = i;
         if (sel >= nvis) sel = nvis ? nvis - 1 : 0;
 
-        draw(cp, rows, vis, nvis, top, sel, total, us.count, used_only, ks);
+        draw(cp, rows, vis, nvis, top, sel, total, us.count, used_only, ks, utxos_partial);
         int c = getchar();
         switch (c) {
         case 'q': case 3: case EOF: running = 0; break;
@@ -701,8 +715,10 @@ int main(int argc, char **argv)
                 kw_utxoset_free(&us);
                 us = fresh;
                 total = tally_rows(&us, rows, n);
+                utxos_partial = 0;
             } else {
                 kw_utxoset_free(&fresh);
+                utxos_partial = 1;          /* the old view stands, and says so */
             }
             break;
         }
