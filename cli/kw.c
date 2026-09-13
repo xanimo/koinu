@@ -470,13 +470,60 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
     return 0;
 }
 
+/* Everything a scan needs from the master key: the script to watch, the hash160 to
+   match a found output against, and the address to name it in the journal. Derived
+   in one pass so the key can be gone before the process opens a socket, which is what
+   the README and the threat model claim and what the code did not do: the master xprv
+   used to live in the same process as an open peer connection for the whole scan. */
+typedef struct {
+    uint8_t spk[25];
+    uint8_t h160[20];
+    char    addr[64];
+    int     ok;
+} kw_scan_addr;
+
+/* Derived up front, so the count has to be decided before the chain says how many
+   addresses are in use. Four times the gap covers any wallet whose used addresses are
+   inside its own gap limit, which is what a gap limit means; a wallet past that is
+   told to raise it rather than quietly under-watched. */
+static int scan_watch_cap(int gap)
+{
+    long cap = (long)gap * 4;
+    if (cap < 256) cap = 256;
+    if (cap > 20000) cap = 20000;
+    return (int)cap;
+}
+
+static kw_scan_addr *derive_watch(const kw_chainparams *cp, const kw_bip32_key *master,
+                                  int per_chain)
+{
+    kw_scan_addr *t = (kw_scan_addr *)calloc((size_t)per_chain * 2, sizeof *t);
+    if (!t) return NULL;
+    for (int chg = 0; chg <= 1; chg++)
+        for (int i = 0; i < per_chain; i++) {
+            kw_scan_addr *e = &t[(size_t)chg * per_chain + i];
+            kw_bip32_key k;
+            uint8_t pub[33];
+            if (kw_bip44_derive(master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &k) &&
+                kw_bip32_pubkey(&k, pub)) {
+                kw_hash160(pub, 33, e->h160);
+                h160_to_spk(e->h160, e->spk);
+                kw_address_p2pkh(pub, cp->p2pkh, e->addr, sizeof e->addr);
+                e->ok = 1;
+            }
+            kw_secure_zero(&k, sizeof k);
+        }
+    return t;
+}
+
 /* Record every tracked output the journal has not seen as a receive. The utxo set
    holds only what is unspent, so this is the last chance to note that an output
    arrived: once it is spent it is gone from the set with nothing left behind.
    Deriving the watched addresses once and matching gives each entry the address of
    ours that was paid. */
-static void record_receives(const kw_chainparams *cp, const kw_bip32_key *master,
-                            int watched, const kw_utxoset *us, const char *utxos)
+static void record_receives(const kw_chainparams *cp, const kw_scan_addr *tbl,
+                            int per_chain, int watched, const kw_utxoset *us,
+                            const char *utxos)
 {
     char jpath[4200];
     kw_journal_path(utxos, jpath, sizeof jpath);
@@ -488,23 +535,6 @@ static void record_receives(const kw_chainparams *cp, const kw_bip32_key *master
         kw_journal_free(&j);
         return;
     }
-
-    struct known { uint8_t spk[25]; char addr[80]; };
-    size_t nk = (size_t)(watched > 0 ? watched : 0) * 2;
-    struct known *k = nk ? (struct known *)calloc(nk, sizeof *k) : NULL;
-    size_t m = 0;
-    for (uint32_t chg = 0; k && chg < 2; chg++)
-        for (int i = 0; i < watched; i++) {
-            kw_bip32_key key;
-            uint8_t pub[33], h[20];
-            if (!kw_bip44_derive(master, cp->bip44_coin, 0, chg, (uint32_t)i, &key)) continue;
-            kw_bip32_pubkey(&key, pub);
-            kw_hash160(pub, 33, h);
-            h160_to_spk(h, k[m].spk);
-            kw_address_p2pkh(pub, cp->p2pkh, k[m].addr, sizeof k[m].addr);
-            kw_secure_zero(&key, sizeof key);
-            m++;
-        }
 
     int added = 0;
     for (size_t u = 0; u < us->count; u++) {
@@ -518,17 +548,20 @@ static void record_receives(const kw_chainparams *cp, const kw_bip32_key *master
         e.height = us->u[u].height;
         e.amount = us->u[u].value;
         snprintf(e.addr, sizeof e.addr, "-");
-        for (size_t q = 0; q < m; q++)
-            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk, k[q].spk, 25) == 0) {
-                snprintf(e.addr, sizeof e.addr, "%s", k[q].addr);
-                break;
+        for (int chg = 0; chg <= 1; chg++)
+            for (int q = 0; q < watched && q < per_chain; q++) {
+                const kw_scan_addr *a = &tbl[(size_t)chg * per_chain + q];
+                if (a->ok && us->u[u].spklen == 25 && memcmp(us->u[u].spk, a->spk, 25) == 0) {
+                    snprintf(e.addr, sizeof e.addr, "%s", a->addr);
+                    chg = 2;
+                    break;
+                }
             }
         if (kw_journal_append(jpath, &e)) added++;
         else { fprintf(stderr, "kw: could not append to %s\n", jpath); break; }
     }
     if (added) printf("recorded %d new receive(s) in %s\n", added, jpath);
 
-    free(k);
     kw_journal_free(&j);
 }
 
@@ -551,6 +584,13 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_secure_zero(seed, sizeof seed);
     if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
 
+    /* Everything the key is needed for happens here, before a socket exists. The key
+       is wiped on the next line and the scan runs without it. */
+    int watch_cap = scan_watch_cap(gap);
+    kw_scan_addr *watch = derive_watch(cp, &master, watch_cap);
+    kw_secure_zero(&master, sizeof master);
+    if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); return 1; }
+
     kw_net_verbose = 1;
     /* The parallel fill writes the checkpointed range straight to the cache without
        the blobs, so it cannot check work. That is exactly the range the default
@@ -565,7 +605,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
-    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_secure_zero(&master, sizeof master); return 1; }
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); free(watch); return 1; }
 
     int rc = 1;
     long nh = 0;
@@ -615,14 +655,10 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         int m = 0;
         for (int chg = 0; chg <= 1; chg++)
             for (int i = 0; i < watched; i++) {
-                kw_bip32_key k;
-                if (kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &k)) {
-                    uint8_t pub[33], h[20], spk[25];
-                    kw_bip32_pubkey(&k, pub); kw_hash160(pub, 33, h); h160_to_spk(h, spk);
-                    kw_watchset_add(&ws, spk, 25);
-                    memcpy(h160map[m], h, 20); idxmap[m] = i; m++;
-                }
-                kw_secure_zero(&k, sizeof k);
+                const kw_scan_addr *a = &watch[(size_t)chg * watch_cap + i];
+                if (!a->ok) continue;
+                kw_watchset_add(&ws, a->spk, 25);
+                memcpy(h160map[m], a->h160, 20); idxmap[m] = i; m++;
             }
 
         if (have_us) kw_utxoset_free(&us);
@@ -645,6 +681,15 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         free(h160map); free(idxmap);
 
         if (watched >= maxidx + gap) break;         /* gap unused addresses trail the last used */
+        if (maxidx + gap > watch_cap) {
+            /* The addresses were derived before the key was wiped, so the scan cannot
+               reach past them without the key back in memory. Say so rather than
+               under-watch, which would report a balance that is missing coins. */
+            fprintf(stderr, "kw: address %d is in use, past the %d derived for --gap %d; "
+                            "re-run with a larger --gap\n", maxidx, watch_cap, gap);
+            kw_headerstore_free(&s);
+            goto done;
+        }
         fprintf(stderr, "[scan] address %d used, extending watch to %d and rescanning\n", maxidx, maxidx + gap);
         watched = maxidx + gap;
     }
@@ -652,7 +697,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (kw_utxoset_save(&us, utxos_path)) {
         write_scan_meta(utxos_path, p.peer_feerate, watched);
-        record_receives(cp, &master, watched, &us, utxos_path);
+        record_receives(cp, watch, watch_cap, watched, &us, utxos_path);
         printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
                nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
         printf("watched %d addresses per chain, saved to %s\n", watched, utxos_path);
@@ -661,6 +706,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     } else fprintf(stderr, "kw: could not write %s\n", utxos_path);
 
 done:
+    free(watch);
     if (have_us) kw_utxoset_free(&us);
     kw_peer_close(&p);
     kw_secure_zero(&master, sizeof master);
@@ -918,6 +964,10 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
     int okpub = comp ? kw_ec_pubkey(sk, pub) : kw_ec_pubkey_uncompressed(sk, pub);
     if (!okpub) { fprintf(stderr, "kw: bad key\n"); kw_secure_zero(sk, sizeof sk); return 1; }
     kw_hash160(pub, publen, h); h160_to_spk(h, spk);
+    /* The address is all the network phase needs. The key goes now and comes back
+       after the socket is closed, so it is never resident while a peer is connected,
+       which is what the threat model claims of every path that holds one. */
+    kw_secure_zero(sk, sizeof sk);
 
     uint8_t dspk[25]; size_t dl = 0;
     char tob[160]; snprintf(tob, sizeof tob, "%s", to_arg);
@@ -931,7 +981,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
                    : kw_peer_connect(&p, cp, node, port, 15);
     if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); kw_secure_zero(sk, sizeof sk); return 1; }
 
-    int rc = 1;
+    int rc = 1, peer_open = 1;
     kw_utxoset us; int have_us = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
@@ -951,6 +1001,18 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
         if (!feerate_arg && p.peer_feerate > (int64_t)rate) rate = (uint64_t)p.peer_feerate;
         int have_fixed = (fee_arg != NULL); uint64_t fixed = 0;
         if (have_fixed && !parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+
+        /* The scan is done and nothing else needs the peer, so the socket closes
+           before the key comes back. Reading it again is why --wif wants a file: a
+           key piped in on stdin was consumed by the first read, and holding it across
+           the network phase is the thing this ordering exists to avoid. */
+        kw_peer_close(&p);
+        peer_open = 0;
+        if (!wif_decode(cp, wif_arg, sk, &comp)) {
+            fprintf(stderr, "kw: the key could not be read again after the scan; "
+                            "pass --wif @FILE so it can be read once the peer is gone\n");
+            goto out;
+        }
 
         kw_tx tx; kw_tx_init(&tx);
         uint8_t prevspk[KW_TX_MAX_IN][25];
@@ -994,7 +1056,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
     }
 out:
     if (have_us) kw_utxoset_free(&us);
-    kw_peer_close(&p);
+    if (peer_open) kw_peer_close(&p);
     kw_watchset_free(&ws);
     kw_secure_zero(sk, sizeof sk);
     return rc;

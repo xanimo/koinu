@@ -11,6 +11,8 @@
 * fix a stack overflow in the utxo loader, and fuzz the files it forgot
 * keystore: spend the headroom on memory, not passes
 * utxo: refuse a value that would wrap the total, and say when a load is partial
+* kw: no key in memory while a peer socket is open
+* SECURITY.md: where to send a bug that costs money
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed
