@@ -13,6 +13,7 @@
 * utxo: refuse a value that would wrap the total, and say when a load is partial
 * kw: no key in memory while a peer socket is open
 * SECURITY.md: where to send a bug that costs money
+* sync: check the anchors on the default path, not only the parallel one
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed

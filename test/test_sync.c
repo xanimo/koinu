@@ -11,6 +11,7 @@
 #include "headers.h"
 #include "proto.h"
 #include "chainparams.h"
+#include "sha2.h"
 #include "hex.h"
 #include "testutil.h"
 
@@ -30,6 +31,41 @@ static const char *B2_HDR =
     "84daf2f79c0d16ae28cc536e79f2bad55534cca9049fe8359b99c047386cdc65"
     "37c59c6affff7f2000000000";
 static const char *B2_DISP = "dc413d41281d45e001b388406f4e5e31dfee12b23544972e0953bb31386cf8b7";
+
+/* The same two headers over a fresh socketpair, against whichever parameters the
+   caller wants. Returns what the driver returned. */
+static long feed_two(const kw_chainparams *cp)
+{
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -99;
+    struct timeval tv = { 5, 0 };
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    uint8_t b1[80], b2[80];
+    kw_test_unhex(B1_HDR, b1);
+    kw_test_unhex(B2_HDR, b2);
+
+    uint8_t payload[256]; size_t pn = 0;
+    payload[pn++] = 0x02;
+    memcpy(payload + pn, b1, 80); pn += 80; payload[pn++] = 0x00;
+    memcpy(payload + pn, b2, 80); pn += 80; payload[pn++] = 0x00;
+    uint8_t frame[512]; size_t fn;
+    fn = kw_msg_serialize(cp->magic, "headers", payload, pn, frame, sizeof frame);
+    if (write(sv[1], frame, fn) != (ssize_t)fn) { close(sv[0]); close(sv[1]); return -99; }
+    uint8_t empty = 0x00;
+    fn = kw_msg_serialize(cp->magic, "headers", &empty, 1, frame, sizeof frame);
+    if (write(sv[1], frame, fn) != (ssize_t)fn) { close(sv[0]); close(sv[1]); return -99; }
+
+    kw_peer p;
+    kw_peer_from_fd(&p, cp->magic, sv[0]);
+    kw_headerstore s;
+    kw_headerstore_init(&s);
+    long r = kw_sync_headers(&p, &s, cp);
+    kw_headerstore_free(&s);
+    kw_peer_close(&p);
+    close(sv[1]);
+    return r;
+}
 
 int main(void)
 {
@@ -125,7 +161,45 @@ int main(void)
     kw_headerstore_free(&s);
     kw_peer_close(&p);
     close(sv[1]);
+
+    /* An anchor is what says this is the chain rather than a chain. A peer can link to
+       genesis, satisfy the retarget rule and carry no work at all, so the default sync
+       has to check the hashes this release pins, not only the parallel fill.
+       Regtest ships no anchors, so this builds a parameter set that has two. */
+    {
+        kw_checkpoint anchors[2] = { { 1, NULL }, { 2, B2_DISP } };
+        char b1disp[65];
+        uint8_t b1[80], h[32], d[32];
+        kw_test_unhex(B1_HDR, b1);
+        kw_hash256(b1, 80, h);
+        for (int i = 0; i < 32; i++) d[i] = h[31 - i];
+        kw_hex_encode(d, 32, b1disp, sizeof b1disp);
+        anchors[0].hash = b1disp;
+
+        kw_chainparams anchored = KW_DOGE_REGTEST;
+        anchored.checkpoints = anchors;
+        anchored.ncheckpoints = 2;
+
+        /* the honest chain matches both and is accepted */
+        if (feed_two(&anchored) != 2) { fprintf(stderr, "FAIL: anchors refused the real chain\n"); return 1; }
+
+        /* one wrong hash at an anchor height and the whole chain goes */
+        char bent[65];
+        memcpy(bent, b1disp, sizeof bent);
+        bent[0] = (bent[0] == 'a') ? 'b' : 'a';
+        anchors[0].hash = bent;
+        if (feed_two(&anchored) != -1) { fprintf(stderr, "FAIL: a chain that missed an anchor was accepted\n"); return 1; }
+        anchors[0].hash = b1disp;
+
+        /* and a chain that stops short of the newest anchor is not this chain */
+        kw_checkpoint far[1] = { { 9999, B2_DISP } };
+        anchored.checkpoints = far;
+        anchored.ncheckpoints = 1;
+        if (feed_two(&anchored) != -1) { fprintf(stderr, "FAIL: a chain ending below the last anchor was accepted\n"); return 1; }
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
-       "  mainnet's first retarget demanded at height 240 and inheritance below it\n");
+       "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
+       "  anchors enforced on the default path and a chain short of the last one refused\n");
     return 0;
 }

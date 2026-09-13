@@ -30,6 +30,24 @@ static int header_at(const kw_headerstore *s, const kw_chainparams *cp,
     return 1;
 }
 
+/* display hex to internal order */
+static int unhex_rev(const char *hex, uint8_t out[32])
+{
+    uint8_t d[32];
+    if (!kw_hex_decode(hex, 64, d, 32)) return 0;
+    for (int i = 0; i < 32; i++) out[i] = d[31 - i];
+    return 1;
+}
+
+/* the first anchor at or above (height), so the walk can advance one cursor rather
+   than search the table per header */
+static size_t cp_from(const kw_chainparams *cp, uint32_t height)
+{
+    size_t i = 0;
+    while (i < cp->ncheckpoints && cp->checkpoints[i].height < height) i++;
+    return i;
+}
+
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits)
 {
@@ -79,6 +97,13 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
     kw_block_header *batch = (kw_block_header *)malloc(KW_MAX_HEADERS * sizeof *batch);
     if (!batch) return -1;
 
+    /* Anchors are the only thing that says this is the chain rather than a chain. A
+       peer can link to genesis, satisfy the retarget rule and carry no work at all:
+       the early heights inherit genesis nBits, so three headers with a zero nonce
+       parse, link and pass every other rule. Verified here rather than only in the
+       parallel fill, which is not the default path. */
+    size_t cpi = cp_from(cp, (uint32_t)s->count + 1);
+
     long total = 0;
     for (;;) {
         const kw_block_header *tip = kw_headerstore_tip(s);
@@ -120,6 +145,18 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                append, so the store never holds a header the rule refuses, and with
                the store still ending at the previous height. */
             uint32_t height = (uint32_t)s->count + 1;
+            if (cpi < cp->ncheckpoints && cp->checkpoints[cpi].height == height) {
+                uint8_t want[32];
+                if (!unhex_rev(cp->checkpoints[cpi].hash, want) ||
+                    memcmp(want, batch[i].hash, 32) != 0) {
+                    if (kw_net_verbose)
+                        fprintf(stderr, "[headers] %u is not the block this release "
+                                        "pins at that height\n", height);
+                    free(batch);
+                    return -1;
+                }
+                cpi++;
+            }
             if (!kw_sync_bits_ok(s, cp, height, kw_header_bits(batch[i].raw))) {
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] %u carries the wrong difficulty\n", height);
@@ -133,5 +170,18 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
     }
 
     free(batch);
+
+    /* A chain that stops below the newest anchor is not this chain. Without this a
+       short fabricated one never reaches a checkpoint to be caught by, which is
+       exactly how a peer would serve a wallet a payment that never happened. */
+    if (cp->ncheckpoints) {
+        uint32_t last = cp->checkpoints[cp->ncheckpoints - 1].height;
+        if ((uint32_t)s->count < last) {
+            if (kw_net_verbose)
+                fprintf(stderr, "[headers] the peer's chain ends at %zu, below the %u "
+                                "this release pins\n", s->count, last);
+            return -1;
+        }
+    }
     return total;
 }
