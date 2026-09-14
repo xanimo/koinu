@@ -29,6 +29,7 @@
 #include "cf.h"
 #include "fee.h"
 #include "journal.h"
+#include "change.h"
 #include "powq.h"
 #include "cfstore.h"
 #include "utxo.h"
@@ -225,28 +226,6 @@ static uint64_t peer_rate(uint64_t rate, int64_t advertised)
     fprintf(stderr, "kw: using %llu koinu/kB, the fee floor this peer advertises\n",
             (unsigned long long)want);
     return want;
-}
-
-/* The first change index with nothing unspent paid to it, so consecutive spends do
-   not all send their change to one address. Same rule as kwui, and the same limit:
-   the utxo set holds unspent outputs, so an index that was paid and then spent from
-   looks fresh again. Falls back to 0 when every derived one holds coins. */
-static uint32_t fresh_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
-                                   const kw_utxoset *us, int n)
-{
-    for (int i = 0; i < n; i++) {
-        kw_bip32_key ck;
-        if (!kw_bip44_derive(master, cp->bip44_coin, 0, 1, (uint32_t)i, &ck)) continue;
-        uint8_t pub[33], h[20];
-        kw_bip32_pubkey(&ck, pub);
-        kw_hash160(pub, 33, h);
-        kw_secure_zero(&ck, sizeof ck);
-        int used = 0;
-        for (size_t u = 0; u < us->count && !used; u++)
-            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk + 3, h, 20) == 0) used = 1;
-        if (!used) return (uint32_t)i;
-    }
-    return 0;
 }
 
 /* The ceiling is wallet/fee.c, shared with kwui so both refuse the same spends.
@@ -925,17 +904,19 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 10 + 148 * (size_t)nin + 34 * (size_t)(has_change ? 2 : 1), maxfee_arg)) goto out;
 
     if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+    char caddr[80] = { 0 };                 /* recorded below, so the next spend rotates */
     if (has_change) {
         uint8_t cspk[25]; size_t cl = 0;
         if (change_arg) {
             if (!addr_to_spk(cp, change_arg, cspk, &cl)) { fprintf(stderr, "kw: bad --change address\n"); goto out; }
         } else {
-            uint32_t ci = have_us ? fresh_change_index(&master, cp, &us, change_scan) : 0;
+            uint32_t ci = kw_change_index(&master, cp, have_us ? &us : NULL, jpath, change_scan);
             kw_bip32_key ck;
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, ci, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
             uint8_t cpub[33], ch[20];
             kw_bip32_pubkey(&ck, cpub); kw_hash160(cpub, 33, ch);
             h160_to_spk(ch, cspk); cl = 25;
+            kw_address_p2pkh(cpub, cp->p2pkh, caddr, sizeof caddr);
             kw_secure_zero(&ck, sizeof ck);
             printf("change m/44'/%u'/0'/1/%u\n", cp->bip44_coin, ci);
         }
@@ -979,6 +960,22 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         snprintf(je.addr, sizeof je.addr, "%s", daddr);
         if (!kw_journal_record(jpath, &je))
             fprintf(stderr, "kw: could not record the spend in %s\n", jpath);
+
+        /* The change output, as the receive it is. Recorded here rather than left
+           for a scan because the ordinary case is a spend followed by another one:
+           the utxo set is only rewritten by kw scan, so without this both read the
+           same file and both pick the same index. The cost is that signing one
+           spend twice yields two transactions rather than one, since the second
+           rotates past the first's change. */
+        if (has_change && caddr[0]) {
+            je.dir = KW_JOURNAL_IN;
+            je.vout = 1;
+            je.amount = change;
+            je.fee = 0;
+            snprintf(je.addr, sizeof je.addr, "%s", caddr);
+            if (!kw_journal_record(jpath, &je))
+                fprintf(stderr, "kw: could not record the change in %s\n", jpath);
+        }
         rc = 0;
     }
 out:

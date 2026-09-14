@@ -53,3 +53,4 @@
 /gen_checkpoints
 /mkvectors_chain
 /test/test_sighash
+/test/fakenode

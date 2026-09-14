@@ -32,18 +32,20 @@ if ./kw --regtest new --keystore "$WORK/ks" --passphrase "@$WORK/pass" >/dev/nul
     echo "FAIL: new clobbered an existing keystore" >&2; exit 1
 fi
 
-# sign: spend a fixed outpoint to our own address, deterministic and well-formed
+# sign: spend a fixed outpoint to our own address, deterministic and well-formed.
+# --change pins the change address, since without it the second signature rotates
+# past the first and the transactions differ by design.
 IN="0000000000000000000000000000000000000000000000000000000000000001:0:10.0:0"
 RAW1=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
-       --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^raw/{print $2}')
+       --input "$IN" --to "$ADDR1:8.5" --fee 0.001 --change-to "$ADDR1" | awk '/^raw/{print $2}')
 [ -n "$RAW1" ] || { echo "FAIL: sign produced no raw tx" >&2; exit 1; }
 case "$RAW1" in 01000000*00000000) ;; *) echo "FAIL: raw tx not well-formed" >&2; exit 1;; esac
 RAW2=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
-       --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^raw/{print $2}')
+       --input "$IN" --to "$ADDR1:8.5" --fee 0.001 --change-to "$ADDR1" | awk '/^raw/{print $2}')
 [ "$RAW1" = "$RAW2" ] || { echo "FAIL: sign not deterministic" >&2; exit 1; }
 # a different amount must change the transaction
 RAW3=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
-       --input "$IN" --to "$ADDR1:8.0" --fee 0.001 | awk '/^raw/{print $2}')
+       --input "$IN" --to "$ADDR1:8.0" --fee 0.001 --change-to "$ADDR1" | awk '/^raw/{print $2}')
 [ "$RAW1" != "$RAW3" ] || { echo "FAIL: amount change did not alter the tx" >&2; exit 1; }
 
 # signing records the spend, and signing the same spend twice records it once:
@@ -65,6 +67,35 @@ SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" -
 CH=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
      --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
 [ "$CH" = "m/44'/1'/0'/1/1" ] || { echo "FAIL: change went to $CH, want index 1" >&2; exit 1; }
+# two spends in a row with no scan between them must not share a change address.
+# only kw scan rewrites the utxo file, so this is the case a utxo-set-only rule
+# gets wrong, and it is the ordinary one: send, then send again.
+rm -f "$WORK/ks.utxos" "$WORK/ks.utxos.journal"
+CA=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
+CB=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.4" --fee 0.001 | awk '/^change/{print $2}')
+CC=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.3" --fee 0.001 | awk '/^change/{print $2}')
+[ "$CA" = "m/44'/1'/0'/1/0" ] || { echo "FAIL: first spend used $CA" >&2; exit 1; }
+[ "$CB" = "m/44'/1'/0'/1/1" ] || { echo "FAIL: second spend used $CB, want index 1" >&2; exit 1; }
+[ "$CC" = "m/44'/1'/0'/1/2" ] || { echo "FAIL: third spend used $CC, want index 2" >&2; exit 1; }
+rm -f "$WORK/ks.utxos.journal"
+
+# a change index whose coins have since been spent must stay used: the utxo set
+# has forgotten it, so this is the journal's answer, not the utxo set's
+{ echo "# koinu utxo set v1"
+  echo "0000000000000000000000000000000000000000000000000000000000000002 0 1000000000 1 $SPK0"
+} > "$WORK/ks.utxos"
+CADDR1=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --change --index 1)
+[ -n "$CADDR1" ] || { echo "FAIL: no change address at index 1" >&2; exit 1; }
+echo "1700000000 in 0000000000000000000000000000000000000000000000000000000000000003 1 5 100000000 0 $CADDR1" \
+    >> "$WORK/ks.utxos.journal"
+chmod 600 "$WORK/ks.utxos.journal"     # written here by the shell, not by kw
+CH2=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+      --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
+[ "$CH2" = "m/44'/1'/0'/1/2" ] || { echo "FAIL: change went to $CH2, want index 2" >&2; exit 1; }
+
 rm -f "$WORK/ks.utxos"
 
 # more --input than a transaction may carry is an error, not a silent drop: a
@@ -200,4 +231,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates, too many inputs refused, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"

@@ -24,6 +24,7 @@
 #include "base58.h"
 #include "fee.h"
 #include "journal.h"
+#include "change.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -554,16 +555,27 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         kw_tx_add_input(&tx, disp, u->vout);
     }
     kw_tx_add_output(&tx, want, dspk, dl);
-    if (with_change) {
-        int ci = -1;
-        for (int i = 0; i < nrows; i++)                  /* first unused change address */
-            if (rows[i].change == 1 && rows[i].nutxo == 0) { ci = i; break; }
-        if (ci < 0) for (int i = 0; i < nrows; i++) if (rows[i].change == 1) { ci = i; break; }
-        if (ci >= 0) kw_tx_add_output(&tx, change, rows[ci].spk, 25);
-    }
-
     kw_bip32_key master;
     int ok = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
+
+    char caddr[80] = { 0 };
+    if (with_change && ok) {
+        /* wallet/change.c, the same rule kw signs by: two front ends rotating
+           differently put change on one address at different times, which links
+           the spends each was avoiding linking */
+        char jp[4200];
+        kw_journal_path(utxos, jp, sizeof jp);
+        uint32_t ci = kw_change_index(&master, cp, us, jp, nrows);
+        int ri = -1;
+        for (int i = 0; i < nrows; i++)
+            if (rows[i].change == 1 && rows[i].index == ci) { ri = i; break; }
+        if (ri < 0) for (int i = 0; i < nrows; i++) if (rows[i].change == 1) { ri = i; break; }
+        if (ri >= 0) {
+            kw_tx_add_output(&tx, change, rows[ri].spk, 25);
+            snprintf(caddr, sizeof caddr, "%s", rows[ri].addr);
+        } else with_change = 0;
+    }
+
     for (int i = 0; i < nin && ok; i++) {
         const kw_utxo *u = &us->u[order[i]];
         int ri = -1;
@@ -614,6 +626,15 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         je.fee = fee;
         snprintf(je.addr, sizeof je.addr, "%s", to);
         int recorded = kw_journal_record(jpath, &je);
+        /* and the change, so the next spend rotates past it */
+        if (with_change && caddr[0]) {
+            je.dir = KW_JOURNAL_IN;
+            je.vout = 1;
+            je.amount = change;
+            je.fee = 0;
+            snprintf(je.addr, sizeof je.addr, "%s", caddr);
+            if (!kw_journal_record(jpath, &je)) recorded = 0;
+        }
 
         char m[9000];
         snprintf(m, sizeof m, "\r\n   signed, %zu bytes, written to %s\r\n"

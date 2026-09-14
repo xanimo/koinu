@@ -27,7 +27,7 @@ CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c cry
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
            net/pow.c net/auxpow.c net/powq.c net/proto.c net/msg.c net/peer.c net/socks5.c net/headers.c net/sync.c net/psync.c net/seed.c net/spv.c net/gcs.c net/cf.c net/cfstore.c \
-           wallet/utxo.c wallet/fee.c wallet/journal.c \
+           wallet/utxo.c wallet/fee.c wallet/journal.c wallet/change.c \
            crypto/vendor/poly1305-donna/poly1305-donna.c \
            crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
            crypto/vendor/argon2/encoding.c crypto/vendor/argon2/ref.c \
@@ -204,6 +204,9 @@ net_auxpow: test/net_auxpow.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_auxpow.o $(LIB) $(SECP_LIB)
 
 # live handshake tool, built on demand, not part of `make check`
+test/fakenode: test/fakenode.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/fakenode.o $(LIB) $(SECP_LIB)
+
 net_handshake: test/net_handshake.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_handshake.o $(LIB)
 
@@ -234,7 +237,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 # fails at runtime looking like a logic bug rather than at the build.
 -include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
-check: $(TESTS) kw kwd kwui
+check: $(TESTS) kw kwd kwui test/fakenode
 	./test/test_cpu
 	./test/test_rng
 	./test/test_sha2
@@ -275,6 +278,7 @@ check: $(TESTS) kw kwd kwui
 	./test/test_sweep.sh
 	./test/test_scan.sh
 	./test/test_kwui.sh
+	./test/test_kwd.sh
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 #
@@ -324,7 +328,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain gen_checkpoints mkvectors_chain
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
