@@ -20,6 +20,11 @@
 #define KW_MIN_RELAY_FEE_PER_KB    100000ULL    /* 0.001 DOGE/kB */
 #define KW_RECOMMENDED_FEE_PER_KB 1000000ULL    /* 0.01  DOGE/kB */
 
+/* The highest advertised floor a peer may raise this wallet's rate to. A BIP133
+   feefilter is that peer's own relay policy, not the network's, so a peer asking
+   for more than the miner-preferred rate is one to ignore rather than pay. */
+#define KW_MAX_PEER_FEE_PER_KB KW_RECOMMENDED_FEE_PER_KB
+
 /* How many times the recommended fee a spend may pay before it is refused. */
 #define KW_MAX_FEE_MULTIPLE 100
 

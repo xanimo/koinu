@@ -54,6 +54,34 @@ NJ=$(awk 'END{print NR}' "$J")
 [ "$NJ" = "2" ] || { echo "FAIL: journal has $NJ entries, want 2" >&2; cat "$J" >&2; exit 1; }
 awk '$2 != "out" { exit 1 }' "$J" || { echo "FAIL: a signed spend is not an out entry" >&2; exit 1; }
 grep -q "$ADDR1" "$J" || { echo "FAIL: the journal does not name the destination" >&2; exit 1; }
+
+# change rotates: with a utxo already paid to change index 0, the next spend must
+# use index 1 rather than paying the same address twice
+SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --change --index 0 --spk)
+[ -n "$SPK0" ] || { echo "FAIL: no change scriptPubKey" >&2; exit 1; }
+{ echo "# koinu utxo set v1"
+  echo "0000000000000000000000000000000000000000000000000000000000000002 0 1000000000 1 $SPK0"
+} > "$WORK/ks.utxos"
+CH=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
+[ "$CH" = "m/44'/1'/0'/1/1" ] || { echo "FAIL: change went to $CH, want index 1" >&2; exit 1; }
+rm -f "$WORK/ks.utxos"
+
+# more --input than a transaction may carry is an error, not a silent drop: a
+# dropped input funds less than was asked for and the change output absorbs it
+MANY=""
+i=1
+while [ $i -le 40 ]; do
+    MANY="$MANY --input $(printf '00000000000000000000000000000000000000000000000000000000000000%02x' $i):0:1.0:0"
+    i=$((i + 1))
+done
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+   $MANY --to "$ADDR1:1.0" --fee 0.001 >/dev/null 2>&1; then
+    echo "FAIL: signed with more inputs than the limit" >&2; exit 1
+fi
+CH0=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+      --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
+[ "$CH0" = "m/44'/1'/0'/1/0" ] || { echo "FAIL: change went to $CH0 with nothing spent, want index 0" >&2; exit 1; }
 # it names amounts and addresses, so it is not world-readable
 case $(ls -l "$J") in
     -rw-------*) ;;
@@ -172,4 +200,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic and journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates, too many inputs refused, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"

@@ -207,6 +207,48 @@ static int parse_doge(const char *s, uint64_t *out)
 
 #define est_fee(nin, nout, rate) kw_est_fee((nin), (nout), (rate))
 
+/* Raise (rate) to the floor a peer advertises, up to KW_MAX_PEER_FEE_PER_KB. The
+   peer picks this number and every byte of the spend pays it, so it is bounded and
+   said out loud: an unclamped one multiplies the fee by whatever the peer likes,
+   and silence makes it look like the rate the operator chose. */
+static uint64_t peer_rate(uint64_t rate, int64_t advertised)
+{
+    if (advertised <= (int64_t)rate) return rate;
+    uint64_t want = (uint64_t)advertised;
+    if (want > KW_MAX_PEER_FEE_PER_KB) {
+        fprintf(stderr, "kw: peer wants %llu koinu/kB, above the %llu koinu/kB ceiling; "
+                        "using %llu\n",
+                (unsigned long long)want, (unsigned long long)KW_MAX_PEER_FEE_PER_KB,
+                (unsigned long long)rate);
+        return rate;
+    }
+    fprintf(stderr, "kw: using %llu koinu/kB, the fee floor this peer advertises\n",
+            (unsigned long long)want);
+    return want;
+}
+
+/* The first change index with nothing unspent paid to it, so consecutive spends do
+   not all send their change to one address. Same rule as kwui, and the same limit:
+   the utxo set holds unspent outputs, so an index that was paid and then spent from
+   looks fresh again. Falls back to 0 when every derived one holds coins. */
+static uint32_t fresh_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
+                                   const kw_utxoset *us, int n)
+{
+    for (int i = 0; i < n; i++) {
+        kw_bip32_key ck;
+        if (!kw_bip44_derive(master, cp->bip44_coin, 0, 1, (uint32_t)i, &ck)) continue;
+        uint8_t pub[33], h[20];
+        kw_bip32_pubkey(&ck, pub);
+        kw_hash160(pub, 33, h);
+        kw_secure_zero(&ck, sizeof ck);
+        int used = 0;
+        for (size_t u = 0; u < us->count && !used; u++)
+            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk + 3, h, 20) == 0) used = 1;
+        if (!used) return (uint32_t)i;
+    }
+    return 0;
+}
+
 /* The ceiling is wallet/fee.c, shared with kwui so both refuse the same spends.
    Only the message is local. Returns 1 if the fee is allowed. */
 static int fee_ok(uint64_t fee, size_t nbytes, const char *maxfee_arg)
@@ -774,7 +816,19 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     if (fixed_fee && !parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
     if (feerate_arg && !parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
 
+    int change_scan = gap;
     if (ninputs > 0) {
+        /* The coins are named, so nothing here needs the utxo set. It is loaded
+           anyway when there is one, since it is what says which change addresses
+           have already been paid. */
+        {
+            char defpath[4096];
+            const char *up = utxos_path;
+            if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
+            kw_utxoset_init(&us);
+            if (kw_utxoset_load(&us, up)) have_us = 1;
+            else kw_utxoset_free(&us);
+        }
         /* manual: the operator names each outpoint and its key index */
         for (int i = 0; i < ninputs; i++) {
             char buf[160];
@@ -810,8 +864,9 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
            derive as far as it watched so every tracked utxo's key is available */
         int64_t hint = 0; int extent = 0;
         read_scan_meta(up, &hint, &extent);
-        if (!feerate_arg && hint > (int64_t)rate) rate = (uint64_t)hint;
+        if (!feerate_arg) rate = peer_rate(rate, hint);
         int derive_n = gap; if (extent > derive_n) derive_n = extent;
+        change_scan = derive_n;
 
         keymap_n = 2 * derive_n;
         keymap = (kw_bip32_key *)malloc((size_t)keymap_n * sizeof *keymap);
@@ -875,12 +930,14 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         if (change_arg) {
             if (!addr_to_spk(cp, change_arg, cspk, &cl)) { fprintf(stderr, "kw: bad --change address\n"); goto out; }
         } else {
+            uint32_t ci = have_us ? fresh_change_index(&master, cp, &us, change_scan) : 0;
             kw_bip32_key ck;
-            if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, 0, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
+            if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, ci, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
             uint8_t cpub[33], ch[20];
             kw_bip32_pubkey(&ck, cpub); kw_hash160(cpub, 33, ch);
             h160_to_spk(ch, cspk); cl = 25;
             kw_secure_zero(&ck, sizeof ck);
+            printf("change m/44'/%u'/0'/1/%u\n", cp->bip44_coin, ci);
         }
         if (!kw_tx_add_output(&tx, change, cspk, cl)) { fprintf(stderr, "kw: add change\n"); goto out; }
     }
@@ -1009,7 +1066,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
     {
         uint64_t rate = KW_MIN_RELAY_FEE_PER_KB;
         if (feerate_arg && !parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
-        if (!feerate_arg && p.peer_feerate > (int64_t)rate) rate = (uint64_t)p.peer_feerate;
+        if (!feerate_arg) rate = peer_rate(rate, p.peer_feerate);
         int have_fixed = (fee_arg != NULL); uint64_t fixed = 0;
         if (have_fixed && !parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
 
@@ -1720,7 +1777,14 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--index"))    { const char *v = NEXT(); index = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
         else if (!strcmp(a, "--change"))     change = 1;
         else if (!strcmp(a, "--spk"))        want_spk = 1;
-        else if (!strcmp(a, "--input"))    { const char *v = NEXT(); if (v && ninputs < KW_TX_MAX_IN) inputs[ninputs++] = v; }
+        else if (!strcmp(a, "--input"))    { const char *v = NEXT();
+            /* dropping the extra ones quietly would sign a transaction spending less
+               than was asked for, and the change output would absorb the difference */
+            if (v && ninputs == KW_TX_MAX_IN) {
+                fprintf(stderr, "kw: at most %d --input, consolidate first\n", KW_TX_MAX_IN);
+                return 2;
+            }
+            if (v) inputs[ninputs++] = v; }
         else if (!strcmp(a, "--to"))         to_arg = NEXT();
         else if (!strcmp(a, "--fee"))        fee_arg = NEXT();
         else if (!strcmp(a, "--feerate"))    feerate_arg = NEXT();
