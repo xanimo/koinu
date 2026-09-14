@@ -88,6 +88,45 @@ void kw_cf_header_step(const uint8_t filter_hash[32], const uint8_t prev[32], ui
     kw_hash256(buf, 64, out);
 }
 
+/* display (reversed) hex to internal order, as the checkpoint tables store it */
+static int unhex_rev(const char *hex, uint8_t out[32])
+{
+    for (int i = 0; i < 32; i++) {
+        int hi = -1, lo = -1;
+        char a = hex[2 * i], b = hex[2 * i + 1];
+        if (a >= '0' && a <= '9') hi = a - '0'; else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
+        else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
+        if (b >= '0' && b <= '9') lo = b - '0'; else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
+        else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
+        if (hi < 0 || lo < 0) return 0;
+        out[31 - i] = (uint8_t)((hi << 4) | lo);
+    }
+    return hex[64] == '\0';
+}
+
+/* The filter-header anchor at (height), or NULL. */
+static const kw_cfcheckpoint *cf_anchor_at(const kw_chainparams *cp, uint32_t height)
+{
+    if (!cp || !cp->cfcheckpoints) return NULL;
+    for (size_t i = 0; i < cp->ncfcheckpoints; i++)
+        if (cp->cfcheckpoints[i].height == height) return &cp->cfcheckpoints[i];
+    return NULL;
+}
+
+int kw_cf_anchor_ok(const kw_chainparams *cp, uint32_t height, const uint8_t chain[32])
+{
+    const kw_cfcheckpoint *a = cf_anchor_at(cp, height);
+    uint8_t want[32];
+    if (!a || !unhex_rev(a->header, want)) return 1;
+    if (memcmp(chain, want, 32) == 0) {
+        if (kw_net_verbose) fprintf(stderr, "[cf] filter-header anchor %u matched\n", height);
+        return 1;
+    }
+    fprintf(stderr, "kw: filter-header anchor mismatch at height %u; "
+                    "this peer's filters are not the ones this release pins\n", height);
+    return 0;
+}
+
 int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_height,
                         size_t s0, size_t s1, uint8_t prev[32], uint8_t (*hashes)[32])
 {
@@ -146,6 +185,9 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                                         base_height + (uint32_t)s0);
             err = 1; break;
         }
+        /* prev is the chain as of base_height+s0-1, so an anchor there bounds where
+           this chunk starts; without it the base is only ever what the peer said. */
+        if (s0 > 0 && !kw_cf_anchor_ok(p->cp, base_height + (uint32_t)s0 - 1, prev)) { err = 1; break; }
         memcpy(chain, prev, 32); have_chain = 1;
 
         uint8_t body[37];
@@ -175,6 +217,7 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                 err = 1; break;
             }
             kw_cf_header_step(fhash, chain, chain);
+            if (!kw_cf_anchor_ok(p->cp, base_height + (uint32_t)k, chain)) { err = 1; break; }
 
             int m = ws->count ? kw_gcs_match_any(filt, flen, bh, items, ws->count) : 0;
             if (m < 0) { err = 1; break; }

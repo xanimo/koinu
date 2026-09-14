@@ -55,6 +55,11 @@ int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
    out = sha256d(filter_hash || prev). out may alias prev. */
 void kw_cf_header_step(const uint8_t filter_hash[32], const uint8_t prev[32], uint8_t out[32]);
 
+/* Compare a running filter-header chain against the anchor pinned at (height),
+   if this network pins one. Returns 0 only on a real mismatch, so a height with
+   no anchor, or one whose hex does not decode, is not held against the peer. */
+int kw_cf_anchor_ok(const kw_chainparams *cp, uint32_t height, const uint8_t chain[32]);
+
 /* Fetch the committed filter-header chain for store range [s0,s1): the peer's
    previous_filter_header lands in (prev), the per-block filter hashes in
    (hashes), s1-s0 entries. Returns 1, or 0 on a wire error or a response that

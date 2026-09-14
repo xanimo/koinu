@@ -7,6 +7,9 @@
 
 #include "cf.h"
 #include "gcs.h"
+#include "proto.h"
+#include "peer.h"
+#include "chainparams.h"
 #include "sha2.h"
 #include "testutil.h"
 
@@ -14,6 +17,74 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+/* frame (cmd,payload) and write it to the fake peer's end */
+static int put_msg(int fd, uint32_t magic, const char *cmd, const uint8_t *pl, size_t pn)
+{
+    uint8_t frame[2048];
+    size_t fn = kw_msg_serialize(magic, cmd, pl, pn, frame, sizeof frame);
+    return fn && write(fd, frame, fn) == (ssize_t)fn;
+}
+
+static size_t mk_cfheaders(uint8_t *out, const uint8_t stop[32], const uint8_t prev[32],
+                           const uint8_t fhash[32])
+{
+    out[0] = KW_CF_TYPE_BASIC;
+    memcpy(out + 1, stop, 32);
+    memcpy(out + 33, prev, 32);
+    out[65] = 1;
+    memcpy(out + 66, fhash, 32);
+    return 98;
+}
+
+static size_t mk_cfilter(uint8_t *out, const uint8_t bh[32], const uint8_t *f, size_t flen)
+{
+    out[0] = KW_CF_TYPE_BASIC;
+    memcpy(out + 1, bh, 32);
+    out[33] = (uint8_t)flen;
+    memcpy(out + 34, f, flen);
+    return 34 + flen;
+}
+
+static void hex_rev(const uint8_t in[32], char out[65])
+{
+    static const char d[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[2 * i] = d[in[31 - i] >> 4];
+        out[2 * i + 1] = d[in[31 - i] & 15];
+    }
+    out[64] = 0;
+}
+
+/* one uncached kw_cf_sync run against a preloaded socketpair peer */
+static long cf_round(const kw_chainparams *cp, const kw_headerstore *s,
+                     const uint8_t *msgs, const size_t *lens, const char **cmds, int nmsg)
+{
+    uint32_t magic = KW_DOGE_REGTEST.magic;
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -2;
+    struct timeval tv = { 5, 0 };
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    size_t off = 0;
+    for (int i = 0; i < nmsg; i++) {
+        if (!put_msg(sv[1], magic, cmds[i], msgs + off, lens[i])) { close(sv[0]); close(sv[1]); return -2; }
+        off += lens[i];
+    }
+    kw_peer p;
+    kw_peer_from_fd(&p, magic, sv[0]);
+    p.cp = cp;
+    kw_utxoset us; kw_utxoset_init(&us);
+    kw_watchset ws; kw_watchset_init(&ws);      /* nothing watched: no block is fetched */
+    long r = kw_cf_sync(&p, s, &us, &ws, 1);
+    kw_watchset_free(&ws);
+    kw_utxoset_free(&us);
+    kw_peer_close(&p);
+    close(sv[1]);
+    return r;
+}
 
 int main(void)
 {
@@ -93,6 +164,51 @@ int main(void)
         if (memcmp(got, want, 32) != 0) { fprintf(stderr, "FAIL: header chain %s\n", v->name); return 1; }
     }
 
-    printf("cf ok: getcfilters format, cfilter round-trip, real-filter match, cfheaders parse, header chain vectors\n");
+    /* The uncached path checks the anchors too. It used to be the cached store alone,
+       which left the three call sites that never pass a filters path taking whatever
+       chain base the peer offered. */
+    {
+        kw_block_header h1;
+        uint8_t raw[80];
+        memset(raw, 0, 80); raw[0] = 1;
+        kw_block_header_parse(raw, 80, &h1);
+
+        uint8_t f1[2] = { 0xaa, 0xbb };
+        uint8_t prev0[32]; memset(prev0, 0x11, 32);
+        uint8_t hash1[32], chain1[32];
+        kw_hash256(f1, sizeof f1, hash1);
+        kw_cf_header_step(hash1, prev0, chain1);
+
+        uint8_t msgs[512]; size_t lens[2]; const char *cmds[2] = { "cfheaders", "cfilter" };
+        lens[0] = mk_cfheaders(msgs, h1.hash, prev0, hash1);
+        lens[1] = mk_cfilter(msgs + lens[0], h1.hash, f1, sizeof f1);
+
+        kw_headerstore s; kw_headerstore_init(&s);
+        kw_headerstore_append(&s, &h1);
+
+        char good[65], bad[65];
+        uint8_t other[32]; memset(other, 0x5a, 32);
+        hex_rev(chain1, good);
+        hex_rev(other, bad);
+
+        kw_chainparams cpa = KW_DOGE_REGTEST;
+        kw_cfcheckpoint anchor[1];
+        cpa.cfcheckpoints = anchor; cpa.ncfcheckpoints = 1;
+        anchor[0].height = 1;
+
+        anchor[0].header = good;
+        if (cf_round(&cpa, &s, msgs, lens, cmds, 2) != 0) {
+            fprintf(stderr, "FAIL: uncached sync refused a chain matching the anchor\n");
+            kw_headerstore_free(&s); return 1;
+        }
+        anchor[0].header = bad;
+        if (cf_round(&cpa, &s, msgs, lens, cmds, 2) != -1) {
+            fprintf(stderr, "FAIL: uncached sync accepted a chain contradicting the anchor\n");
+            kw_headerstore_free(&s); return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
+    printf("cf ok: getcfilters format, cfilter round-trip, real-filter match, cfheaders parse, header chain vectors,\n  uncached sync anchored\n");
     return 0;
 }
