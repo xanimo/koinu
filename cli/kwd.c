@@ -28,10 +28,39 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t stop = 0;
 static void on_sig(int s) { (void)s; stop = 1; }
+
+/* How long one client gets. The accept loop is single threaded and answers one
+   request per connection, so a client that connects and says nothing holds every
+   other caller behind it. Both bounds are needed: the per-read timeout catches
+   silence, the deadline catches a client dribbling a byte at a time to keep
+   resetting it. */
+#define KWD_READ_SECONDS    5
+#define KWD_REQUEST_SECONDS 10
+
+/* What it takes to dial the peer again. A resident connection that dies leaves
+   every later request answering "header sync failed" until someone restarts the
+   daemon, so the parameters are kept rather than consumed at startup. */
+static struct {
+    const kw_chainparams *cp;
+    const char *node;
+    int port, tor;
+} dial;
+
+static int peer_redial(kw_peer *p)
+{
+    kw_peer_close(p);
+    int ok = dial.tor ? kw_peer_connect_socks5(p, dial.cp, dial.node, dial.port, 15, "127.0.0.1", 9050)
+                      : kw_peer_connect(p, dial.cp, dial.node, dial.port, 15);
+    if (!ok) return 0;
+    if (!kw_peer_handshake(p, 0)) { kw_peer_close(p); return 0; }
+    fprintf(stderr, "kwd: reconnected to %s:%d\n", dial.node, dial.port);
+    return 1;
+}
 
 static const kw_chainparams *chain_for(int net)
 {
@@ -86,8 +115,10 @@ static void handle(const kw_chainparams *cp, kw_peer *p, kw_headerstore *s,
     long since = sh ? atol(sh) : 0;
     if (since < 0) since = 0;
 
-    /* keep the resident chain current, then answer from the caches */
+    /* keep the resident chain current, then answer from the caches. One redial on
+       failure, since the usual reason is that the peer went away. */
     long nh = kw_sync_headers(p, s, cp);
+    if (nh < 0 && peer_redial(p)) nh = kw_sync_headers(p, s, cp);
     if (nh < 0) { write_all(fd, "1 header sync failed\n", 21); return; }
 
     kw_outpoint_result r;
@@ -128,6 +159,8 @@ int main(int argc, char **argv)
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig); signal(SIGPIPE, SIG_IGN);
     kw_net_verbose = 1;
 
+    dial.cp = cp; dial.node = node; dial.port = port; dial.tor = tor;
+
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -154,24 +187,40 @@ int main(int argc, char **argv)
     sa.sun_family = AF_UNIX;
     snprintf(sa.sun_path, sizeof sa.sun_path, "%s", sock);
     unlink(sock);
-    if (bind(ls, (struct sockaddr *)&sa, sizeof sa) != 0 || listen(ls, 8) != 0) {
+    /* bind creates the node at whatever the umask allows, so chmod alone leaves a
+       window where any local user can connect. The umask is what closes it. */
+    mode_t old_umask = umask(0177);
+    int bound = bind(ls, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(ls, 8) == 0;
+    umask(old_umask);
+    if (!bound) {
         fprintf(stderr, "kwd: bind/listen failed\n"); close(ls); goto done;
     }
-    chmod(sock, 0600);
+    chmod(sock, 0600);                       /* belt and braces: some systems ignore the umask here */
     fprintf(stderr, "kwd: ready, tip %zu, listening on %s\n", s.count, sock);
 
     while (!stop) {
         int fd = accept(ls, NULL, NULL);
         if (fd < 0) { if (errno == EINTR) continue; break; }
+        struct timeval tv = { KWD_READ_SECONDS, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+
         char line[512]; size_t n = 0;
+        int complete = 0;
         while (n < sizeof line - 1) {
             ssize_t r = read(fd, line + n, sizeof line - 1 - n);
             if (r <= 0) break;
             n += (size_t)r;
-            if (memchr(line, '\n', n)) break;
+            if (memchr(line, '\n', n)) { complete = 1; break; }
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec - t0.tv_sec >= KWD_REQUEST_SECONDS) break;
         }
         line[n] = '\0';
-        if (n) handle(cp, &p, &s, filters_path, line, fd);
+        if (complete) handle(cp, &p, &s, filters_path, line, fd);
+        else if (n) write_all(fd, "1 request truncated or too slow\n", 32);
         close(fd);
     }
 
