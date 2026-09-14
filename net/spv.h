@@ -40,9 +40,12 @@ int kw_block_scan(const uint8_t *msg, size_t len,
    hash. Returns 0 on a malformed body too. */
 int kw_block_merkle_ok(const uint8_t *msg, size_t len);
 
-/* Download one block by hash over (p) and verify it matches. On success returns
-   1 with (payload)/(plen) pointing at peer-owned storage valid until the next
-   recv. */
+/* Download one block by hash over (p) and check that it is the block asked for.
+   On success returns 1 with (payload)/(plen) pointing at peer-owned storage valid
+   until the next recv.
+
+   The header is checked, the body is not: a caller that reads the transactions
+   must run kw_block_merkle_ok, or call one of the functions above that does. */
 int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
                      const uint8_t **payload, size_t *plen);
 

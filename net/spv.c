@@ -181,11 +181,11 @@ int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
     }
     if (!got) return 0;
 
-    /* the block we asked for, not some other one */
+    /* the block we asked for, not some other one. The body is not checked against
+       the header here: every function that reads one does that itself, and doing
+       it twice per block doubles the hashing a scan spends most of its time on. */
     kw_block_header hdr;
     if (!kw_block_header_parse(pl, pn, &hdr) || memcmp(hdr.hash, hash, 32) != 0) return 0;
-    /* and the body the header commits to, not any body behind a genuine header */
-    if (!kw_block_merkle_ok(pl, pn)) return 0;
     *payload = pl; *plen = pn;
     return 1;
 }

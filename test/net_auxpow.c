@@ -83,6 +83,13 @@ int main(int argc, char **argv)
             rc = 1;
             continue;
         }
+        /* get_block checks the header, not the body, so anything reading the proof
+           out of it checks the tree itself. */
+        if (!kw_block_merkle_ok(blk, blen)) {
+            fprintf(stderr, "%s: body does not match its merkle root\n", argv[a]);
+            rc = 1;
+            continue;
+        }
         if (blen < 80) { fprintf(stderr, "%s: short block\n", argv[a]); rc = 1; continue; }
 
         uint32_t version = (uint32_t)blk[0] | ((uint32_t)blk[1] << 8) |

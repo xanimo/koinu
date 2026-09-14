@@ -220,6 +220,13 @@ int main(int argc, char **argv)
             fprintf(stderr, "mkvectors_chain: block %lu did not arrive\n", h);
             break;
         }
+        /* get_block checks the header, not the body, so anything reading the
+           transactions out of it checks the tree itself. A generator that emitted
+           vectors from an unverified body would be emitting whatever it was told. */
+        if (!kw_block_merkle_ok(blk, blen)) {
+            fprintf(stderr, "mkvectors_chain: block %lu does not match its merkle root\n", h);
+            break;
+        }
         blocks++;
 
         size_t off = 80;
