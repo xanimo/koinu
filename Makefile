@@ -59,7 +59,17 @@ kwui: cli/kwui.o $(LIB) $(SECP_LIB)
 
 # The one submodule, built via its own autotools into a static lib. Only objects
 # that reference it (ec.o, pulled in by test_ec) need it at link time.
-$(SECP_LIB):
+# crypto/ec.c is the only file that includes it, and it fails to compile long
+# before anything tries to link, so the missing submodule is reported here rather
+# than as a header not found.
+$(SECP_DIR)/include/secp256k1.h:
+	@echo "$(SECP_DIR) is empty. clone with --recursive, or run:" >&2
+	@echo "    git submodule update --init --recursive" >&2
+	@exit 1
+
+crypto/ec.o: $(SECP_DIR)/include/secp256k1.h
+
+$(SECP_LIB): $(SECP_DIR)/include/secp256k1.h
 	cd $(SECP_DIR) && ./autogen.sh && ./configure --enable-static --disable-shared \
 	    --disable-tests --disable-exhaustive-tests --disable-benchmark && $(MAKE)
 

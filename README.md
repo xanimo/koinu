@@ -6,6 +6,7 @@ vendored from a named upstream at a named commit or written here, and frozen.
 
 ## building
 
+    git clone --recursive https://github.com/xanimo/koinu
     make check      # builds libkw.a and kw, runs the tests
     make asan       # the same under address and undefined-behaviour sanitizers
 
