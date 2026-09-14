@@ -3,8 +3,10 @@
  * Copyright (c) 2026 bluezr */
 
 #include "spv.h"
+#include "sha2.h"
 #include "tx.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* ── getdata writer ──────────────────────────────────────────── */
@@ -48,10 +50,61 @@ static uint64_t rd_varint(const uint8_t *p, size_t len, size_t *off, int *bad)
     return v;
 }
 
+/* A block cannot hold more transactions than this and stay inside the frame limit;
+   the bound is here so a claimed count cannot ask for an arbitrary allocation. */
+#define KW_BLOCK_MAX_TX (1u << 17)
+
+int kw_block_merkle_ok(const uint8_t *msg, size_t len)
+{
+    if (len < KW_HEADER_LEN + 1) return 0;
+    uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
+                       (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
+    size_t off = KW_HEADER_LEN;
+    if ((version & KW_BLOCK_VERSION_AUXPOW) && !kw_auxpow_skip(msg, len, &off)) return 0;
+
+    int bad = 0;
+    uint64_t ntx = rd_varint(msg, len, &off, &bad);
+    if (bad || ntx == 0 || ntx > KW_BLOCK_MAX_TX || ntx > (uint64_t)(len - off)) return 0;
+
+    uint8_t (*h)[32] = (uint8_t (*)[32])malloc((size_t)ntx * 32);
+    if (!h) return 0;
+
+    size_t n = 0;
+    for (uint64_t i = 0; i < ntx; i++) {
+        size_t consumed = kw_tx_scan(msg + off, len - off, NULL, NULL, NULL, NULL);
+        if (!consumed) { free(h); return 0; }
+        kw_hash256(msg + off, consumed, h[n++]);
+        off += consumed;
+    }
+
+    while (n > 1) {
+        /* an identical adjacent pair means the tree could have been built from a
+           different list, so the root proves nothing about which one */
+        for (size_t i = 0; i + 1 < n; i += 2)
+            if (memcmp(h[i], h[i + 1], 32) == 0) { free(h); return 0; }
+        /* An odd node pairs with itself. Writing the copy into h[n] would be one past
+           the allocation when n is the transaction count, so it is read twice instead
+           of appended. */
+        size_t w = 0;
+        for (size_t i = 0; i < n; i += 2, w++) {
+            uint8_t cat[64];
+            memcpy(cat, h[i], 32);
+            memcpy(cat + 32, (i + 1 < n) ? h[i + 1] : h[i], 32);
+            kw_hash256(cat, 64, h[w]);
+        }
+        n = w;
+    }
+
+    int ok = memcmp(h[0], msg + 36, 32) == 0;             /* hashMerkleRoot */
+    free(h);
+    return ok;
+}
+
 int kw_block_scan(const uint8_t *msg, size_t len,
                   kw_utxoset *us, const kw_watchset *ws, uint32_t height)
 {
     if (len < KW_HEADER_LEN + 1) return 0;
+    if (!kw_block_merkle_ok(msg, len)) return 0;   /* the body its header commits to */
     uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
                        (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
     size_t off = KW_HEADER_LEN;
@@ -91,6 +144,9 @@ int kw_block_find_outpoint(const uint8_t *msg, size_t len,
                            const uint8_t txid[32], uint32_t vout, kw_outpoint_status *st)
 {
     if (len < KW_HEADER_LEN + 1) return 0;
+    /* This answer is what a merchant ships against, so the body has to be the one the
+       header commits to before any output in it is reported as present. */
+    if (!kw_block_merkle_ok(msg, len)) return 0;
     uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
                        (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
     size_t off = KW_HEADER_LEN;
@@ -128,6 +184,8 @@ int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
     /* the block we asked for, not some other one */
     kw_block_header hdr;
     if (!kw_block_header_parse(pl, pn, &hdr) || memcmp(hdr.hash, hash, 32) != 0) return 0;
+    /* and the body the header commits to, not any body behind a genuine header */
+    if (!kw_block_merkle_ok(pl, pn)) return 0;
     *payload = pl; *plen = pn;
     return 1;
 }

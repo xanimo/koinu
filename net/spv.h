@@ -29,6 +29,17 @@ size_t kw_msg_getdata_blocks_build(const uint8_t (*hashes)[32], size_t n,
 int kw_block_scan(const uint8_t *msg, size_t len,
                   kw_utxoset *us, const kw_watchset *ws, uint32_t height);
 
+/* 1 if the transactions in (msg) hash to the merkle root its own header carries.
+   Without this a peer serves a genuine header, which is bound to the checked chain by
+   its hash, and any body it likes behind it: the header commits to the transactions
+   and nothing was checking that it did.
+
+   Rejects a block whose tree has an identical adjacent pair at any level, which is
+   CVE-2012-2459: the odd-node duplication rule lets two different transaction lists
+   produce one root, so a valid block can be replayed as an invalid one with the same
+   hash. Returns 0 on a malformed body too. */
+int kw_block_merkle_ok(const uint8_t *msg, size_t len);
+
 /* Download one block by hash over (p) and verify it matches. On success returns
    1 with (payload)/(plen) pointing at peer-owned storage valid until the next
    recv. */

@@ -8,6 +8,7 @@
  * the coinbase output. */
 
 #include "spv.h"
+#include "sha2.h"
 #include "utxo.h"
 #include "tx.h"
 #include "testutil.h"
@@ -103,10 +104,21 @@ int main(void)
         size_t slen = kw_tx_serialize(&tx, spend, sizeof spend);
 
         uint8_t blk[2048]; size_t n = 0;
-        memset(blk, 0, KW_HEADER_LEN); n = KW_HEADER_LEN;   /* header ignored by scan */
+        memset(blk, 0, KW_HEADER_LEN); n = KW_HEADER_LEN;
         blk[n++] = 0x02;                                    /* two transactions */
         memcpy(blk + n, cb, cblen); n += cblen;
         memcpy(blk + n, spend, slen); n += slen;
+
+        /* The header has to commit to those two, because the scanner now refuses a
+           body that does not hash to the root above it. This fixture used to leave
+           the root zeroed, which is a block no node would serve. */
+        {
+            uint8_t t1[32], t2[32], cat[64];
+            kw_hash256(cb, cblen, t1);
+            kw_hash256(spend, slen, t2);
+            memcpy(cat, t1, 32); memcpy(cat + 32, t2, 32);
+            kw_hash256(cat, 64, blk + 36);
+        }
 
         kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
         kw_utxoset us; kw_utxoset_init(&us);
@@ -164,6 +176,104 @@ int main(void)
         free(blk);
     }
 
-    printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint\n");
+
+    /* A header commits to its transactions and nothing was checking that it did, so a
+       peer could serve a genuine header, bound to the verified chain by its hash, with
+       any body it liked behind it. That is not a wrong balance: kw outpoint is what a
+       merchant ships against, and a fabricated output reported as confirmed is goods
+       gone for a transaction that never existed. */
+    {
+        uint8_t spk2[25] = { 0x76, 0xa9, 0x14 };
+        memset(spk2 + 3, 0x42, 20);
+        spk2[23] = 0x88; spk2[24] = 0xac;
+
+        /* one invented transaction behind a header that commits to nothing */
+        uint8_t blk[512];
+        size_t n = 0;
+        memset(blk, 0, sizeof blk);
+        blk[0] = 1;
+        n = KW_HEADER_LEN;
+        blk[n++] = 1;
+        size_t txat = n;
+        kw_tx t;
+        kw_tx_init(&t);
+        kw_tx_add_input(&t, "00000000000000000000000000000000000000000000000000000000000000ff", 0);
+        uint8_t h20[20]; memset(h20, 0x42, 20);
+        kw_tx_add_output_p2pkh(&t, 500000000000ULL, h20);
+        size_t tl = kw_tx_serialize(&t, blk + n, sizeof blk - n);
+        if (!tl) { fprintf(stderr, "FAIL: could not build the fabricated tx\n"); return 1; }
+        n += tl;
+
+        kw_watchset w2; kw_watchset_init(&w2); kw_watchset_add(&w2, spk2, 25);
+        kw_utxoset u2; kw_utxoset_init(&u2);
+        if (kw_block_merkle_ok(blk, n)) { fprintf(stderr, "FAIL: a body its header does not commit to passed\n"); return 1; }
+        if (kw_block_scan(blk, n, &u2, &w2, 900)) { fprintf(stderr, "FAIL: the scanner took a fabricated body\n"); return 1; }
+        if (kw_utxoset_count(&u2) != 0) { fprintf(stderr, "FAIL: invented coins were credited\n"); return 1; }
+
+        uint8_t ftxid[32];
+        kw_hash256(blk + txat, tl, ftxid);
+        kw_outpoint_status fst;
+        memset(&fst, 0, sizeof fst);
+        if (kw_block_find_outpoint(blk, n, ftxid, 0, &fst) || fst.created)
+            { fprintf(stderr, "FAIL: a fabricated outpoint was reported as present\n"); return 1; }
+
+        /* and with the real root in place it is accepted, so the check is about the
+           commitment rather than about refusing everything */
+        kw_hash256(blk + txat, tl, blk + 36);
+        if (!kw_block_merkle_ok(blk, n)) { fprintf(stderr, "FAIL: an honest single-tx block was refused\n"); return 1; }
+
+        /* CVE-2012-2459. An odd level duplicates its last node, so [a,b,c] and
+           [a,b,c,c] hash to the same root: the second is a different transaction list
+           the header commits to just as well. Rejected on the repeated pair, since the
+           root cannot say which list it came from.
+
+           Built as three distinct transactions and then a fourth copying the third,
+           with the honest root in both headers. Comparing against a zeroed root would
+           pass for the wrong reason. */
+        {
+            uint8_t body[3][256];
+            size_t bl[3];
+            uint8_t roots[3][32];
+            for (int q = 0; q < 3; q++) {
+                kw_tx x;
+                kw_tx_init(&x);
+                kw_tx_add_input(&x, "00000000000000000000000000000000000000000000000000000000000000ff", (uint32_t)q);
+                kw_tx_add_output_p2pkh(&x, 1000000ULL + (uint64_t)q, h20);
+                bl[q] = kw_tx_serialize(&x, body[q], sizeof body[q]);
+                if (!bl[q]) { fprintf(stderr, "FAIL: build tx %d\n", q); return 1; }
+                kw_hash256(body[q], bl[q], roots[q]);
+            }
+            /* the honest root over three: H(H(ab) | H(cc)) */
+            uint8_t cat[64], ab[32], cc[32], honest[32];
+            memcpy(cat, roots[0], 32); memcpy(cat + 32, roots[1], 32);
+            kw_hash256(cat, 64, ab);
+            memcpy(cat, roots[2], 32); memcpy(cat + 32, roots[2], 32);
+            kw_hash256(cat, 64, cc);
+            memcpy(cat, ab, 32); memcpy(cat + 32, cc, 32);
+            kw_hash256(cat, 64, honest);
+
+            uint8_t three[1024], four[1024];
+            size_t t3 = KW_HEADER_LEN, t4 = KW_HEADER_LEN;
+            memset(three, 0, sizeof three); memset(four, 0, sizeof four);
+            three[0] = 1; four[0] = 1;
+            memcpy(three + 36, honest, 32);
+            memcpy(four + 36, honest, 32);
+            three[t3++] = 3;
+            four[t4++] = 4;
+            for (int q = 0; q < 3; q++) { memcpy(three + t3, body[q], bl[q]); t3 += bl[q]; }
+            for (int q = 0; q < 3; q++) { memcpy(four + t4, body[q], bl[q]); t4 += bl[q]; }
+            memcpy(four + t4, body[2], bl[2]); t4 += bl[2];      /* the last, again */
+
+            if (!kw_block_merkle_ok(three, t3))
+                { fprintf(stderr, "FAIL: the honest three-transaction block was refused\n"); return 1; }
+            if (kw_block_merkle_ok(four, t4))
+                { fprintf(stderr, "FAIL: a repeated last transaction hashed to the same root and passed\n"); return 1; }
+        }
+
+        kw_utxoset_free(&u2); kw_watchset_free(&w2);
+    }
+
+    printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
+           "  a body its header does not commit to refused, and a repeated last node with it\n");
     return 0;
 }
