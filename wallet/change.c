@@ -17,10 +17,12 @@ uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
 {
     if (!master || !cp) return 0;
 
+    /* Initialised before anything can skip it: the journal is optional, and a
+       short-circuit that left this struct untouched would hand kw_journal_free
+       whatever the stack held. */
     kw_journal j;
-    int have_j = 0;
-    if (journal && kw_journal_init(&j)) have_j = kw_journal_load(&j, journal);
-    if (!have_j) kw_journal_free(&j);
+    kw_journal_init(&j);
+    int have_j = journal && kw_journal_load(&j, journal);
 
     uint32_t pick = 0;
     for (int i = 0; i < n; i++) {
@@ -42,6 +44,6 @@ uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
         if (!used) { pick = (uint32_t)i; break; }
     }
 
-    if (have_j) kw_journal_free(&j);
+    kw_journal_free(&j);
     return pick;
 }

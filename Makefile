@@ -37,7 +37,7 @@ CORE_OBJ = $(CORE_SRC:.c=.o)
 LIB   = libkw.a
 TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
         test/test_pbkdf2 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
-        test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
+        test/test_change test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
         test/test_pow test/test_auxpow test/test_powq test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
         test/test_sighash test/test_utxo test/test_fee test/test_journal test/test_spv test/test_gcs test/test_cf test/test_cfstore
 
@@ -156,6 +156,9 @@ test/test_utxo: test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_fee: test/test_fee.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
+test/test_change: test/test_change.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/test_change.o $(LIB) $(SECP_LIB)
+
 test/test_journal: test/test_journal.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
@@ -269,6 +272,7 @@ check: $(TESTS) kw kwd kwui test/fakenode
 	./test/test_sighash
 	./test/test_utxo
 	./test/test_fee
+	./test/test_change
 	./test/test_journal
 	./test/test_spv
 	./test/test_gcs
