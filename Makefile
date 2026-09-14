@@ -156,7 +156,7 @@ test/test_utxo: test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 test/test_fee: test/test_fee.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB)
 
-test/test_change: test/test_change.o $(LIB)
+test/test_change: test/test_change.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/test_change.o $(LIB) $(SECP_LIB)
 
 test/test_journal: test/test_journal.o $(LIB)
@@ -207,7 +207,7 @@ net_auxpow: test/net_auxpow.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_auxpow.o $(LIB) $(SECP_LIB)
 
 # live handshake tool, built on demand, not part of `make check`
-test/fakenode: test/fakenode.o $(LIB)
+test/fakenode: test/fakenode.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/fakenode.o $(LIB) $(SECP_LIB)
 
 net_handshake: test/net_handshake.o $(LIB)
