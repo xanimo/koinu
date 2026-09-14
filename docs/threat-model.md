@@ -29,17 +29,37 @@ but not nothing: a peer that serves every filter and watches which blocks are
 requested learns something about the wallet's activity. Tor puts a different
 observer in that position rather than removing it.
 
+### What is verified
+
+**Work, above the last anchor.** Every header past the last checkpoint compiled
+into chainparams is checked: its nBits must be the value the retarget rule
+derives from the headers before it, not merely a value it claims, and its hash
+must be under that target. A merged-mined header is checked through its AuxPoW
+proof, so the parent block's work is what has to be there. `--validate-pow`
+moves the floor to height 1 and trusts no anchor, at the cost of hashing the
+whole chain. A header that fails stops the sync rather than being skipped.
+
+**A block against its header.** A block body is refused unless its transactions
+hash to the header's merkle root, and a tree level with an equal adjacent pair
+is refused with it, since an odd level repeats its last node and the root cannot
+then say which transaction list it came from (CVE-2012-2459). This is what
+stands between a peer and a fabricated payment: without it a peer can serve a
+genuine header with a body of its own invention.
+
+**The checkpointed range, by anchor linkage.** Below the last anchor the
+parallel download verifies that each segment links internally and ends on a hash
+compiled into chainparams, and no work is checked there. A block hash pins one
+chain, which is the stronger claim; work only proves energy was spent on some
+chain. The anchors are only as good as the release that carries them.
+
 ### Not verified
 
-**Proof of work is not checked.** Dogecoin is merged-mined, and koinu skips the
-AuxPoW blob rather than validating it. Nothing in koinu confirms that the chain
-it was served represents accumulated work.
-
-**The checkpointed header range is validated by anchor linkage.** The parallel
-download verifies that each segment links internally and ends on a hash compiled
-into chainparams. That makes a served chain match a known one; it does not make
-it the most-work chain, and the anchors are only as good as the release that
-carries them.
+**Nothing chooses between chains by work.** koinu syncs headers from one peer
+and takes the chain that peer serves. Every header in it must prove its work, so
+a chain of invented headers is refused, but a peer that withholds the tip, or
+serves a real fork with less work than the one it is hiding, is believed. There
+is no comparison against other peers because there is no second chain to compare
+against.
 
 **Filter commitments are anchored to the release, not to other peers.** Every
 filter is checked against that peer's cfheaders chain and the verified tip is
@@ -52,10 +72,12 @@ nodes to compare peers against each other, which is why this is an anchor table
 and not a quorum; the anchors are only as good as the release carrying them, and
 they were generated from one node's cfheaders rather than derived from blocks.
 
-The practical consequence: a peer that can serve a consistent false history can
-convince koinu a transaction confirmed when it did not. For a wallet spending
-its own coins this is a nuisance. For anything accepting payment on the strength
-of a confirmation, prefer a node you control, which is what `--node` is for.
+The practical consequence: a peer cannot invent a confirmation, since above the
+last anchor it would have to mine the headers and the body has to hash to the
+header. It can still withhold one, or serve a real fork that omits it, and
+nothing here compares that fork against a better one. For a wallet spending its
+own coins this is a nuisance. For anything accepting payment on the strength of
+a confirmation, prefer a node you control, which is what `--node` is for.
 
 ## Transactions
 
@@ -68,6 +90,11 @@ before assembling a spend, so a signature that would fail on chain is refused
 locally rather than broadcast. A psbt carrying fields koinu cannot represent is
 refused rather than parsed with those fields dropped, since a combiner that
 silently discards what it does not understand loses the other party's data.
+
+Change goes to the first address the utxo set and the journal agree is unused,
+and signing records it, so consecutive spends do not share one. That means
+signing the same spend twice gives two transactions differing in their change
+address; only one of them can confirm, since both spend the same coins.
 
 Not defended: a wrong destination. koinu will faithfully sign a spend to an
 address you did not mean to type.
