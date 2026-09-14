@@ -224,9 +224,13 @@ int kw_headerstore_load(kw_headerstore *s, const char *path)
         if (r == 0) break;                    /* clean end */
         if (r != KW_HEADER_LEN) { ok = 0; break; }
         if (v2) {
-            /* The stored hash skips 6M+ sha256d on load. Each record's hash is
-               checked by the next record's prev link; only the tip's is taken
-               on faith, like the rest of this local file. */
+            /* The stored hash skips 6M+ sha256d on load, seven seconds on the
+               machine this was written on. It is taken as given: the next
+               record's prev link is compared against it, but the raw bytes it
+               claims to be the hash of are never hashed, so both sides of that
+               comparison come out of the same file and an edited cache passes.
+               kw_sync_anchors_ok hashes the raw header at each checkpoint
+               height, which is what catches an edit where one matters. */
             if (fread(h.hash, 1, 32, f) != 32) { ok = 0; break; }
         } else {
             kw_hash256(h.raw, KW_HEADER_LEN, h.hash);

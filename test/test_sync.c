@@ -237,6 +237,21 @@ int main(void)
             { fprintf(stderr, "FAIL: a cache disagreeing with a pin was accepted\n"); return 1; }
         if (bad != 1) { fprintf(stderr, "FAIL: reported height %u, want 1\n", bad); return 1; }
 
+        /* A KWH2 record carries its own hash and the load believes it, so a store
+           whose raw bytes were edited while the stored hash was left alone still
+           links. The anchor check hashes the raw header, which is the only way
+           that store fails: comparing against the stored hash compares the file
+           with itself. */
+        anchored.checkpoints = good;
+        anchored.ncheckpoints = 2;
+        c.h[0].raw[76] ^= 0x01;                  /* the nonce, hash left as it was */
+        if (kw_sync_anchors_ok(&c, &anchored, &bad))
+            { fprintf(stderr, "FAIL: an edited header passed on its own stored hash\n"); return 1; }
+        if (bad != 1) { fprintf(stderr, "FAIL: reported height %u for the edit, want 1\n", bad); return 1; }
+        c.h[0].raw[76] ^= 0x01;
+        if (!kw_sync_anchors_ok(&c, &anchored, &bad))
+            { fprintf(stderr, "FAIL: undoing the edit did not restore the store\n"); return 1; }
+
         /* an anchor above the tip says nothing about what is below it */
         kw_checkpoint far[1] = { { 9999, B2_DISP } };
         anchored.checkpoints = far;
@@ -249,6 +264,6 @@ int main(void)
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
-       "  and a cached chain checked against the pins on load\n");
+       "  and a cached chain checked against the pins on load, by hashing it\n");
     return 0;
 }

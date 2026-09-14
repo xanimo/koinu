@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "sync.h"
+#include "sha2.h"
 #include "pow.h"
 #include "msg.h"
 #include "hex.h"
@@ -74,9 +75,15 @@ int kw_sync_anchors_ok(const kw_headerstore *s, const kw_chainparams *cp,
     for (size_t i = 0; i < cp->ncheckpoints; i++) {
         uint32_t h = cp->checkpoints[i].height;
         if (h == 0 || h > s->count) continue;          /* genesis is not stored */
-        uint8_t want[32];
+        /* Hashed here rather than compared against the record's stored hash. A
+           KWH2 cache carries the hash beside the header and the load trusts it,
+           so comparing a checkpoint against that compares the file with itself.
+           A few dozen anchors cost nothing; hashing all six million on load is
+           seven seconds, which is what the stored hash exists to avoid. */
+        uint8_t want[32], got[32];
+        kw_hash256(s->h[h - 1].raw, KW_HEADER_LEN, got);
         if (!unhex_rev(cp->checkpoints[i].hash, want) ||
-            memcmp(want, s->h[h - 1].hash, 32) != 0) {
+            memcmp(want, got, 32) != 0) {
             if (bad_height) *bad_height = h;
             return 0;
         }
