@@ -51,6 +51,21 @@ size_t kw_base58_encode(const uint8_t *in, size_t inlen, char *out, size_t outca
     return k;
 }
 
+/* The value of a base58 digit, or -1. Scans the whole alphabet with no branch and
+   no early exit rather than calling strchr or indexing a reverse table: this
+   decodes WIF, so the character looked up is key material, and neither where the
+   scan stops nor which table line it touches should depend on it. */
+static int b58_digit(char c)
+{
+    int v = -1;
+    for (int i = 0; i < 58; i++) {
+        unsigned d = (unsigned)((unsigned char)B58[i] ^ (unsigned char)c);
+        int eq = -(int)((d - 1u) >> 31);          /* -1 when equal, 0 otherwise */
+        v = (v & ~eq) | (i & eq);
+    }
+    return v;
+}
+
 int kw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen)
 {
     size_t inlen = strlen(in);
@@ -65,9 +80,8 @@ int kw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen
     memset(bytes, 0, size);
 
     for (size_t i = zeros; i < inlen; i++) {
-        const char *p = strchr(B58, in[i]);
-        if (!p || in[i] == '\0') return 0;
-        int carry = (int)(p - B58);
+        int carry = b58_digit(in[i]);
+        if (carry < 0) return 0;
         for (size_t j = size; j-- > 0; ) {
             carry += 58 * bytes[j];
             bytes[j] = (uint8_t)(carry % 256);
