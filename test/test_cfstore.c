@@ -51,6 +51,35 @@ static size_t mk_cfilter(uint8_t *out, const uint8_t bh[32], const uint8_t *f, s
     return 34 + flen;
 }
 
+/* the <path>.fh sidecar, written by hand: the tests need to damage it */
+static int fh_peek(const char *path, long *count)
+{
+    char fp[64]; snprintf(fp, sizeof fp, "%s.fh", path);
+    FILE *f = fopen(fp, "rb");
+    if (!f) return 0;
+    uint8_t b[44];
+    int ok = fread(b, 1, sizeof b, f) == sizeof b;
+    fclose(f);
+    if (!ok) return 0;
+    *count = 0;
+    for (int i = 0; i < 8; i++) *count |= (long)b[4 + i] << (8 * i);
+    return 1;
+}
+
+static int fh_poke(const char *path, long count, const uint8_t hdr[32])
+{
+    char fp[64]; snprintf(fp, sizeof fp, "%s.fh", path);
+    FILE *f = fopen(fp, "wb");
+    if (!f) return 0;
+    uint8_t b[44];
+    memcpy(b, "KWFH", 4);
+    for (int i = 0; i < 8; i++) b[4 + i] = (uint8_t)((uint64_t)count >> (8 * i));
+    memcpy(b + 12, hdr, 32);
+    int ok = fwrite(b, 1, sizeof b, f) == sizeof b;
+    fclose(f);
+    return ok;
+}
+
 /* one kw_cfstore_sync run against a preloaded socketpair peer */
 static long sync_round_cp(const kw_chainparams *cp, const kw_headerstore *s, const char *path,
                           const uint8_t *msgs, const size_t *lens, const char **cmds, int nmsg)
@@ -194,6 +223,36 @@ int main(void)
         if (sync_round(&s, sp, msgs, lens, cmds, 2) != -1) { fprintf(stderr, "FAIL: tampered filter accepted\n"); return 1; }
         if (kw_cfstore_count(sp) != 2) { fprintf(stderr, "FAIL: refused filter cached\n"); return 1; }
 
+        /* Without the sidecar the two cached filters are tied to nothing, so the sync
+           refuses rather than re-adopting whatever base the peer now offers. Deleting
+           it is the cheapest way to get trust-on-first-use back. */
+        snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
+        lens[0] = mk_cfheaders(msgs, h3.hash, chain2, hash3);
+        lens[1] = mk_cfilter(msgs + lens[0], h3.hash, f3, sizeof f3);
+        if (sync_round(&s, sp, msgs, lens, cmds, 2) != -1) {
+            fprintf(stderr, "FAIL: a cache with no sidecar was synced anyway\n"); return 1;
+        }
+
+        /* A sidecar behind the cache means the tail was never verified: it is dropped
+           and re-fetched. The rewritten sidecar is what shows the drop happened, since
+           a cache left at two entries would have returned early without asking. */
+        if (!fh_poke(sp, 1, chain1)) { fprintf(stderr, "FAIL: cannot write the sidecar\n"); return 1; }
+        lens[0] = mk_cfheaders(msgs, h2.hash, chain1, hash2);
+        lens[1] = mk_cfilter(msgs + lens[0], h2.hash, f2, sizeof f2);
+        {
+            kw_headerstore s2; kw_headerstore_init(&s2);
+            kw_headerstore_append(&s2, &h1);
+            kw_headerstore_append(&s2, &h2);
+            long r = sync_round(&s2, sp, msgs, lens, cmds, 2);
+            kw_headerstore_free(&s2);
+            if (r != 2) { fprintf(stderr, "FAIL: resync after the drop reported %ld\n", r); return 1; }
+        }
+        long back = 0;
+        if (!fh_peek(sp, &back) || back != 2) {
+            fprintf(stderr, "FAIL: the unverified tail was kept, sidecar still at %ld\n", back);
+            return 1;
+        }
+
         kw_headerstore_free(&s);
         remove(sp);
         snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
@@ -235,6 +294,6 @@ int main(void)
         snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused, filter-header anchor enforced\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched, filter-header anchor enforced\n");
     return 0;
 }

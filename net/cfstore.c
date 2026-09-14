@@ -8,6 +8,7 @@
 #include "sha2.h"
 
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,48 +51,7 @@ static int fh_save(const char *path, long count, const uint8_t hdr[32])
 
 static int  ensure_index(const char *path);
 static long index_count(const char *path);
-
-/* display (reversed) hex to internal order, as the checkpoint tables store it */
-static int unhex_rev(const char *hex, uint8_t out[32])
-{
-    for (int i = 0; i < 32; i++) {
-        int hi = -1, lo = -1;
-        char a = hex[2 * i], b = hex[2 * i + 1];
-        if (a >= '0' && a <= '9') hi = a - '0'; else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
-        else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
-        if (b >= '0' && b <= '9') lo = b - '0'; else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
-        else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
-        if (hi < 0 || lo < 0) return 0;
-        out[31 - i] = (uint8_t)((hi << 4) | lo);
-    }
-    return hex[64] == '\0';
-}
-
-/* The filter-header anchor at (height), or NULL. */
-static const kw_cfcheckpoint *cf_anchor_at(const kw_chainparams *cp, uint32_t height)
-{
-    if (!cp || !cp->cfcheckpoints) return NULL;
-    for (size_t i = 0; i < cp->ncfcheckpoints; i++)
-        if (cp->cfcheckpoints[i].height == height) return &cp->cfcheckpoints[i];
-    return NULL;
-}
-
-/* Compare the running chain against the anchor at (height), if there is one.
-   Returns 0 only on a real mismatch, so an absent or malformed anchor is not
-   treated as a failure of the peer. */
-static int cf_anchor_ok(const kw_chainparams *cp, uint32_t height, const uint8_t chain[32])
-{
-    const kw_cfcheckpoint *a = cf_anchor_at(cp, height);
-    uint8_t want[32];
-    if (!a || !unhex_rev(a->header, want)) return 1;
-    if (memcmp(chain, want, 32) == 0) {
-        if (kw_net_verbose) fprintf(stderr, "[cf] filter-header anchor %u matched\n", height);
-        return 1;
-    }
-    fprintf(stderr, "kw: filter-header anchor mismatch at height %u; "
-                    "this peer's filters are not the ones this release pins\n", height);
-    return 0;
-}
+static long index_offset(const char *path, size_t idx);
 
 static int wr_varint(FILE *f, uint64_t v)
 {
@@ -169,13 +129,37 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         have = index_count(path);
     }
     if (have < 0 || (size_t)have > s->count) return -1;      /* corrupt or ahead of headers */
-    if ((size_t)have == s->count) return (long)s->count;
 
-    /* resume the verified filter-header chain; a cache from before the sidecar
-       existed re-adopts the peer's chain at its tip (trust-on-first-use) */
+    /* Resume the verified filter-header chain. Cached filters on their own prove
+       nothing: the sidecar is what ties them to a chain this wallet checked, so a
+       cache with no sidecar is refused rather than adopted, and a cache reaching
+       past the sidecar has the unbacked tail dropped. Re-adopting either from the
+       peer would hand back the trust-on-first-use the sidecar exists to end. */
     uint8_t chain[32]; int have_chain = 0;
-    long fhc;
-    if (have > 0 && fh_load(path, &fhc, chain) && fhc == have) have_chain = 1;
+    long fhc = 0;
+    if (have > 0) {
+        if (!fh_load(path, &fhc, chain) || fhc < 0 || fhc > have) {
+            fprintf(stderr, "kw: %s.fh is missing or does not match %s, so those filters "
+                            "cannot be tied to a verified chain; delete both and sync again\n",
+                    path, path);
+            return -1;
+        }
+        if (fhc < have) {
+            long at = index_offset(path, (size_t)fhc);
+            char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
+            if (at < 4 || truncate(path, (off_t)at) != 0) {
+                fprintf(stderr, "kw: cannot drop the unverified tail of %s\n", path);
+                return -1;
+            }
+            remove(ip);                                  /* rebuilt against the new size */
+            fprintf(stderr, "kw: dropped %ld filters past the verified tip of %s\n",
+                    have - fhc, path);
+            have = fhc;
+            if (have > 0 && !ensure_index(path)) return -1;
+        }
+        have_chain = have > 0;
+    }
+    if ((size_t)have == s->count) return (long)s->count;
 
     uint8_t (*fh)[32] = (uint8_t (*)[32])malloc(1000 * 32);
     if (!fh) return -1;
@@ -194,7 +178,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         }
         /* prev is the chain at the block before this range, so an anchor there
            is checked before a single filter of the range is trusted */
-        if (s0 > 0 && !cf_anchor_ok(p->cp, base_height + (uint32_t)s0 - 1, prev)) { free(fh); return -1; }
+        if (s0 > 0 && !kw_cf_anchor_ok(p->cp, base_height + (uint32_t)s0 - 1, prev)) { free(fh); return -1; }
         memcpy(chain, prev, 32); have_chain = 1;
 
         uint8_t body[37];
@@ -223,7 +207,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                 free(fh); return -1;
             }
             kw_cf_header_step(fhash, chain, chain);
-            if (!cf_anchor_ok(p->cp, base_height + (uint32_t)k, chain)) { free(fh); return -1; }
+            if (!kw_cf_anchor_ok(p->cp, base_height + (uint32_t)k, chain)) { free(fh); return -1; }
 
             if (!kw_cfstore_append(path, bh, filt, flen)) { free(fh); return -1; }
         }
