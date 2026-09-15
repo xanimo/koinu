@@ -106,8 +106,9 @@ segment links internally and ends on its anchor. with no --node the peers come
 from the dns seeds, and connections migrate to whichever ones prove fastest. a
 cold mainnet header sync takes about two minutes.
 
-above the newest anchor a scan asks three peers instead of one, since that range
-is where a chain can differ. each is asked where its chain leaves the one already
+above the newest anchor a header sync asks three peers instead of one, since that
+range is where a chain can differ. every command that syncs headers does it the
+same way, outpoint included, which is the one a payment backend calls. each is asked where its chain leaves the one already
 held, each fork is synced and checked, and the one with the most work is kept,
 counting the cached chain as a candidate so a peer has to beat it. give --node
 more than once to choose the peers; one of them and there is nothing to compare,

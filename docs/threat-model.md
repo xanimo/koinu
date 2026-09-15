@@ -31,10 +31,13 @@ observer in that position rather than removing it.
 
 ### What is verified
 
-**Work, above the last anchor.** Every header past the last checkpoint compiled
-into chainparams is checked: its nBits must be the value the retarget rule
-derives from the headers before it, not merely a value it claims, and its hash
-must be under that target. A merged-mined header is checked through its AuxPoW
+**Work, above the last anchor, on every command that syncs headers.** Every header
+past the last checkpoint compiled into chainparams is checked: its nBits must be
+the value the retarget rule derives from the headers before it, not merely a value
+it claims, and its hash must be under that target. `scan`, `outpoint`, `sweep`,
+`height` and `cfcheckpoints` all sync through one function for this reason: until
+they did, `outpoint` ran no work check at all, which is the command a payment
+backend calls. A merged-mined header is checked through its AuxPoW
 proof, so the parent block's work is what has to be there. `--validate-pow`
 moves the floor to height 1 and trusts no anchor, at the cost of hashing the
 whole chain. A header that fails stops the sync rather than being skipped.
@@ -52,8 +55,8 @@ compiled into chainparams, and no work is checked there. A block hash pins one
 chain, which is the stronger claim; work only proves energy was spent on some
 chain. The anchors are only as good as the release that carries them.
 
-**The chain with the most work, among the peers asked.** `kw scan` opens up to
-three connections, asks each where its chain leaves the one already held, syncs
+**The chain with the most work, among the peers asked.** Any command that syncs
+headers opens up to three connections, asks each where its chain leaves the one already held, syncs
 each fork and keeps the heaviest, measured from the newest anchor. The chain
 already cached is one of the candidates, so a peer has to beat it rather than
 merely differ from it, and each candidate's work is checked by its own validator
