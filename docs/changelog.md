@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-15
+## What's Changed
+* auxpow: hash the parent coinbase's txid, not its wtxid
+  A merged-mined header was refused whenever the parent's coinbase carried a
+  witness, which litecoin's have since 2017. The txid in the parent's merkle tree
+  covers the transaction with the witness taken out; the check hashed the bytes as
+  they arrived, which is the wtxid, so the root never matched. About 2% of recent
+  mainnet headers, the first of them 67 blocks above the newest anchor, so every
+  command that syncs headers past an anchor died there reporting "does not prove
+  its work". No release that checks work could sync mainnet. Upgrade from 0.2.4.
+* chainparams: anchor 6375000
+* kw: exit 2 when a broadcast needs --yes
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.2.4...v0.2.5
+
 ## [0.2.4] - 2026-09-14
 ## What's Changed
 * kw: send decodes what it is about to broadcast

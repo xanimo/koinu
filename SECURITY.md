@@ -11,7 +11,7 @@ signs the release tags. Encrypt anything you would not put in a public issue.
 A source archive has no git history, so that claim cannot be checked from one. From a
 clone it can:
 
-    git tag -v v0.2.4
+    git tag -v v0.2.5
 
 which prints `Good signature` and the fingerprint above, or fails. Check it before
 trusting either the code or this address.
