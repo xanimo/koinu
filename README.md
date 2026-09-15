@@ -106,6 +106,13 @@ segment links internally and ends on its anchor. with no --node the peers come
 from the dns seeds, and connections migrate to whichever ones prove fastest. a
 cold mainnet header sync takes about two minutes.
 
+above the newest anchor a scan asks three peers instead of one, since that range
+is where a chain can differ. each is asked where its chain leaves the one already
+held, each fork is synced and checked, and the one with the most work is kept,
+counting the cached chain as a candidate so a peer has to beat it. give --node
+more than once to choose the peers; one of them and there is nothing to compare,
+which the run says rather than implies.
+
 ## kwui
 
 a terminal view of a wallet: the balance, and every derived address with what

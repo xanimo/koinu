@@ -52,14 +52,30 @@ compiled into chainparams, and no work is checked there. A block hash pins one
 chain, which is the stronger claim; work only proves energy was spent on some
 chain. The anchors are only as good as the release that carries them.
 
+**The chain with the most work, among the peers asked.** `kw scan` opens up to
+three connections, asks each where its chain leaves the one already held, syncs
+each fork and keeps the heaviest, measured from the newest anchor. The chain
+already cached is one of the candidates, so a peer has to beat it rather than
+merely differ from it, and each candidate's work is checked by its own validator
+pool so one peer's bad header cannot discard another's chain. A fork below an
+anchor is refused rather than weighed: a compiled-in hash names one chain, and no
+amount of work outweighs it.
+
 ### Not verified
 
-**Nothing chooses between chains by work.** koinu syncs headers from one peer
-and takes the chain that peer serves. Every header in it must prove its work, so
-a chain of invented headers is refused, but a peer that withholds the tip, or
-serves a real fork with less work than the one it is hiding, is believed. There
-is no comparison against other peers because there is no second chain to compare
-against.
+**Three peers is not the network.** Work is compared among the peers reached, not
+against the chain with the most work in existence. Three peers that agree can all
+be wrong, whether by collusion or because they are the same node behind different
+addresses, and a wallet given one `--node` compares nothing at all and says so.
+What this rules out is one peer quietly serving a lesser fork while a heavier one
+exists at another; it does not make the answer the network's answer.
+
+**Above the newest anchor only, and only that far back.** A reorganisation deeper
+than the newest anchor is refused rather than followed, which is the intended
+trade: the anchor is the stronger claim. More than 200000 headers above the newest
+anchor and the comparison is skipped as too expensive to buffer, with one peer used
+instead. Both mean a release whose anchors are stale defends less than a current
+one.
 
 **Filter commitments are anchored to the release, not to other peers.** Every
 filter is checked against that peer's cfheaders chain and the verified tip is
@@ -73,11 +89,12 @@ and not a quorum; the anchors are only as good as the release carrying them, and
 they were generated from one node's cfheaders rather than derived from blocks.
 
 The practical consequence: a peer cannot invent a confirmation, since above the
-last anchor it would have to mine the headers and the body has to hash to the
-header. It can still withhold one, or serve a real fork that omits it, and
-nothing here compares that fork against a better one. For a wallet spending its
-own coins this is a nuisance. For anything accepting payment on the strength of
-a confirmation, prefer a node you control, which is what `--node` is for.
+newest anchor it would have to mine the headers and the body has to hash to the
+header. It can withhold one, and a fork it serves is now weighed against what
+other peers serve rather than taken on its own, so withholding costs it the
+comparison unless every peer reached is in on it. For anything accepting payment
+on the strength of a confirmation, prefer a node you control, which is what
+`--node` is for, and pass it more than once.
 
 ## Transactions
 
