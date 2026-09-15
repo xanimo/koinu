@@ -403,6 +403,67 @@ static int peer_open(kw_peer *p, const kw_chainparams *cp, const char *host, int
     return 1;
 }
 
+/* Every header sync in this file goes through here. A command that synced headers
+   its own way would be a command whose guarantees differ from the ones the threat
+   model describes, which is how kw outpoint came to check no work at all while kw
+   scan checked all of it.
+
+   Two things happen: the work of everything above the newest anchor is checked,
+   and where more than one peer is reachable their chains are weighed and the
+   heaviest kept. (p) is the caller's peer and stays open; the extra connections
+   are opened and closed here. Returns what kw_sync_headers_best returned. */
+static long headers_sync(kw_headerstore *s, const kw_chainparams *cp, kw_peer *p,
+                         const char *node, int port, int tor, int validate_pow,
+                         const char *headers_path, int quiet)
+{
+    uint32_t pow_from = 1;
+    if (!validate_pow && cp->ncheckpoints)
+        pow_from = cp->checkpoints[cp->ncheckpoints - 1].height + 1;
+
+    kw_peer extra[KW_SCAN_HEADER_PEERS - 1];
+    kw_peer *hp[KW_SCAN_HEADER_PEERS];
+    int nhp = 0, nextra = 0;
+    hp[nhp++] = p;
+    for (int i = 0; i < g_nnodes && nhp < KW_SCAN_HEADER_PEERS; i++) {
+        if (g_nodes[i] == node || (node && !strcmp(g_nodes[i], node))) continue;
+        if (peer_open(&extra[nextra], cp, g_nodes[i], port, tor)) { hp[nhp++] = &extra[nextra]; nextra++; }
+    }
+
+    size_t was = s->count;
+    kw_chainsel_result cr;
+    long nh = kw_sync_headers_best(hp, nhp, s, cp, pow_from, &cr);
+    for (int i = 0; i < nextra; i++) kw_peer_close(&extra[i]);
+
+    if (cr.bad_height)
+        fprintf(stderr, "kw: header %u does not prove its work; that peer\'s chain was "
+                        "not used\n", cr.bad_height);
+    if (nh < 0) return -1;
+
+    /* Quiet means stdout, which a caller parses. What was checked still goes to
+       stderr: an operator running this has no other way to see that it happened. */
+    if (quiet) {
+        fprintf(stderr, "kw: checked the work of %llu header(s) from height %u, %d peer(s) asked\n",
+                (unsigned long long)cr.pow_checked, pow_from, cr.npeers);
+    } else {
+        printf("checked the work of %llu header(s) from height %u on %d thread(s)\n",
+               (unsigned long long)cr.pow_checked, pow_from, cr.threads);
+        if (nhp < 2)
+            printf("one peer, so nothing compared its chain against another\'s by work; "
+                   "pass --node twice for that\n");
+        else if (cr.winner < 0)
+            printf("asked %d peers, %d served a chain that verified, and none beat the one "
+                   "already held\n", cr.npeers, cr.ncandidates);
+        else
+            printf("asked %d peers, %d served a chain that verified, kept the heaviest\n",
+                   cr.npeers, cr.ncandidates);
+        if (cr.winner >= 0 && cr.fork_height < was)
+            printf("reorganised: dropped %zu header(s) above %u for a chain with more work\n",
+                   was - cr.fork_height, cr.fork_height);
+    }
+    if (headers_path && (nh > 0 || cr.fork_height < was)) kw_headerstore_save(s, headers_path);
+    return nh;
+}
+
 /* Init a header store, loading a cache from (path) if given so a sync resumes
    from the stored tip. A corrupt cache is ignored, not fatal. */
 /* A cache is a chain some peer served an earlier run, so it gets the same anchors the
@@ -663,50 +724,8 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     kw_headerstore s; headers_open(&s, cp, headers_path);
 
-    /* Work is checked from the last compiled-in anchor by default. Below one, a block
-       hash pins the chain already, which is the stronger claim: a hash names one
-       chain where work only proves energy was spent on some chain. --validate-pow
-       checks the whole thing and trusts no anchor. */
-    uint32_t pow_from = 1;
-    if (!validate_pow && cp->ncheckpoints)
-        pow_from = cp->checkpoints[cp->ncheckpoints - 1].height + 1;
-
-    /* Extra connections for the header phase only, so the chain with the most work
-       can be picked rather than whichever one the first peer served. They close
-       before the scan, which needs one peer and does not care which. */
-    kw_peer extra[KW_SCAN_HEADER_PEERS - 1];
-    kw_peer *hp[KW_SCAN_HEADER_PEERS];
-    int nhp = 0, nextra = 0;
-    hp[nhp++] = &p;
-    for (int i = 0; i < g_nnodes && nhp < KW_SCAN_HEADER_PEERS; i++) {
-        if (g_nodes[i] == node || (node && !strcmp(g_nodes[i], node))) continue;
-        if (peer_open(&extra[nextra], cp, g_nodes[i], port, tor)) { hp[nhp++] = &extra[nextra]; nextra++; }
-    }
-
-    size_t was = s.count;
-    kw_chainsel_result cr;
-    nh = kw_sync_headers_best(hp, nhp, &s, cp, pow_from, &cr);
-    for (int i = 0; i < nextra; i++) kw_peer_close(&extra[i]);
-
-    if (cr.bad_height)
-        fprintf(stderr, "kw: header %u does not prove its work; that peer's chain was "
-                        "not used\n", cr.bad_height);
+    nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
-    printf("checked the work of %llu header(s) from height %u on %d thread(s)\n",
-           (unsigned long long)cr.pow_checked, pow_from, cr.threads);
-    if (nhp < 2)
-        printf("one peer, so nothing compared its chain against another's by work; "
-               "pass --node twice for that\n");
-    else if (cr.winner < 0)
-        printf("asked %d peers, %d served a chain that verified, and none beat the one "
-               "already held\n", cr.npeers, cr.ncandidates);
-    else
-        printf("asked %d peers, %d served a chain that verified, kept the heaviest\n",
-               cr.npeers, cr.ncandidates);
-    if (cr.winner >= 0 && cr.fork_height < was)
-        printf("reorganised: dropped %zu header(s) above %u for a chain with more work\n",
-               was - cr.fork_height, cr.fork_height);
-    if (headers_path && (nh > 0 || cr.fork_height < was)) kw_headerstore_save(&s, headers_path);
 
     /* gap-limit: rescan with a growing range until `gap` unused addresses trail
        the highest used one. headers are synced once; only the scan repeats. */
@@ -1048,7 +1067,8 @@ static int wif_decode(const kw_chainparams *cp, const char *wif_arg, uint8_t sk[
 
 static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
                      const char *node, int port, int tor, int use_cf,
-                     const char *fee_arg, const char *feerate_arg, const char *maxfee_arg)
+                     const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
+                     int validate_pow)
 {
     if (!to_arg || !node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -1083,7 +1103,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
         kw_headerstore s; kw_headerstore_init(&s);
-        long nh = kw_sync_headers(&p, &s, cp);
+        long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, NULL, 0);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
         kw_utxoset_init(&us); have_us = 1;
         long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
@@ -1168,7 +1188,8 @@ out:
    the values it prints are only as good as the node they came from, so run it
    against a node whose blocks you trust. */
 static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int port, int tor,
-                             const char *headers_path, int peers, long spacing)
+                             const char *headers_path, int peers, long spacing,
+                             int validate_pow)
 {
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -1188,9 +1209,8 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
 
     headers_open(&s, cp, headers_path);
     {
-        long nh = kw_sync_headers(&p, &s, cp);
+        long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); goto out; }
-        if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
     }
     if (s.count == 0) { fprintf(stderr, "kw: no headers\n"); goto out; }
 
@@ -1237,7 +1257,7 @@ out:
 }
 
 static int cmd_height(const kw_chainparams *cp, const char *node, int port, int tor,
-                      const char *headers_path, int peers)
+                      const char *headers_path, int peers, int validate_pow)
 {
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
@@ -1252,9 +1272,8 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
         kw_headerstore s; headers_open(&s, cp, headers_path);
-        long nh = kw_sync_headers(&p, &s, cp);
+        long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
-        if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
         const kw_block_header *tip = kw_headerstore_tip(&s);
         char d[65] = "(none)";
         if (tip) { uint8_t r[32]; for (int i = 0; i < 32; i++) r[i] = tip->hash[31 - i]; kw_hex_encode(r, 32, d, sizeof d); }
@@ -1299,7 +1318,7 @@ static int outpoint_via_daemon(const char *sock, const char *watch, const char *
 static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const char *outpoint_arg,
                         const char *node, int port, int tor, int use_cf,
                         const char *headers_path, const char *filters_path, long since,
-                        const char *daemon_sock, int peers)
+                        const char *daemon_sock, int peers, int validate_pow)
 {
     if (daemon_sock) return outpoint_via_daemon(daemon_sock, watch_arg, outpoint_arg, since);
     if (!watch_arg || !outpoint_arg || !node) { usage(); return 2; }
@@ -1337,9 +1356,10 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
     kw_headerstore s; headers_open(&s, cp, headers_path);
-    long nh = kw_sync_headers(&p, &s, cp);
+    /* quiet: a caller parses this command's one line of stdout, so the sync reports
+       nothing there. A refusal still goes to stderr and the exit code. */
+    long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 1);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
-    if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);   /* only if it grew */
     tipheight = s.count;
 
     if (since >= 0) {
@@ -1870,10 +1890,10 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
-    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg);
-    else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers);
-    else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since);
-    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers);
+    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, validate_pow);
+    else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
+    else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
+    else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, wif_arg, vin, sigs, nsigs, finish);

@@ -92,5 +92,44 @@ $SCAN >/dev/null
 NJ3=$(awk 'END{print NR}' "$J")
 [ "$NJ3" = "3" ] || { echo "FAIL: a new receive did not append, journal has $NJ3" >&2; cat "$J" >&2; exit 1; }
 
+# kw outpoint is what a payment backend calls, and it had no live test at all. It
+# must find the outpoint the scan already found, and it must check work while doing
+# it: until today it synced headers with no validator pool, so it checked none.
+# the utxo file writes txids in internal order and --outpoint takes display order,
+# so this reverses the bytes. awk rather than tac, which macos does not have.
+# the outpoint has to be one the watched address owns: the file's order varies
+# between runs, so picking the first entry picks A1's about as often as A0's
+SPK0=$(./kw --regtest address $K --index 0 --spk)
+[ -n "$SPK0" ] || { echo "FAIL: no scriptPubKey for $A0" >&2; exit 1; }
+OP=$(awk -v spk="$SPK0" '!/^#/ && $5 == spk {s=$1; o="";
+          for (i = length(s) - 1; i > 0; i -= 2) o = o substr(s, i, 2);
+          print o ":" $2; exit}' "$U")
+case "$OP" in
+    ?*:?*) ;;
+    *) echo "FAIL: no outpoint in the utxo set" >&2; cat "$U" >&2; exit 1;;
+esac
+# outpoint reports its answer in the exit code (0 unspent, 3 spent, 4 not seen),
+# so set -e has to be off around it or the script dies on the answer
+set +e
+OPOUT=$(./kw --regtest outpoint --watch "$A0" --outpoint "$OP" \
+        --node 127.0.0.1 --port $P2P --spv --headers "$D/h" 2>"$D/operr")
+OPRC=$?
+set -e
+[ "$OPRC" = "0" ] || { echo "FAIL: outpoint exited $OPRC for one the scan found" >&2;
+    echo "$OPOUT" >&2; cat "$D/operr" >&2; exit 1; }
+case "$OPOUT" in
+    "unspent height "*) ;;
+    *) echo "FAIL: outpoint said '$OPOUT'" >&2; cat "$D/operr" >&2; exit 1;;
+esac
+# stdout stays one parseable line, so the work report has to be on stderr
+grep -q "checked the work of" "$D/operr" || {
+    echo "FAIL: outpoint did not report checking any work" >&2; cat "$D/operr" >&2; exit 1; }
+CHK=$(awk '/checked the work of/{print $6}' "$D/operr")
+[ "$CHK" -gt 100 ] || { echo "FAIL: outpoint checked $CHK headers, want the whole chain" >&2;
+    cat "$D/operr" >&2; exit 1; }
+echo "$OPOUT" | grep -q "checked the work" && {
+    echo "FAIL: the work report landed on stdout, which callers parse" >&2; exit 1; }
+
 echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
-echo "  journaled with heights, a rescan adds nothing, and a later payment appends"
+echo "  journaled with heights, a rescan adds nothing, a later payment appends, and"
+echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable"
