@@ -69,7 +69,7 @@ assuming: the point is that the tail is known, not that the file changed.
 
 Nothing is tagged until all of these pass on the commit being tagged:
 
-    make check          39/39 suites
+    make check          43/43 suites
     make asan           exit 0, not just quiet output
     make tsan           the validator pool and the parallel header sync
     make fuzz-asan      the parsers under the sanitizers

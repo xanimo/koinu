@@ -1,9 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.2.4] - 2026-09-14
 ## What's Changed
 * kw: send decodes what it is about to broadcast
 * sync: a header must carry the difficulty the chain demands of it
+* sha2: the x86 core has been run on hardware that has the instruction
 * make asan: put the tree back in release shape when it passes
 * test: the sighash against 322 spends the network already accepted
 * bip32: propagate the failure a void return was throwing away
@@ -17,9 +20,39 @@
   larger --gap rather than being watched short. Deriving costs 0.24s at --gap 20,
   0.88s at 500 and 6.8s at 5000. sweep needs --wif @FILE to re-read the key after
   the peer is closed.
-* SECURITY.md: where to send a bug that costs money
 * sync: check the anchors on the default path, not only the parallel one
 * sync: check a cached chain against the anchors when it is loaded
+* spv: check the body against the header's merkle root
+  A block body was never checked against the header's merkle root, so a peer could
+  answer with the header asked for and a body of its own invention: a fabricated
+  transaction paying a watched address credited 500000000000 koinu, and
+  kw_block_find_outpoint reported the made-up outpoint as unspent. A level with an
+  equal adjacent pair is refused with it (CVE-2012-2459). Anything pinning koinu as
+  a confirmation backend wants this release or later.
+* cf: enforce the filter-header anchors on the uncached path too
+* cfstore: refuse a filter cache the sidecar does not cover
+* kw: bound the peer's fee floor, rotate change, refuse extra inputs
+* wallet: rotate change by one rule both front ends use
+* kwd: bound a client's read, close the socket-mode window, redial the peer
+* sync: hash the raw header at each anchor, not the cache's own hash
+* base58: look a digit up without a branch or a table
+* spv: build each block's merkle tree once, not twice
+* change: initialise the journal before anything can skip it
+* docs: the threat model described an older program
+* build: make the two new link rules depend on secp, not just link it
+* build: say what to do when the submodule is missing
+* sync: a real locator, a work sum, and a store that can roll back
+* chainsel: keep the chain with the most work, not the first one served
+* kw: ask three peers for headers and keep the heaviest chain
+* docs: record what weighing several peers' chains does and does not do
+* kw: one header sync for every command, so outpoint checks work too
+  outpoint, sweep, height and cfcheckpoints synced headers with no validator pool,
+  so they checked no work at all while scan checked every header above the newest
+  anchor. outpoint is the command a payment backend calls. All five share one sync
+  now, and outpoint has a live test for the first time.
+* docs: the work check is per command, and it was not
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.2.3...v0.2.4
 
 ## [0.2.3] - 2026-09-11
 ## What's Changed
