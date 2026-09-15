@@ -1526,13 +1526,15 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
     if (!show_tx(cp, raw, rawlen, txidhex)) return 1;
 
     /* --tx - has already eaten stdin, and a pipe cannot answer, so a script has to
-       say --yes rather than have the prompt silently skipped for it */
+       say --yes rather than have the prompt silently skipped for it. Exits 2, the
+       usage code: a caller reads the code, and a missing flag is not the same
+       answer as a node that refused the transaction. */
     if (!assume_yes) {
         int from_stdin = (tx_arg[0] == '-' && tx_arg[1] == '\0');
         if (from_stdin || !isatty(STDIN_FILENO)) {
             fprintf(stderr, "kw: refusing to broadcast without a confirmation; "
                             "pass --yes\n");
-            return 1;
+            return 2;
         }
         printf("broadcast to %s:%d? type yes: ", node, port);
         fflush(stdout);

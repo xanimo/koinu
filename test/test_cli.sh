@@ -98,6 +98,14 @@ CH2=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
 
 rm -f "$WORK/ks.utxos"
 
+# a non-interactive broadcast without --yes exits 2, not 1: a caller reads the code
+# and "you forgot a flag" is not the same answer as "the node rejected it"
+set +e
+echo "$RAW1" | ./kw --regtest send --tx - --node 127.0.0.1 >/dev/null 2>&1
+SRC=$?
+set -e
+[ "$SRC" = "2" ] || { echo "FAIL: send without --yes exited $SRC, want 2" >&2; exit 1; }
+
 # more --input than a transaction may carry is an error, not a silent drop: a
 # dropped input funds less than was asked for and the change output absorbs it
 MANY=""
@@ -231,4 +239,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"

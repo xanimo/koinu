@@ -5,6 +5,10 @@
 ## [0.2.4] - 2026-09-14
 ## What's Changed
 * kw: send decodes what it is about to broadcast
+  Breaking for anything driving send non-interactively: it prints the destination,
+  amount and fee and then asks for confirmation, and a caller whose stdin is not a
+  terminal has to pass --yes or the broadcast is refused. It exits 2 for that, so a
+  caller can tell a missing flag from a node that rejected the transaction.
 * sync: a header must carry the difficulty the chain demands of it
 * sha2: the x86 core has been run on hardware that has the instruction
 * make asan: put the tree back in release shape when it passes
