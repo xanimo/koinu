@@ -68,6 +68,12 @@ int  kw_headerstore_init(kw_headerstore *s);
    equal to the tip's hash. Returns 1 on success, 0 if it does not connect. */
 int  kw_headerstore_append(kw_headerstore *s, const kw_block_header *h);
 const kw_block_header *kw_headerstore_tip(const kw_headerstore *s);
+
+/* Drop everything above height (n), keeping the allocation. Append-only is the
+   rule for what a peer serves; rolling back to a fork point and adopting a
+   better chain is the one thing that has to be able to undo it. */
+void kw_headerstore_truncate(kw_headerstore *s, size_t n);
+
 void kw_headerstore_free(kw_headerstore *s);
 
 /* One KWH2 cache record: the 80 raw bytes then the 32-byte hash. A record for

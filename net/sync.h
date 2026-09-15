@@ -9,6 +9,7 @@
 #include "headers.h"
 #include "chainparams.h"
 #include "powq.h"
+#include "pow.h"
 
 /* When nonzero, the sync drivers print progress to stderr. Off by default. */
 extern int kw_net_verbose;
@@ -30,6 +31,29 @@ long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp);
    trust nothing. The verdict comes from kw_powq_finish, not from here. */
 long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp,
                              kw_powq *q, uint32_t from_height);
+
+/* The most locator hashes kw_sync_locator writes. Ten single steps back from the
+   tip, then doubling, plus the newest anchor and genesis. */
+#define KW_SYNC_LOCATOR_MAX 40
+
+/* Build a getheaders locator from (s): the tip, the nine below it, then back in
+   doubling steps, ending at the newest anchor at or below the tip and genesis.
+   Returns how many were written.
+
+   A one-hash locator only works when the peer is on the same chain as us. A peer
+   on a fork does not recognise our tip and answers with nothing, so a chain with
+   more work is invisible; it answers from the first hash it does recognise, which
+   is what makes the fork point findable. */
+size_t kw_sync_locator(const kw_headerstore *s, const kw_chainparams *cp,
+                       uint8_t (*out)[32], size_t max);
+
+/* The accumulated work of the headers at heights (from, to], added into (out),
+   which is not zeroed first. Returns 1, or 0 if the range is not in the store.
+
+   Summed rather than compared header by header: two chains can differ in both
+   length and difficulty, and only the total says which one cost more to build. */
+int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
+                      kw_u256 *out);
 
 /* Is (bits) the nBits the chain's own retarget rule demands at (height)? The rule is
    in net/pow.c and needs two timestamps from arbitrary earlier heights, which is why

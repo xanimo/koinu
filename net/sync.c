@@ -49,6 +49,53 @@ static size_t cp_from(const kw_chainparams *cp, uint32_t height)
     return i;
 }
 
+size_t kw_sync_locator(const kw_headerstore *s, const kw_chainparams *cp,
+                       uint8_t (*out)[32], size_t max)
+{
+    if (!s || !cp || !out || !max) return 0;
+
+    size_t n = 0;
+    /* heights, not indices: height h sits at s->h[h - 1] */
+    uint32_t h = (uint32_t)s->count;
+    uint32_t step = 1;
+    for (int taken = 0; h >= 1 && n < max; taken++) {
+        memcpy(out[n++], s->h[h - 1].hash, 32);
+        if (taken >= 9) step *= 2;                  /* ten singles, then doubling */
+        if (h <= step) break;
+        h -= step;
+    }
+
+    /* The newest anchor at or below the tip, so a peer whose fork is deep still
+       gets one hash it must recognise, and genesis, which every peer knows. */
+    for (size_t i = cp->ncheckpoints; i-- > 0 && n < max; ) {
+        uint32_t ch = cp->checkpoints[i].height;
+        if (ch == 0 || ch > s->count) continue;
+        if (!unhex_rev(cp->checkpoints[i].hash, out[n])) break;
+        n++;
+        break;
+    }
+    if (n < max) {
+        uint8_t disp[32];
+        if (kw_hex_decode(cp->genesis, 64, disp, 32)) {
+            for (int i = 0; i < 32; i++) out[n][i] = disp[31 - i];
+            n++;
+        }
+    }
+    return n;
+}
+
+int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
+                      kw_u256 *out)
+{
+    if (!s || !out || to < from || to > s->count) return 0;
+    for (uint32_t h = from + 1; h <= to; h++) {
+        kw_u256 w;
+        if (!kw_bits_work(kw_header_bits(s->h[h - 1].raw), &w)) return 0;
+        if (kw_u256_add(out, &w)) return 0;         /* wrapped: not a real chain */
+    }
+    return 1;
+}
+
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits)
 {

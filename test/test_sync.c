@@ -199,6 +199,88 @@ int main(void)
     }
 
 
+    /* The locator and the work sum, which is what choosing between chains needs. A
+       synthetic chain is enough: neither reads anything but hashes and nBits. */
+    {
+        kw_headerstore c;
+        if (!kw_headerstore_init(&c)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+        uint8_t raw[80];
+        memset(raw, 0, 80);
+        raw[0] = 1;
+        raw[72] = 0xff; raw[73] = 0xff; raw[74] = 0x00; raw[75] = 0x1d;   /* nBits */
+        kw_block_header prev;
+        kw_block_header_parse(raw, 80, &prev);
+        if (!kw_headerstore_append(&c, &prev)) { fprintf(stderr, "FAIL: seed\n"); return 1; }
+        for (int i = 2; i <= 40; i++) {
+            memcpy(raw + 4, prev.hash, 32);
+            raw[68] = (uint8_t)i;                    /* vary the nonce so hashes differ */
+            kw_block_header h;
+            kw_block_header_parse(raw, 80, &h);
+            if (!kw_headerstore_append(&c, &h)) { fprintf(stderr, "FAIL: append %d\n", i); return 1; }
+            prev = h;
+        }
+
+        /* ten singles then doubling: 40,39..32, then 30,26,18,2, then genesis. The
+           tip comes first, every hash is one the store holds, and none repeat. */
+        uint8_t loc[KW_SYNC_LOCATOR_MAX][32];
+        kw_chainparams plain = KW_DOGE_REGTEST;
+        plain.checkpoints = NULL; plain.ncheckpoints = 0;
+        size_t nloc = kw_sync_locator(&c, &plain, loc, KW_SYNC_LOCATOR_MAX);
+        if (nloc < 12 || nloc > KW_SYNC_LOCATOR_MAX)
+            { fprintf(stderr, "FAIL: locator has %zu hashes\n", nloc); return 1; }
+        if (memcmp(loc[0], c.h[39].hash, 32) != 0)
+            { fprintf(stderr, "FAIL: locator does not start at the tip\n"); return 1; }
+        for (size_t i = 0; i + 1 < nloc; i++)
+            for (size_t j = i + 1; j < nloc; j++)
+                if (memcmp(loc[i], loc[j], 32) == 0)
+                    { fprintf(stderr, "FAIL: locator repeats hash %zu\n", i); return 1; }
+        /* every entry but genesis is a header the store holds, newest first */
+        for (size_t i = 0; i + 1 < nloc; i++) {
+            int found = 0;
+            for (size_t k = 0; k < c.count && !found; k++)
+                if (memcmp(loc[i], c.h[k].hash, 32) == 0) found = 1;
+            if (!found) { fprintf(stderr, "FAIL: locator hash %zu is not in the store\n", i); return 1; }
+        }
+
+        /* work adds up over a range and is zero over an empty one */
+        kw_u256 w10, w20, none;
+        kw_u256_zero(&w10); kw_u256_zero(&w20); kw_u256_zero(&none);
+        if (!kw_sync_chainwork(&c, 0, 10, &w10) || !kw_sync_chainwork(&c, 0, 20, &w20))
+            { fprintf(stderr, "FAIL: chainwork refused a range it holds\n"); return 1; }
+        if (!kw_sync_chainwork(&c, 5, 5, &none) || !kw_u256_is_zero(&none))
+            { fprintf(stderr, "FAIL: an empty range is not zero work\n"); return 1; }
+        if (kw_u256_cmp(&w20, &w10) <= 0)
+            { fprintf(stderr, "FAIL: twenty headers are not more work than ten\n"); return 1; }
+        if (kw_sync_chainwork(&c, 0, 41, &w10))
+            { fprintf(stderr, "FAIL: chainwork accepted a range past the tip\n"); return 1; }
+
+        /* a harder chain beats a longer easy one, which is the whole point */
+        kw_headerstore d;
+        if (!kw_headerstore_init(&d)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+        memset(raw, 0, 80);
+        raw[0] = 1;
+        raw[72] = 0xff; raw[73] = 0xff; raw[74] = 0x00; raw[75] = 0x1c;   /* 256x harder */
+        kw_block_header hd;
+        kw_block_header_parse(raw, 80, &hd);
+        if (!kw_headerstore_append(&d, &hd)) { fprintf(stderr, "FAIL: seed hard\n"); return 1; }
+        kw_u256 hard;
+        kw_u256_zero(&hard);
+        if (!kw_sync_chainwork(&d, 0, 1, &hard))
+            { fprintf(stderr, "FAIL: chainwork on the hard chain\n"); return 1; }
+        if (kw_u256_cmp(&hard, &w20) <= 0)
+            { fprintf(stderr, "FAIL: one hard header does not outweigh twenty easy ones\n"); return 1; }
+
+        /* and truncation is what adopting one costs */
+        kw_headerstore_truncate(&c, 10);
+        if (c.count != 10 || memcmp(kw_headerstore_tip(&c)->hash, c.h[9].hash, 32) != 0)
+            { fprintf(stderr, "FAIL: truncate left %zu\n", c.count); return 1; }
+        kw_headerstore_truncate(&c, 99);
+        if (c.count != 10) { fprintf(stderr, "FAIL: truncate grew the store\n"); return 1; }
+
+        kw_headerstore_free(&c);
+        kw_headerstore_free(&d);
+    }
+
     /* A cache is a chain a peer served an earlier run, and the live sync only checks
        heights it downloads itself, which a cache is by definition not. So the anchors
        are applied on load too: a store that disagrees with a pin below its tip is
@@ -264,6 +346,6 @@ int main(void)
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
-       "  and a cached chain checked against the pins on load, by hashing it\n");
+       "  a cached chain checked against the pins on load by hashing it,\n  and a locator, a work sum and a rollback to choose between chains with\n");
     return 0;
 }

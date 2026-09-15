@@ -151,6 +151,11 @@ const kw_block_header *kw_headerstore_tip(const kw_headerstore *s)
     return s->count ? &s->h[s->count - 1] : NULL;
 }
 
+void kw_headerstore_truncate(kw_headerstore *s, size_t n)
+{
+    if (s && n < s->count) s->count = n;
+}
+
 void kw_headerstore_free(kw_headerstore *s)
 {
     free(s->h);
