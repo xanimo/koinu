@@ -267,18 +267,51 @@ static const char b6000000[] =
     "120f192791dbc430a96a4a3150abf77282cd423f63a81551dd25a382528adfe3cd1cf431"
     "941923ca22173e69245b25193b95b054";
 
+/* 6350067, whose parent coinbase carries a witness. Every litecoin block since
+   2017 does, and no fixture here did before: the txid in the parent's merkle tree
+   is hashed over the transaction with the witness taken out, and hashing the bytes
+   as they arrive gives the wtxid instead. */
+static const char b6350067[] =
+    "04016200d297b1959fd937b90213159b968476ec7294bcf105457af288a273e2"
+    "6ad5b7d092ae68b16aada6bd74396ce7f97397732cfe18a65f947563d810bcf7"
+    "09cfcc2b5ad2906a914375190000000002000000000101000000000000000000"
+    "0000000000000000000000000000000000000000000000ffffffff4803675530"
+    "045ad2906a08656d63645f5233302cfabe6d6dc6f023dbf44cd49f8cadf794d4"
+    "92bd922fb9c9b85dc2fd904904415dd29f99422000000000000000080000b665"
+    "720100000000000002c887432500000000160014a0210a92fdaef52ea18f0c8f"
+    "db9246a751617b520000000000000000266a24aa21a9ed780b1055ac2738f29d"
+    "26238414fb375a1104bcdced95db883a525f476ca97f47012000000000000000"
+    "00000000000000000000000000000000000000000000000000000000002d72bb"
+    "e164be1617b2d95be923288fb19f78dbb974970bf0c0046c64c0825eb407fcfe"
+    "95272909afb1eeaaa29ec6336a095ab698faa3e62288f3ac30a43ac0f32d0eca"
+    "b9d70b7b1d60622e4ebc9e953cd89834aa379f52affc2059dd7427d7b2ecb871"
+    "0d42c876cc8eb5f5864095ca276ac3263b19207701d1222ed9754f618aea4aeb"
+    "4d9623b46a6e990612a0f3062606a2e0cf704664e55fa1581de5f1bcb21a02a7"
+    "0d261fc2b7b73a1b0dcccfb55cb4ea552da80398866e51de39de5dee6be42115"
+    "e08c1787706495556dfbd8c5bfd38badf24272fe59fc010d8509a391fcf8dfd4"
+    "a97ae782e12eb916f94350a367875a92a76a6e26215218ade13d17395e550000"
+    "0000050000000000000000000000000000000000000000000000000000000000"
+    "000000e2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd83697"
+    "4e8cf9fdf847b5dc6d891bb776d6e14c6f6c8a917d23cfc802b2fbee657d9c5f"
+    "8f138dd4f12ac4c750a2a5fa4eed622b4d34b180768674d7618f9e6a8a55067e"
+    "eff524380a3ac1b57415068aae1a70ea4a36ae75db9860134e56a830c5c57670"
+    "88420a1800000000000020b74fe8cd4076f798b2b0dd3bcf8a8c3541b419d77b"
+    "19d8b0f9ef640b35c90c729c82598c8d418a77167e06c104fd0f1f825f7d4c2f"
+    "2c276acc071542f621b8ce34d2906a657b2f1920d09c9e";
+
 /* Real proofs, fetched from a peer with test/net_auxpow.c. Each is the block's
    80-byte header followed by its AuxPoW blob and nothing else, so the test derives
    the hash and the target from the same bytes a peer sent. Chosen for their shapes:
-   the first merged-mined block, one whose branches are both empty, and one sitting
-   in slot 56 of a 128-leaf tree, which is the only real check there is of the slot
-   derivation. */
+   the first merged-mined block, one whose branches are both empty, one sitting in
+   slot 56 of a 128-leaf tree, which is the only real check there is of the slot
+   derivation, and one whose parent coinbase carries a witness. */
 static void real_proofs(void)
 {
     static const struct { const char *what; const char *hex; } real[] = {
         { "371337, the first merged-mined block", b371337 },
         { "400000, both branches empty",          b400000 },
-        { "6000000, slot 56 of 128 leaves",       b6000000 }
+        { "6000000, slot 56 of 128 leaves",       b6000000 },
+        { "6350067, segwit parent coinbase",      b6350067 }
     };
 
     for (size_t i = 0; i < sizeof real / sizeof *real; i++) {
@@ -399,7 +432,7 @@ int main(void)
     }
 
     if (fail) return 1;
-    printf("auxpow ok: 3 real mainnet proofs verify and fail with one bit of the parent\n"
+    printf("auxpow ok: 4 real mainnet proofs verify and fail with one bit of the parent\n"
            "  moved, none meets its own target, and 9 tampers on a built proof plus\n"
            "  truncation and an impossible target are refused\n");
     return 0;

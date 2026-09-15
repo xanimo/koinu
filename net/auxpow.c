@@ -75,9 +75,11 @@ static void r_tx(R *r, kw_auxpow *ap)
     r_skip(r, 4);                                   /* version */
     uint64_t nin = r_varint(r);
     int segwit = 0;
+    size_t vin_start = start + 4;
     if (nin == 0) {                                 /* marker, flag, then the real vin */
         r_skip(r, 1);
         segwit = 1;
+        vin_start = r->off;                         /* the txid covers neither */
         nin = r_varint(r);
     }
     for (uint64_t i = 0; i < nin && !r->bad; i++) {
@@ -92,15 +94,26 @@ static void r_tx(R *r, kw_auxpow *ap)
         r_skip(r, 8);                               /* value */
         r_skip(r, r_varint(r));                     /* scriptPubKey */
     }
+    size_t vout_end = r->off;
     if (segwit)
         for (uint64_t i = 0; i < nin && !r->bad; i++) {
             uint64_t items = r_varint(r);
             for (uint64_t j = 0; j < items && !r->bad; j++) r_skip(r, r_varint(r));
         }
+    size_t lock_start = r->off;
     r_skip(r, 4);                                   /* locktime */
     if (ap && !r->bad) {
         ap->coinbase = r->p + start;
         ap->coinbase_len = r->off - start;
+        if (segwit) {
+            ap->strip[0].p = r->p + start;          ap->strip[0].len = 4;
+            ap->strip[1].p = r->p + vin_start;      ap->strip[1].len = vout_end - vin_start;
+            ap->strip[2].p = r->p + lock_start;     ap->strip[2].len = 4;
+            ap->nstrip = 3;
+        } else {
+            ap->strip[0].p = r->p + start;          ap->strip[0].len = r->off - start;
+            ap->nstrip = 1;
+        }
     }
 }
 
@@ -202,9 +215,18 @@ int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
     uint8_t want[32];
     for (int i = 0; i < 32; i++) want[i] = root[31 - i];
 
-    /* and the coinbase has to be in the parent's own merkle tree */
+    /* and the coinbase has to be in the parent's own merkle tree, under its txid.
+       Hashing the bytes as they arrived gives the wtxid when the parent chain has
+       segwit, which is every litecoin block since 2017: the merkle root then never
+       matches and the proof is refused for a reason that has nothing to do with it. */
     uint8_t cb[32];
-    sha256d(ap->coinbase, ap->coinbase_len, cb);
+    if (ap->nstrip < 1) return 0;
+    kw_sha256_ctx sc;
+    uint8_t once[32];
+    kw_sha256_init(&sc);
+    for (int i = 0; i < ap->nstrip; i++) kw_sha256_update(&sc, ap->strip[i].p, ap->strip[i].len);
+    kw_sha256_final(&sc, once);
+    kw_sha256(once, 32, cb);
     merkle_up(cb, ap->merkle, ap->nmerkle, (uint32_t)ap->index);
     if (memcmp(cb, ap->parent + 36, 32) != 0) return 0;   /* parent hashMerkleRoot */
 

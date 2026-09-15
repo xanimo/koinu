@@ -39,6 +39,15 @@
 typedef struct {
     const uint8_t *coinbase;    /* the parent's coinbase transaction, as serialised */
     size_t         coinbase_len;
+
+    /* The same transaction with the witness taken out, which is what its txid is
+       hashed over and so what the parent's merkle tree holds. A segwit coinbase
+       serialises as version, marker, flag, vin, vout, witness, locktime, and the
+       txid covers version, vin, vout and locktime only. Held as the runs of bytes
+       that make that up, so hashing it copies nothing: one run without a witness,
+       three with. */
+    struct { const uint8_t *p; size_t len; } strip[3];
+    int nstrip;
     const uint8_t *script;      /* its first input's scriptSig, where the tag lives */
     size_t         script_len;
 

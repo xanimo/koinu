@@ -216,6 +216,9 @@ net_multisig: test/net_multisig.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_multisig.o $(LIB) $(SECP_LIB)
 
 # fetches a block and checks its merged-mining proof against a real peer
+net_powtail: test/net_powtail.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ test/net_powtail.o $(LIB) $(SECP_LIB)
+
 net_auxpow: test/net_auxpow.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) -o $@ test/net_auxpow.o $(LIB) $(SECP_LIB)
 
@@ -346,7 +349,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow net_powtail pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
