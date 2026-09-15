@@ -56,6 +56,11 @@ BAL=$(echo "$OUT" | awk '/^scanned/{print $7}')
 CHECKED=$(echo "$OUT" | awk '/^checked the work/{print $5}')
 [ "$CHECKED" = "104" ] || { echo "FAIL: checked $CHECKED headers, want 104" >&2; echo "$OUT" >&2; exit 1; }
 
+# one --node means there is no second chain to weigh, and the run has to say so
+# rather than imply it picked the heaviest of several
+echo "$OUT" | grep -q "one peer, so nothing compared" || {
+    echo "FAIL: a single-peer sync did not say it compared nothing" >&2; echo "$OUT" >&2; exit 1; }
+
 NU=$(awk '!/^#/{n++} END{print n+0}' "$U")   # the file carries a header line
 [ "$NU" = "2" ] || { echo "FAIL: utxo set has $NU entries, want 2" >&2; cat "$U" >&2; exit 1; }
 
@@ -87,5 +92,5 @@ $SCAN >/dev/null
 NJ3=$(awk 'END{print NR}' "$J")
 [ "$NJ3" = "3" ] || { echo "FAIL: a new receive did not append, journal has $NJ3" >&2; cat "$J" >&2; exit 1; }
 
-echo "scan ok: 104 headers proved their work, 15 DOGE over 2 addresses found and"
+echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
 echo "  journaled with heights, a rescan adds nothing, and a later payment appends"

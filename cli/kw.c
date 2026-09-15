@@ -31,6 +31,7 @@
 #include "journal.h"
 #include "change.h"
 #include "powq.h"
+#include "chainsel.h"
 #include "cfstore.h"
 #include "utxo.h"
 
@@ -347,6 +348,10 @@ static void read_scan_meta(const char *utxos, int64_t *feerate, int *extent)
 }
 
 /* every --node given, so the parallel fill can spread over several */
+/* How many peers a header sync asks. Three is enough for one to be wrong and the
+   other two to disagree with it, and each one costs a connection and a tail. */
+#define KW_SCAN_HEADER_PEERS 3
+
 static const char *g_nodes[8];
 static int g_nnodes = 0;
 static char g_seed_ips[8][KW_SEED_ADDRLEN];
@@ -386,6 +391,16 @@ static const char *headers_parallel_fill(const kw_chainparams *cp, const char *n
     long r = kw_psync_headers(cp, hosts, nhosts, port, tor, peers, path, &best);
     if (r < 0) fprintf(stderr, "kw: parallel header sync failed, syncing sequentially\n");
     return (r > 0 && best) ? best : node;
+}
+
+/* Connect and shake hands with one host. Returns 1, or 0 with nothing left open. */
+static int peer_open(kw_peer *p, const kw_chainparams *cp, const char *host, int port, int tor)
+{
+    int ok = tor ? kw_peer_connect_socks5(p, cp, host, port, 15, "127.0.0.1", 9050)
+                 : kw_peer_connect(p, cp, host, port, 15);
+    if (!ok) return 0;
+    if (!kw_peer_handshake(p, 0)) { kw_peer_close(p); return 0; }
+    return 1;
 }
 
 /* Init a header store, loading a cache from (path) if given so a sync resumes
@@ -656,25 +671,42 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     if (!validate_pow && cp->ncheckpoints)
         pow_from = cp->checkpoints[cp->ncheckpoints - 1].height + 1;
 
-    kw_powq *pq = kw_powq_start(0, 4096);
-    if (!pq) { fprintf(stderr, "kw: could not start the validator\n"); kw_headerstore_free(&s); goto done; }
-    int pow_threads = kw_powq_threads(pq);
-
-    nh = kw_sync_headers_checked(&p, &s, cp, pq, pow_from);
-
-    uint64_t pow_checked = 0;
-    uint32_t pow_bad = 0;
-    int pow_ok = kw_powq_finish(pq, &pow_checked, &pow_bad);
-    if (!pow_ok) {
-        fprintf(stderr, "kw: header %u does not prove its work; this chain is not the "
-                        "one this release pins\n", pow_bad);
-        kw_headerstore_free(&s);
-        goto done;
+    /* Extra connections for the header phase only, so the chain with the most work
+       can be picked rather than whichever one the first peer served. They close
+       before the scan, which needs one peer and does not care which. */
+    kw_peer extra[KW_SCAN_HEADER_PEERS - 1];
+    kw_peer *hp[KW_SCAN_HEADER_PEERS];
+    int nhp = 0, nextra = 0;
+    hp[nhp++] = &p;
+    for (int i = 0; i < g_nnodes && nhp < KW_SCAN_HEADER_PEERS; i++) {
+        if (g_nodes[i] == node || (node && !strcmp(g_nodes[i], node))) continue;
+        if (peer_open(&extra[nextra], cp, g_nodes[i], port, tor)) { hp[nhp++] = &extra[nextra]; nextra++; }
     }
+
+    size_t was = s.count;
+    kw_chainsel_result cr;
+    nh = kw_sync_headers_best(hp, nhp, &s, cp, pow_from, &cr);
+    for (int i = 0; i < nextra; i++) kw_peer_close(&extra[i]);
+
+    if (cr.bad_height)
+        fprintf(stderr, "kw: header %u does not prove its work; that peer's chain was "
+                        "not used\n", cr.bad_height);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
     printf("checked the work of %llu header(s) from height %u on %d thread(s)\n",
-           (unsigned long long)pow_checked, pow_from, pow_threads);
-    if (headers_path && nh > 0) kw_headerstore_save(&s, headers_path);
+           (unsigned long long)cr.pow_checked, pow_from, cr.threads);
+    if (nhp < 2)
+        printf("one peer, so nothing compared its chain against another's by work; "
+               "pass --node twice for that\n");
+    else if (cr.winner < 0)
+        printf("asked %d peers, %d served a chain that verified, and none beat the one "
+               "already held\n", cr.npeers, cr.ncandidates);
+    else
+        printf("asked %d peers, %d served a chain that verified, kept the heaviest\n",
+               cr.npeers, cr.ncandidates);
+    if (cr.winner >= 0 && cr.fork_height < was)
+        printf("reorganised: dropped %zu header(s) above %u for a chain with more work\n",
+               was - cr.fork_height, cr.fork_height);
+    if (headers_path && (nh > 0 || cr.fork_height < was)) kw_headerstore_save(&s, headers_path);
 
     /* gap-limit: rescan with a growing range until `gap` unused addresses trail
        the highest used one. headers are synced once; only the scan repeats. */
