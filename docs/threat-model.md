@@ -29,74 +29,61 @@ but not nothing: a peer that serves every filter and watches which blocks are
 requested learns something about the wallet's activity. Tor puts a different
 observer in that position rather than removing it.
 
-### What is verified
+### Verified
 
-**Work, above the last anchor, on every command that syncs headers.** Every header
-past the last checkpoint compiled into chainparams is checked: its nBits must be
-the value the retarget rule derives from the headers before it, not merely a value
-it claims, and its hash must be under that target. `scan`, `outpoint`, `sweep`,
-`height` and `cfcheckpoints` all sync through one function for this reason: until
-they did, `outpoint` ran no work check at all, which is the command a payment
-backend calls. A merged-mined header is checked through its AuxPoW
-proof, so the parent block's work is what has to be there. `--validate-pow`
-moves the floor to height 1 and trusts no anchor, at the cost of hashing the
-whole chain. A header that fails stops the sync rather than being skipped.
+Every header past the last checkpoint compiled into chainparams has its work
+checked. Its nBits must be the value the retarget rule derives from the headers
+before it rather than a value it claims, and its hash must be under that target. A
+merged-mined header is checked through its AuxPoW proof, so the parent block's work
+is what has to be there. `scan`, `outpoint`, `sweep`, `height` and `cfcheckpoints`
+sync through one function, so none of them checks less than the others.
+`--validate-pow` moves the floor to height 1 and trusts no anchor, at the cost of
+hashing the whole chain. A header that fails stops the sync rather than being
+skipped.
 
-**A block against its header.** A block body is refused unless its transactions
-hash to the header's merkle root, and a tree level with an equal adjacent pair
-is refused with it, since an odd level repeats its last node and the root cannot
-then say which transaction list it came from (CVE-2012-2459). This is what
-stands between a peer and a fabricated payment: without it a peer can serve a
-genuine header with a body of its own invention.
+A block body is refused unless its transactions hash to the header's merkle root,
+and a tree level with an equal adjacent pair is refused with it, since an odd level
+repeats its last node and the root cannot then say which transaction list it came
+from (CVE-2012-2459).
 
-**The checkpointed range, by anchor linkage.** Below the last anchor the
-parallel download verifies that each segment links internally and ends on a hash
-compiled into chainparams, and no work is checked there. A block hash pins one
-chain, which is the stronger claim; work only proves energy was spent on some
-chain. The anchors are only as good as the release that carries them.
+Below the last anchor the parallel download verifies that each segment links
+internally and ends on a hash compiled into chainparams, and no work is checked
+there. A block hash names one chain where work only proves energy was spent on
+some chain. The anchors are only as good as the release that carries them.
 
-**The chain with the most work, among the peers asked.** Any command that syncs
-headers opens up to three connections, asks each where its chain leaves the one already held, syncs
-each fork and keeps the heaviest, measured from the newest anchor. The chain
-already cached is one of the candidates, so a peer has to beat it rather than
-merely differ from it, and each candidate's work is checked by its own validator
-pool so one peer's bad header cannot discard another's chain. A fork below an
-anchor is refused rather than weighed: a compiled-in hash names one chain, and no
-amount of work outweighs it.
+A command that syncs headers opens up to three connections, asks each where its
+chain leaves the one already held, syncs each fork and keeps the heaviest, measured
+from the newest anchor. The chain already cached is one of the candidates, so a
+peer has to beat it rather than differ from it. Each candidate's work is checked by
+its own validator pool, so one peer's bad header does not discard another's chain.
+A fork below an anchor is refused rather than weighed.
 
 ### Not verified
 
-**Three peers is not the network.** Work is compared among the peers reached, not
-against the chain with the most work in existence. Three peers that agree can all
-be wrong, whether by collusion or because they are the same node behind different
-addresses, and a wallet given one `--node` compares nothing at all and says so.
-What this rules out is one peer quietly serving a lesser fork while a heavier one
-exists at another; it does not make the answer the network's answer.
+Work is compared among the peers reached, not against the chain with the most work
+in existence. Three peers that agree can all be wrong, by collusion or by being one
+node behind three addresses, and a wallet given one `--node` compares nothing and
+says so.
 
-**Above the newest anchor only, and only that far back.** A reorganisation deeper
-than the newest anchor is refused rather than followed, which is the intended
-trade: the anchor is the stronger claim. More than 200000 headers above the newest
-anchor and the comparison is skipped as too expensive to buffer, with one peer used
-instead. Both mean a release whose anchors are stale defends less than a current
-one.
+A reorganisation deeper than the newest anchor is refused rather than followed.
+More than 200000 headers above the newest anchor and the comparison is skipped as
+too expensive to buffer, with one peer used instead. A release whose anchors are
+stale defends less than a current one.
 
-**Filter commitments are anchored to the release, not to other peers.** Every
-filter is checked against that peer's cfheaders chain and the verified tip is
+Every filter is checked against that peer's cfheaders chain and the verified tip is
 pinned, so a peer cannot rewrite history it already served. The chain is also
 checked against the filter-header anchors in chainparams, every 100000 blocks to
 height 6300000, so a peer serving a different filter set is caught at the first
-anchor it crosses rather than believed because it answered first. Above the last
-anchor the base is still the peer's word. Compact filters are served by too few
-nodes to compare peers against each other, which is why this is an anchor table
-and not a quorum; the anchors are only as good as the release carrying them, and
-they were generated from one node's cfheaders rather than derived from blocks.
+anchor it crosses. Above the last anchor the base is still the peer's word. Compact
+filters are served by too few nodes to compare peers against each other, so this is
+an anchor table rather than a quorum, and the anchors were generated from one node's
+cfheaders rather than derived from blocks.
 
-The practical consequence: a peer cannot invent a confirmation, since above the
-newest anchor it would have to mine the headers and the body has to hash to the
-header. It can withhold one, and a fork it serves is now weighed against what
-other peers serve rather than taken on its own, so withholding costs it the
-comparison unless every peer reached is in on it. For anything accepting payment
-on the strength of a confirmation, prefer a node you control, which is what
+A peer cannot invent a confirmation above the newest anchor, since it would have to
+mine the headers and the body has to hash to the header. It can withhold one, and a
+fork it serves is weighed against what other peers serve, so withholding costs it
+the comparison unless every peer reached is in on it. For anything accepting
+payment on the strength of a confirmation, prefer a node you control, which is what
 `--node` is for, and pass it more than once.
 
 ## Transactions

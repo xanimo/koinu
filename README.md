@@ -52,8 +52,7 @@ goes to the fee instead of an output.
     kw cosign   --tx HEX --redeem HEX --wif @k
 
 outpoint answers whether a funding output is confirmed, to what depth, and
-whether it has been spent, which is what a payment channel or a merchant needs
-before it trusts a deposit. --since bounds the search to a height range so a
+whether it has been spent. --since bounds the search to a height range so a
 recent outpoint resolves without touching the whole chain.
 
 cosign signs one input of a p2sh multisig spend and prints the signature for
