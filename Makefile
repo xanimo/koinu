@@ -41,7 +41,7 @@ TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test
         test/test_pow test/test_auxpow test/test_powq test/test_proto test/test_msg test/test_peer test/test_socks5 test/test_headers test/test_sync test/test_psync \
         test/test_chainsel test/test_sighash test/test_utxo test/test_fee test/test_journal test/test_spv test/test_gcs test/test_cf test/test_cfstore
 
-all: $(LIB) kw
+all: $(LIB) kw kwd kwui
 
 $(LIB): $(CORE_OBJ)
 	$(AR) rcs $@ $^
