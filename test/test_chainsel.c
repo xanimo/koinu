@@ -19,6 +19,7 @@
 #include "pow.h"
 #include "scrypt.h"
 #include "chainparams.h"
+#include "hex.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,7 +235,46 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* An empty store, which is what every first run has: no cache, or a command
+       like sweep that never keeps one. The peer's first header builds on genesis,
+       and genesis is not a header the store ever holds, so resolving its parent
+       has to know about the chain's own starting point rather than looking for it
+       among the headers. Getting this wrong drops every peer and syncs nothing. */
+    {
+        uint8_t gen[32], disp[32];
+        if (!kw_hex_decode(cp.genesis, 64, disp, 32))
+            { fprintf(stderr, "FAIL: genesis hex\n"); return 1; }
+        for (int i = 0; i < 32; i++) gen[i] = disp[31 - i];
+
+        uint8_t fresh[3][80];
+        if (!build_chain(fresh, 3, gen, EASY, 700))
+            { fprintf(stderr, "FAIL: could not mine a chain on genesis\n"); return 1; }
+
+        kw_headerstore s;
+        kw_headerstore_init(&s);                   /* nothing cached at all */
+
+        kw_peer a, b;
+        if (!fake_peer(&a, &cp, fresh, 3, 2) || !fake_peer(&b, &cp, fresh, 3, 2))
+            { fprintf(stderr, "FAIL: peers\n"); return 1; }
+        kw_peer *const peers[2] = { &a, &b };
+
+        kw_chainsel_result r;
+        long n = kw_sync_headers_best(peers, 2, &s, &cp, 1, &r);
+        kw_peer_close(&a); kw_peer_close(&b);
+
+        if (n != 3) { fprintf(stderr, "FAIL: a first run appended %ld, want 3\n", n); return 1; }
+        if (s.count != 3) { fprintf(stderr, "FAIL: store holds %zu after a first run\n", s.count); return 1; }
+        if (r.ncandidates != 2) { fprintf(stderr, "FAIL: %d candidates from an empty store\n", r.ncandidates); return 1; }
+        if (r.fork_height != 0) { fprintf(stderr, "FAIL: forked at %u, want genesis\n", r.fork_height); return 1; }
+        kw_block_header want;
+        kw_block_header_parse(fresh[2], 80, &want);
+        if (memcmp(kw_headerstore_tip(&s)->hash, want.hash, 32) != 0)
+            { fprintf(stderr, "FAIL: the tip is not what the peers served\n"); return 1; }
+        kw_headerstore_free(&s);
+    }
+
     printf("chainsel ok: the heavier of two forks wins over the longer one, the cached\n"
-           "  chain is a candidate, and a fork with a header that fails its target is dropped\n");
+           "  chain is a candidate, a fork with a header that fails its target is dropped,\n"
+           "  and a first run with no cache syncs from genesis\n");
     return 0;
 }

@@ -55,10 +55,19 @@ static int restore(kw_headerstore *s, uint32_t floor,
 
 /* Ask (p) where its chain leaves ours. Sends a locator and reads one headers
    message: the height of the first returned header's parent is the fork point.
-   Returns it, or 0 when the peer has nothing after our tip, or -1 on a wire
-   error or a parent we have never heard of. */
-static long fork_point(kw_peer *p, const kw_headerstore *s, const kw_chainparams *cp)
+
+   That parent is genesis on a first run, and a store never holds genesis, so
+   looking for it among the headers finds nothing. Forking from genesis is height
+   0, not an error: it is the one block every chain agrees on. Without this an
+   empty store dropped every peer that had anything to serve, which is what a
+   wallet with no cache always has.
+
+   Returns 1 with (*at) set, 0 when the peer has nothing after our tip, or -1 on a
+   wire error or a parent neither the store nor genesis accounts for. */
+static int fork_point(kw_peer *p, const kw_headerstore *s, const kw_chainparams *cp,
+                      uint32_t *at)
 {
+    *at = 0;
     uint8_t loc[KW_SYNC_LOCATOR_MAX][32];
     size_t nloc = kw_sync_locator(s, cp, loc, KW_SYNC_LOCATOR_MAX);
     if (!nloc) return -1;
@@ -87,9 +96,16 @@ static long fork_point(kw_peer *p, const kw_headerstore *s, const kw_chainparams
     uint8_t prev[32];
     memcpy(prev, kw_block_header_prev(&batch[0]), 32);
     free(batch);
-    uint32_t at = height_of(s, prev);
-    if (!at) return -1;                          /* builds on a block we do not have */
-    return (long)at;
+
+    uint32_t h = height_of(s, prev);
+    if (h) { *at = h; return 1; }
+
+    uint8_t gen[32], disp[32];
+    if (kw_hex_decode(cp->genesis, 64, disp, 32)) {
+        for (int i = 0; i < 32; i++) gen[i] = disp[31 - i];
+        if (memcmp(prev, gen, 32) == 0) { *at = 0; return 1; }   /* from the start */
+    }
+    return -1;                                   /* builds on a block we do not have */
 }
 
 long kw_sync_headers_best(kw_peer *const *peers, int npeers,
@@ -121,6 +137,20 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
     }
 
     uint32_t floor = anchor_floor(s, cp);
+
+    /* Work is summed from (floor), so every header that contributes to the
+       comparison has to have had its hash checked against its target. Otherwise
+       the comparison is between claims: kw_sync_bits_ok forces nBits to the value
+       the retarget rule derives, but the timestamps feeding that rule are the
+       attacker's, and under DigiShield a run of minimum-timespan headers drives
+       the claimed target down about an eighth per block. Unchecked, that is free
+       chainwork. Checked, the claim costs what it says it costs.
+
+       The caller passes pow_from for its own reasons and nothing made the two
+       ranges line up, so they are lined up here rather than documented and hoped
+       for. Lowering it only ever checks more. */
+    if (pow_from > floor + 1) pow_from = floor + 1;
+
     size_t ntail = s->count - floor;
     if (ntail > KW_CHAINSEL_MAX_TAIL) {
         fprintf(stderr, "kw: %zu headers above the newest anchor, too many to weigh "
@@ -152,19 +182,20 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
         if (!peers[i]) continue;
         if (!restore(s, floor, save, ntail)) { free(save); free(best); return -1; }
 
-        long at = fork_point(peers[i], s, cp);
-        if (at < 0) {
+        uint32_t at = 0;
+        int fp = fork_point(peers[i], s, cp, &at);
+        if (fp < 0) {
             if (kw_net_verbose) fprintf(stderr, "[chain] peer %d served nothing usable\n", i);
             continue;
         }
-        if (at == 0) {                            /* agrees with our tip */
+        if (fp == 0) {                            /* agrees with our tip */
             r.ncandidates++;
             continue;
         }
-        if ((uint32_t)at < floor) {
+        if (at < floor) {
             /* A fork below an anchor contradicts a hash compiled into the release,
                which no amount of work outweighs. */
-            fprintf(stderr, "kw: a peer's chain forks at %ld, below the %u this release "
+            fprintf(stderr, "kw: a peer's chain forks at %u, below the %u this release "
                             "pins; ignoring it\n", at, floor);
             continue;
         }
@@ -199,7 +230,7 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
         if (!keep) { free(save); free(best); return -1; }
         memcpy(keep, s->h + floor, nn * sizeof *keep);
         free(best);
-        best = keep; nbest = nn; best_work = w; best_fork = (uint32_t)at; winner = i;
+        best = keep; nbest = nn; best_work = w; best_fork = at; winner = i;
     }
 
     /* Whatever won, the store ends up holding it. */

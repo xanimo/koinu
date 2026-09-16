@@ -29,14 +29,22 @@ typedef struct {
     int      ncandidates;     /* those that served a chain that verified */
     int      winner;          /* index of the peer whose chain was kept, -1 for the cache */
     uint32_t fork_height;     /* where the kept chain left the one in the store */
-    long     appended;        /* headers the kept chain added above the fork */
+    long     appended;        /* headers the kept chain holds above the fork, which on
+                                 a reorganisation is not the net change: see fork_height */
     uint32_t bad_height;      /* set when a peer was dropped for a bad header */
     uint64_t pow_checked;     /* headers whose work was checked, over all candidates */
     int      threads;         /* validator threads one candidate's pool ran on */
 } kw_chainsel_result;
 
 /* Sync the tail from every peer in (peers) and leave (s) holding the chain with
-   the most work. Headers at (pow_from) or above have their work checked, each
+   the most work among those that fork from what (s) already held. Each peer is
+   asked against the same starting store, so a chain built on another peer's fork
+   rather than on the cache is not resolvable and is dropped. That direction is
+   safe: it can fail to adopt a heavier chain, never prefer a lighter one it
+   actually weighed.
+
+   (pow_from) is lowered to just above the newest anchor if it sits higher, so the
+   range whose work is checked always covers the range whose work is counted. Headers at (pow_from) or above have their work checked, each
    candidate against its own validator pool, so one peer's bad header cannot
    condemn another's chain.
 
