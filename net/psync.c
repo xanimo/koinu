@@ -282,6 +282,13 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     FILE *f = fopen(path, "rb");
     if (f) { fclose(f); return 0; }                   /* cache exists: sync normally */
 
+    /* Segments run from one anchor to the next and the records go in at the
+       height they belong to, so the table has to start at the chain's start. A
+       table beginning above zero would leave the heights below it unwritten and
+       the cache would fail its link check on load, which is a confusing way to
+       find out. */
+    if (cp->checkpoints[0].height != 0) return 0;
+
     uint32_t last = cp->checkpoints[cp->ncheckpoints - 1].height;
     char part[4200]; snprintf(part, sizeof part, "%s.part", path);
     if (!kw_headerstore_create(part, last)) return -1;
