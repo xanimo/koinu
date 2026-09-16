@@ -19,6 +19,7 @@
 #include "headers.h"
 #include "cf.h"
 #include "cfstore.h"
+#include "chainsel.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -42,24 +43,83 @@ static void on_sig(int s) { (void)s; stop = 1; }
 #define KWD_READ_SECONDS    5
 #define KWD_REQUEST_SECONDS 10
 
-/* What it takes to dial the peer again. A resident connection that dies leaves
-   every later request answering "header sync failed" until someone restarts the
-   daemon, so the parameters are kept rather than consumed at startup. */
+/* Resident connections, one per --node. Every request weighs the chains they serve
+   and keeps the heaviest, so a peer withholding a confirmation has to be agreed
+   with by all of them rather than believed on its own. One --node is the old
+   behaviour and compares nothing.
+
+   The parameters are kept rather than consumed at startup because a connection
+   that dies would otherwise leave every later request answering "header sync
+   failed" until someone restarted the daemon. */
+#define KWD_MAX_PEERS 3
+
 static struct {
     const kw_chainparams *cp;
-    const char *node;
+    const char *node[KWD_MAX_PEERS];
+    int nnode;
     int port, tor;
 } dial;
 
-static int peer_redial(kw_peer *p)
+static int peer_dial(kw_peer *p, const char *host)
 {
-    kw_peer_close(p);
-    int ok = dial.tor ? kw_peer_connect_socks5(p, dial.cp, dial.node, dial.port, 15, "127.0.0.1", 9050)
-                      : kw_peer_connect(p, dial.cp, dial.node, dial.port, 15);
+    int ok = dial.tor ? kw_peer_connect_socks5(p, dial.cp, host, dial.port, 15, "127.0.0.1", 9050)
+                      : kw_peer_connect(p, dial.cp, host, dial.port, 15);
     if (!ok) return 0;
     if (!kw_peer_handshake(p, 0)) { kw_peer_close(p); return 0; }
-    fprintf(stderr, "kwd: reconnected to %s:%d\n", dial.node, dial.port);
     return 1;
+}
+
+static kw_peer g_peer[KWD_MAX_PEERS];
+static int     g_alive[KWD_MAX_PEERS];
+
+/* The first connection still standing, which is what the filter and block queries
+   use. They need a peer, not a particular one. */
+static kw_peer *first_live(void)
+{
+    for (int i = 0; i < dial.nnode; i++) if (g_alive[i]) return &g_peer[i];
+    return NULL;
+}
+
+/* Every live peer's chain, weighed, with the work of everything above the newest
+   anchor checked. Anything that dropped since the last request is dialled again
+   first. Returns headers appended, or -1 when no peer served a chain that
+   verified.
+
+   The work check is the point: until this, kwd answered whether an outpoint was
+   confirmed without checking that the chain it answered from had any work behind
+   it, which is the one question a payment backend exists to answer. */
+static long kwd_sync(kw_headerstore *s, const kw_chainparams *cp)
+{
+    uint32_t pow_from = 1;
+    if (cp->ncheckpoints) pow_from = cp->checkpoints[cp->ncheckpoints - 1].height + 1;
+
+    kw_peer *live[KWD_MAX_PEERS];
+    int n = 0;
+    for (int i = 0; i < dial.nnode; i++) {
+        if (!g_alive[i]) {
+            if (!peer_dial(&g_peer[i], dial.node[i])) continue;
+            g_alive[i] = 1;
+            fprintf(stderr, "kwd: connected to %s:%d\n", dial.node[i], dial.port);
+        }
+        live[n++] = &g_peer[i];
+    }
+    if (!n) return -1;
+
+    kw_chainsel_result r;
+    long nh = kw_sync_headers_best(live, n, s, cp, pow_from, &r);
+    if (r.bad_height)
+        fprintf(stderr, "kwd: header %u does not prove its work; that chain was not "
+                        "used\n", r.bad_height);
+    if (nh < 0) {
+        /* whatever went wrong, the connections are suspect: dial again next time */
+        for (int i = 0; i < dial.nnode; i++) { if (g_alive[i]) kw_peer_close(&g_peer[i]); g_alive[i] = 0; }
+        return -1;
+    }
+    if (kw_net_verbose)
+        fprintf(stderr, "kwd: %llu header(s) work-checked from %u, %d of %d peers "
+                        "served a chain\n",
+                (unsigned long long)r.pow_checked, pow_from, r.ncandidates, n);
+    return nh;
 }
 
 static const kw_chainparams *chain_for(int net)
@@ -90,7 +150,7 @@ static int write_all(int fd, const char *b, size_t n)
 }
 
 /* Handle one request line already read into (line). Writes the reply to (fd). */
-static void handle(const kw_chainparams *cp, kw_peer *p, kw_headerstore *s,
+static void handle(const kw_chainparams *cp, kw_headerstore *s,
                    const char *filters_path, const char *line, int fd)
 {
     char reply[256];
@@ -115,11 +175,11 @@ static void handle(const kw_chainparams *cp, kw_peer *p, kw_headerstore *s,
     long since = sh ? atol(sh) : 0;
     if (since < 0) since = 0;
 
-    /* keep the resident chain current, then answer from the caches. One redial on
-       failure, since the usual reason is that the peer went away. */
-    long nh = kw_sync_headers(p, s, cp);
-    if (nh < 0 && peer_redial(p)) nh = kw_sync_headers(p, s, cp);
+    /* keep the resident chain current, then answer from the caches */
+    long nh = kwd_sync(s, cp);
     if (nh < 0) { write_all(fd, "1 header sync failed\n", 21); return; }
+    kw_peer *p = first_live();
+    if (!p) { write_all(fd, "1 no peer\n", 10); return; }
 
     kw_outpoint_result r;
     if (kw_query_outpoint_range(p, s, filters_path, 1, spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
@@ -135,22 +195,36 @@ static void handle(const kw_chainparams *cp, kw_peer *p, kw_headerstore *s,
 
 int main(int argc, char **argv)
 {
-    int net = 0, tor = 0, port = -1;
-    const char *node = NULL, *sock = NULL, *headers_path = NULL, *filters_path = NULL;
+    int net = 0, tor = 0, port = -1, nnode = 0;
+    const char *node[KWD_MAX_PEERS] = { 0 };
+    const char *sock = NULL, *headers_path = NULL, *filters_path = NULL;
     for (int i = 1, seen = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--testnet")) net = 1;
         else if (!strcmp(argv[i], "--regtest")) net = 2;
         else if (!strcmp(argv[i], "--tor")) tor = 1;
-        else if (!strcmp(argv[i], "--node")) node = (++i < argc) ? argv[i] : NULL;
+        else if (!strcmp(argv[i], "--node")) {
+            const char *v = (++i < argc) ? argv[i] : NULL;
+            /* more than three is refused rather than dropped: a daemon quietly
+               weighing fewer chains than it was given is the wrong failure */
+            if (v && nnode == KWD_MAX_PEERS) {
+                fprintf(stderr, "kwd: at most %d --node\n", KWD_MAX_PEERS);
+                return 2;
+            }
+            if (v) node[nnode++] = v;
+        }
         else if (!strcmp(argv[i], "--port")) port = (++i < argc) ? atoi(argv[i]) : -1;
         else if (!strcmp(argv[i], "--socket")) sock = (++i < argc) ? argv[i] : NULL;
         else if (!strcmp(argv[i], "--headers")) headers_path = (++i < argc) ? argv[i] : NULL;
         else if (!strcmp(argv[i], "--filters")) filters_path = (++i < argc) ? argv[i] : NULL;
-        else if (argv[i][0] != '-' && seen++ == 0) node = argv[i];
+        else if (argv[i][0] != '-' && seen++ == 0 && nnode < KWD_MAX_PEERS) node[nnode++] = argv[i];
     }
-    if (!node || !sock || !filters_path) {
-        fprintf(stderr, "usage: kwd [--regtest|--testnet] --node HOST [--port N] [--tor]\n"
-                        "           --socket PATH --filters PATH [--headers PATH]\n");
+    if (!nnode || !sock || !filters_path) {
+        fprintf(stderr, "usage: kwd [--regtest|--testnet] --node HOST [--node HOST ...]\n"
+                        "           [--port N] [--tor] --socket PATH --filters PATH\n"
+                        "           [--headers PATH]\n"
+                        "\n"
+                        "Several --node weigh the chains they serve and keep the one with\n"
+                        "the most work. One compares nothing.\n");
         return 2;
     }
     const kw_chainparams *cp = chain_for(net);
@@ -159,13 +233,20 @@ int main(int argc, char **argv)
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig); signal(SIGPIPE, SIG_IGN);
     kw_net_verbose = 1;
 
-    dial.cp = cp; dial.node = node; dial.port = port; dial.tor = tor;
+    dial.cp = cp; dial.port = port; dial.tor = tor; dial.nnode = nnode;
+    for (int i = 0; i < nnode; i++) dial.node[i] = node[i];
 
-    kw_peer p;
-    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
-                   : kw_peer_connect(&p, cp, node, port, 15);
-    if (!conn) { fprintf(stderr, "kwd: connect to %s:%d failed\n", node, port); return 1; }
-    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kwd: handshake failed\n"); kw_peer_close(&p); return 1; }
+    /* One has to answer; the rest are optional, since a peer being down is not a
+       reason to refuse to run, only a reason to compare fewer chains. */
+    int up = 0;
+    for (int i = 0; i < nnode; i++) {
+        if (peer_dial(&g_peer[i], node[i])) { g_alive[i] = 1; up++; }
+        else fprintf(stderr, "kwd: connect to %s:%d failed\n", node[i], port);
+    }
+    if (!up) { fprintf(stderr, "kwd: no peer answered\n"); return 1; }
+    if (nnode == 1)
+        fprintf(stderr, "kwd: one peer, so nothing compares its chain against "
+                        "another's by work\n");
 
     kw_headerstore s;
     kw_headerstore_init(&s);
@@ -173,10 +254,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "kwd: header cache corrupt, starting fresh\n");
         kw_headerstore_free(&s); kw_headerstore_init(&s);
     }
-    long nh = kw_sync_headers(&p, &s, cp);
+    long nh = kwd_sync(&s, cp);
     if (nh < 0) { fprintf(stderr, "kwd: header sync failed\n"); goto done; }
     if (headers_path) kw_headerstore_save(&s, headers_path);
-    if (kw_cfstore_sync(&p, &s, filters_path, 1) < 0) { fprintf(stderr, "kwd: filter sync failed\n"); goto done; }
+    {
+        kw_peer *fp = first_live();
+        if (!fp || kw_cfstore_sync(fp, &s, filters_path, 1) < 0) {
+            fprintf(stderr, "kwd: filter sync failed\n"); goto done;
+        }
+    }
 
     if (strlen(sock) >= sizeof ((struct sockaddr_un *)0)->sun_path) {
         fprintf(stderr, "kwd: socket path too long (max %zu)\n", sizeof ((struct sockaddr_un *)0)->sun_path - 1); goto done;
@@ -219,7 +305,7 @@ int main(int argc, char **argv)
             if (now.tv_sec - t0.tv_sec >= KWD_REQUEST_SECONDS) break;
         }
         line[n] = '\0';
-        if (complete) handle(cp, &p, &s, filters_path, line, fd);
+        if (complete) handle(cp, &s, filters_path, line, fd);
         else if (n) write_all(fd, "1 request truncated or too slow\n", 32);
         close(fd);
     }
@@ -228,6 +314,6 @@ int main(int argc, char **argv)
     unlink(sock);
 done:
     kw_headerstore_free(&s);
-    kw_peer_close(&p);
+    for (int i = 0; i < dial.nnode; i++) if (g_alive[i]) kw_peer_close(&g_peer[i]);
     return 0;
 }
