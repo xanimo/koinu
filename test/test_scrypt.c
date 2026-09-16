@@ -138,9 +138,19 @@ int main(void)
         if (memcmp(g1, g2, 64) != 0) { fprintf(stderr, "FAIL: general form disagrees with portable\n"); return 1; }
     }
 
-    printf("scrypt ok: 3 RFC 7914 vectors, 2 pbkdf2-sha256 vectors, dogecoin params,\n"
-           "  %s core == portable over 64 random headers and r=4 p=3,\n"
-           "  %s batch == single == scalar over %d random headers\n",
-           kw_scrypt_backend(), kw_scrypt_batch_backend(), NB);
+    /* Say which comparisons were real. On a machine with no SIMD core the checks
+       above hold the portable core against itself, which is worth reading as
+       "nothing was compared" rather than as a core that agrees: coverage here
+       follows whatever the runner has, and only the runner knows what that is. */
+    int simd = strcmp(kw_scrypt_backend(), "portable") != 0;
+    int batch_simd = strcmp(kw_scrypt_batch_backend(), kw_scrypt_backend()) != 0;
+    printf("scrypt ok: 3 RFC 7914 vectors, 2 pbkdf2-sha256 vectors, dogecoin params,\n");
+    if (simd) printf("  %s core == portable over 64 random headers and r=4 p=3,\n",
+                     kw_scrypt_backend());
+    else      printf("  no simd core on this cpu, so the core checks compared portable "
+                     "with itself,\n");
+    if (batch_simd) printf("  %s batch == single == scalar over %d random headers\n",
+                           kw_scrypt_batch_backend(), NB);
+    else            printf("  and no wide batch core either, over %d random headers\n", NB);
     return 0;
 }
