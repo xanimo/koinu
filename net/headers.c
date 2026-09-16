@@ -137,7 +137,7 @@ int kw_headerstore_append(kw_headerstore *s, const kw_block_header *h)
         if (memcmp(kw_block_header_prev(h), tip->hash, 32) != 0) return 0;
     }
     if (s->count == s->cap) {
-        size_t nc = s->cap * 2;
+        size_t nc = s->cap ? s->cap * 2 : 64;     /* doubling zero stays zero */
         kw_block_header *nh = (kw_block_header *)realloc(s->h, nc * sizeof *nh);
         if (!nh) return 0;
         s->h = nh; s->cap = nc;

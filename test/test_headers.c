@@ -11,6 +11,7 @@
 #include "hex.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *GENESIS_HDR =
@@ -225,6 +226,107 @@ int main(void)
         remove(tmp);
     }
 
-    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache v1+v2, delta save\n");
+    /* A chain longer than two of the loader's 4096-record chunks, because the load
+       reads in chunks and carries a partial record across the boundary. Nothing
+       above reaches past one chunk, so the handoff and the trailing-record cases
+       were exactly what the chunked rewrite could break without a red test. */
+    {
+        enum { BIG = 10000, CHUNKREC = 4096 };
+        kw_block_header *bh = (kw_block_header *)malloc(BIG * sizeof *bh);
+        if (!bh) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        uint8_t braw[KW_HEADER_LEN];
+        const uint8_t *bprev = hg.hash;
+        for (int i = 0; i < BIG; i++) {
+            memset(braw, 0, sizeof braw);
+            braw[0] = (uint8_t)(i + 1);
+            braw[68] = (uint8_t)i;
+            braw[69] = (uint8_t)(i >> 8);
+            memcpy(braw + 4, bprev, 32);
+            kw_block_header_parse(braw, KW_HEADER_LEN, &bh[i]);
+            bprev = bh[i].hash;
+        }
+
+        kw_headerstore bs;
+        kw_headerstore_init(&bs);
+        kw_headerstore_append(&bs, &hg);
+        for (int i = 0; i < BIG; i++)
+            if (!kw_headerstore_append(&bs, &bh[i])) { fprintf(stderr, "FAIL: big append %d\n", i); return 1; }
+        const char *bt = "test_headers_big.tmp";
+        if (!kw_headerstore_save(&bs, bt)) { fprintf(stderr, "FAIL: big save\n"); return 1; }
+        kw_headerstore_free(&bs);
+
+        kw_headerstore bl;
+        kw_headerstore_init(&bl);
+        if (!kw_headerstore_load(&bl, bt) || bl.count != BIG + 1) {
+            fprintf(stderr, "FAIL: %zu records across chunks, want %d\n", bl.count, BIG + 1); return 1;
+        }
+        for (int i = 0; i < BIG; i++)
+            if (memcmp(bl.h[i + 1].hash, bh[i].hash, 32) != 0) {
+                fprintf(stderr, "FAIL: record %d came back wrong\n", i); return 1;
+            }
+        kw_headerstore_free(&bl);
+
+        /* a record cut short at the end, at three lengths: one byte, part of the
+           hash, and all but one byte of a record */
+        long full = 0;
+        {
+            FILE *fz = fopen(bt, "rb");
+            if (!fz || fseek(fz, 0, SEEK_END) != 0) { fprintf(stderr, "FAIL: size\n"); return 1; }
+            full = ftell(fz);
+            fclose(fz);
+        }
+        const int cuts[3] = { 1, 40, KW_HDR_REC - 1 };
+        for (int c = 0; c < 3; c++) {
+            char cut[64]; snprintf(cut, sizeof cut, "test_headers_cut%d.tmp", c);
+            FILE *src = fopen(bt, "rb"), *dst = fopen(cut, "wb");
+            if (!src || !dst) { fprintf(stderr, "FAIL: cut open\n"); return 1; }
+            for (long k = 0; k < full - cuts[c]; k++) fputc(fgetc(src), dst);
+            fclose(src);
+            if (fclose(dst) != 0) { fprintf(stderr, "FAIL: cut write\n"); return 1; }
+
+            kw_headerstore cs;
+            kw_headerstore_init(&cs);
+            if (kw_headerstore_load(&cs, cut)) {
+                fprintf(stderr, "FAIL: a file %d bytes short loaded\n", cuts[c]); return 1;
+            }
+            kw_headerstore_free(&cs);
+            remove(cut);
+        }
+
+        /* and a link broken in the middle, then broken exactly on the chunk
+           boundary, which is the record the buffer handoff straddles */
+        const int breaks[2] = { 5000, CHUNKREC };
+        for (int b = 0; b < 2; b++) {
+            char brk[64]; snprintf(brk, sizeof brk, "test_headers_brk%d.tmp", b);
+            FILE *src = fopen(bt, "rb"), *dst = fopen(brk, "wb");
+            if (!src || !dst) { fprintf(stderr, "FAIL: break open\n"); return 1; }
+            for (long k = 0; k < full; k++) {
+                int ch = fgetc(src);
+                /* one byte of that record's prev field */
+                if (k == 4 + (long)breaks[b] * KW_HDR_REC + 5) ch ^= 1;
+                fputc(ch, dst);
+            }
+            fclose(src);
+            if (fclose(dst) != 0) { fprintf(stderr, "FAIL: break write\n"); return 1; }
+
+            kw_headerstore bs2;
+            kw_headerstore_init(&bs2);
+            if (kw_headerstore_load(&bs2, brk)) {
+                fprintf(stderr, "FAIL: a link broken at record %d loaded\n", breaks[b]); return 1;
+            }
+            if (bs2.count != (size_t)breaks[b]) {
+                fprintf(stderr, "FAIL: stopped at %zu, want %d\n", bs2.count, breaks[b]); return 1;
+            }
+            kw_headerstore_free(&bs2);
+            remove(brk);
+        }
+
+        remove(bt);
+        free(bh);
+    }
+
+    printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache v1+v2,\n"
+           "  delta save, and 10000 records over three chunks with a cut record and a link\n"
+           "  broken on the chunk boundary refused\n");
     return 0;
 }

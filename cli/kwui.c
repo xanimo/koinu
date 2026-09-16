@@ -224,6 +224,23 @@ static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int 
 
 /* Display order for a txid, abbreviated: eight bytes are enough to find a
    transaction in an explorer and 64 characters do not fit a column. */
+/* An address from the journal, safe to put on a terminal. The journal is plain
+   text on disk and this screen emits its own escape sequences, so a file edited by
+   hand or written by something else could steer the cursor or set attributes from
+   inside a field that is only ever meant to be an address. Everything that writes
+   one goes through base58 first, which is a property of those call sites rather
+   than of this one. */
+static const char *safe_addr(const char *in, char *out, size_t cap)
+{
+    size_t k = 0;
+    for (size_t i = 0; in[i] && k + 1 < cap; i++) {
+        unsigned char ch = (unsigned char)in[i];
+        out[k++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+    }
+    out[k] = '\0';
+    return out;
+}
+
 static void txid_short(const uint8_t txid[32], char *out, size_t cap)
 {
     uint8_t d[32];
@@ -388,8 +405,10 @@ static void history_view(const char *utxos)
                 fmt_doge(e->amount, v, sizeof v);
                 if (e->height) snprintf(h, sizeof h, "%u", e->height);
                 else           snprintf(h, sizeof h, "%s", "-");
+                char sa[96];
                 printf("   %-3s %-8s %-20s %18s %s\r\n",
-                       e->dir == KW_JOURNAL_OUT ? "out" : "in", h, t, v, e->addr);
+                       e->dir == KW_JOURNAL_OUT ? "out" : "in", h, t, v,
+                       safe_addr(e->addr, sa, sizeof sa));
             }
             if (n > per) printf("\r\n   showing %d..%d of %d\r\n", top + 1,
                                 top + (n - top < per ? n - top : per), n);
