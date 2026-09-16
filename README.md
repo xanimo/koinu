@@ -102,8 +102,10 @@ stored tip instead of starting over.
 --peers downloads the checkpointed range of the header chain over that many
 connections at once, splitting it at the chainparams anchors and verifying each
 segment links internally and ends on its anchor. with no --node the peers come
-from the dns seeds, and connections migrate to whichever ones prove fastest. a
-cold mainnet header sync takes about two minutes.
+from the dns seeds, and connections migrate to whichever ones prove fastest. how
+long a cold sync takes is linear in the height and depends on the peers it lands
+on: 243 seconds at height 6376533 over 12 connections from the dns seeds, on one
+machine. measure it on yours rather than budgeting from that.
 
 above the newest anchor a header sync asks three peers instead of one, since that
 range is where a chain can differ. every command that syncs headers does it the
@@ -127,9 +129,16 @@ them.
 
 ## kwd
 
-a resident daemon for callers that need an answer in milliseconds rather than
-seconds. it holds the header chain and the peer connection open, delta-syncs on
-each request, and answers over a unix socket.
+a resident daemon for a caller that asks repeatedly and cannot pay the chain load
+each time. kw loads the header cache on every invocation, which is linear in the
+height and was 313 to 321ms at 6.37M headers here; kwd pays that once at startup
+and holds the chain and its peer connections open. a request is then a delta sync
+with those peers, so what it costs depends on them and not on the chain's length.
+it answers over a unix socket.
+
+kwd needs a peer that serves bip158 filters, since it builds the filter cache at
+startup and exits if it cannot. most mainnet nodes do not serve them, so this is
+the first thing to check when it will not start.
 
     kwd --node NODE --headers h --filters f --socket /run/kwd.sock
     kw outpoint --daemon /run/kwd.sock --watch ADDR --outpoint TXID:VOUT --since H
