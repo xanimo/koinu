@@ -10,21 +10,28 @@
 set -e
 
 WORK=$(mktemp -d)
-trap 'kill $NODE_PID $KWD_PID 2>/dev/null; rm -rf "$WORK"' EXIT INT TERM
+trap 'kill $NODE_PID $NODE2_PID $KWD_PID 2>/dev/null; rm -rf "$WORK"' EXIT INT TERM
 
 command -v nc >/dev/null 2>&1 || { echo "kwd skipped: no nc"; exit 0; }
 
+# two peers, each on its own ephemeral port. Naming them as HOST:PORT is the only
+# way to reach both from one command line, and without it the multi-peer paths
+# could not be driven end to end at all.
 ./test/fakenode --regtest > "$WORK/port" &
 NODE_PID=$!
+./test/fakenode --regtest > "$WORK/port2" &
+NODE2_PID=$!
 i=0
-while [ ! -s "$WORK/port" ]; do
+while [ ! -s "$WORK/port" ] || [ ! -s "$WORK/port2" ]; do
     i=$((i + 1)); [ $i -gt 100 ] && { echo "FAIL: fakenode printed no port" >&2; exit 1; }
     sleep 0.1
 done
 PORT=$(cat "$WORK/port")
+PORT2=$(cat "$WORK/port2")
+[ "$PORT" != "$PORT2" ] || { echo "FAIL: both nodes took port $PORT" >&2; exit 1; }
 
 SOCK="$WORK/kwd.sock"
-./kwd --regtest --node 127.0.0.1 --port "$PORT" --socket "$SOCK" \
+./kwd --regtest --node "127.0.0.1:$PORT" --node "127.0.0.1:$PORT2" --socket "$SOCK" \
       --filters "$WORK/filters" > "$WORK/kwd.log" 2>&1 &
 KWD_PID=$!
 i=0
@@ -62,9 +69,12 @@ ELAPSED=$((END - START))
 grep -q "work-checked" "$WORK/kwd.log" || {
     echo "FAIL: kwd did not report checking any header work" >&2
     cat "$WORK/kwd.log" >&2; exit 1; }
-# and with one --node it has to say that it compared nothing
-grep -q "one peer, so nothing compares" "$WORK/kwd.log" || {
-    echo "FAIL: a single-peer kwd did not say it compared nothing" >&2
+# and both peers have to have been asked, not just the first
+grep -q "of 2 peers served a chain" "$WORK/kwd.log" || {
+    echo "FAIL: kwd did not weigh both peers' chains" >&2
+    cat "$WORK/kwd.log" >&2; exit 1; }
+grep -q "one peer, so nothing compares" "$WORK/kwd.log" && {
+    echo "FAIL: kwd said it had one peer when it was given two" >&2
     cat "$WORK/kwd.log" >&2; exit 1; }
 
 # and a request with no newline is refused rather than waited on forever
@@ -75,4 +85,4 @@ case "$TRUNC" in
     *)  echo "FAIL: unterminated request answered with '$TRUNC'" >&2; exit 1;;
 esac
 
-echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request is refused, and the chain it answers from is work-checked"
+echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request is refused, and the chain it answers from is work-checked over two peers"
