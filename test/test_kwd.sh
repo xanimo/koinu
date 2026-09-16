@@ -56,6 +56,17 @@ kill $SILENT_PID 2>/dev/null || true
 ELAPSED=$((END - START))
 [ "$ELAPSED" -le 20 ] || { echo "FAIL: reply took ${ELAPSED}s behind a silent client" >&2; exit 1; }
 
+# the answer has to come from a chain whose work was checked. kwd used to sync
+# headers with no validator pool at all, so it answered whether an outpoint was
+# confirmed without checking that the chain behind it had any work.
+grep -q "work-checked" "$WORK/kwd.log" || {
+    echo "FAIL: kwd did not report checking any header work" >&2
+    cat "$WORK/kwd.log" >&2; exit 1; }
+# and with one --node it has to say that it compared nothing
+grep -q "one peer, so nothing compares" "$WORK/kwd.log" || {
+    echo "FAIL: a single-peer kwd did not say it compared nothing" >&2
+    cat "$WORK/kwd.log" >&2; exit 1; }
+
 # and a request with no newline is refused rather than waited on forever
 TRUNC=$(printf 'outpoint no-newline-here' | nc -w 20 -U "$SOCK" 2>/dev/null | head -1 || true)
 case "$TRUNC" in
@@ -64,4 +75,4 @@ case "$TRUNC" in
     *)  echo "FAIL: unterminated request answered with '$TRUNC'" >&2; exit 1;;
 esac
 
-echo "kwd ok: socket is 0600, a silent client does not block the loop, unterminated request refused"
+echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request is refused, and the chain it answers from is work-checked"
