@@ -55,6 +55,21 @@ int kw_peer_from_fd(kw_peer *p, uint32_t magic, int fd)
 int kw_peer_connect(kw_peer *p, const kw_chainparams *cp,
                     const char *host, int port, int timeout_sec)
 {
+    /* HOST:PORT overrides (port), so several peers can be named on one command
+       line without them all having to sit on the same one. Without it two nodes
+       on one machine cannot both be reached, which is what kept the multi-peer
+       paths from having an integration test. */
+    char hbuf[64];
+    const char *colon = strrchr(host, ':');
+    if (colon && colon != host && strchr(host, ':') == colon) {
+        size_t hl = (size_t)(colon - host);
+        if (hl >= sizeof hbuf) return 0;
+        memcpy(hbuf, host, hl);
+        hbuf[hl] = '\0';
+        int v = atoi(colon + 1);
+        if (v > 0 && v < 65536) { port = v; host = hbuf; }
+    }
+
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;

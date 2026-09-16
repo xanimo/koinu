@@ -73,6 +73,12 @@ out:
 #define KW_PSYNC_MAX_HOSTS 16
 #define KW_PSYNC_MAX_CLAIMS 2
 
+/* The widest checkpoint gap this will buffer. Every worker holds one segment, so
+   the allocation is this times the worker count: a table with one enormous gap
+   would otherwise ask for hundreds of megabytes per thread without saying why.
+   Mainnet's anchors sit 25000 apart. */
+#define KW_PSYNC_MAX_SPAN 1000000
+
 typedef struct {
     const kw_chainparams *cp;
     const char *const *hosts; size_t nhosts;
@@ -293,6 +299,10 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
         size_t span = cp->checkpoints[i].height - cp->checkpoints[i - 1].height;
         if (span > c.maxspan) c.maxspan = span;
     }
+    if (c.maxspan > KW_PSYNC_MAX_SPAN) {
+        fprintf(stderr, "kw: anchors %zu apart is too wide to fill in parallel\n", c.maxspan);
+        fclose(pf); remove(part); return -1;
+    }
     c.state = (uint8_t *)calloc(cp->ncheckpoints, 1);
     c.claims = (uint8_t *)calloc(cp->ncheckpoints, 1);
     if (!c.state || !c.claims) {
@@ -322,6 +332,13 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
         }
     }
     free(c.state); free(c.claims);
+    /* The records went in with pwrite, which the stdio buffer knows nothing about,
+       so the flush fclose does is not what makes them durable. Renaming an
+       unsynced file over the cache path publishes whatever the page cache happened
+       to have written. A torn cache is caught on load, since every record has to
+       link to the one before it, but caught means a re-download rather than a
+       wrong answer only because that check exists. */
+    if (ok && fsync(c.fd) != 0) ok = 0;
     if (fclose(pf) != 0) ok = 0;
     if (!ok || rename(part, path) != 0) { remove(part); return -1; }
     return (long)last;

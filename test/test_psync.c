@@ -5,14 +5,22 @@
  * A synthetic 8-header chain split into two checkpointed segments. Each
  * segment is served over its own socketpair and written out of order into a
  * created cache, which must then load as one linked chain. A wrong terminal
- * hash and a broken in-segment link are each refused. */
+ * hash and a broken in-segment link are each refused.
+ *
+ * Then the whole of kw_psync_headers over real sockets: several peers in this
+ * process, worker threads racing for segments, the writes landing at the right
+ * offsets and the rename at the end. That path had no test at all, which for a
+ * threaded downloader writing a cache other code trusts is the wrong thing to
+ * have untested. */
 
 #include "psync.h"
 #include "headers.h"
 #include "proto.h"
 #include "chainparams.h"
+#include "psyncnode.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -119,6 +127,94 @@ int main(void)
     fclose(f);
     remove(tmp);
 
-    printf("psync ok: two segments assembled out of order and loaded linked, wrong terminal and broken link refused\n");
+    /* And the whole downloader over real sockets: three peers in this process,
+       worker threads claiming and racing segments, each winner's records landing
+       at its own offset, and the rename at the end. Until this, kw_psync_headers
+       had no test: only kw_psync_segment did, which is the part that verifies and
+       not the part that decides what gets written where. */
+    {
+        enum { PN = 40, SEG = 10, NODES = 3 };
+        kw_block_header ch[PN];
+        uint8_t anch[32];
+        memset(anch, 0x11, 32);
+        const uint8_t *pv = anch;
+        for (int i = 0; i < PN; i++) {
+            memset(raw, 0, sizeof raw);
+            raw[0] = (uint8_t)(i + 1);
+            raw[68] = (uint8_t)i;                  /* so no two hash alike */
+            memcpy(raw + 4, pv, 32);
+            kw_block_header_parse(raw, KW_HEADER_LEN, &ch[i]);
+            pv = ch[i].hash;
+        }
+
+        /* anchors every SEG, the genesis slot holding the chain's own base */
+        char hexes[PN / SEG + 1][65];
+        kw_checkpoint cps[PN / SEG + 1];
+        for (int i = 0; i <= PN / SEG; i++) {
+            const uint8_t *hh = i ? ch[i * SEG - 1].hash : anch;
+            for (int b = 0; b < 32; b++) snprintf(hexes[i] + b * 2, 3, "%02x", hh[31 - b]);
+            cps[i].height = (uint32_t)(i * SEG);
+            cps[i].hash = hexes[i];
+        }
+        kw_chainparams pcp = KW_DOGE_REGTEST;
+        pcp.checkpoints = cps;
+        pcp.ncheckpoints = PN / SEG + 1;
+        pcp.genesis = hexes[0];
+
+        kw_testnode nd[NODES];
+        char addr[NODES][32];
+        const char *hosts[NODES];
+        for (int i = 0; i < NODES; i++) {
+            /* a small batch so a segment takes several rounds, which is where the
+               per-round link check and the stop hash actually get exercised */
+            if (!kw_testnode_start(&nd[i], pcp.magic, ch, PN, 4)) {
+                fprintf(stderr, "FAIL: could not start test node %d\n", i); return 1;
+            }
+            snprintf(addr[i], sizeof addr[i], "127.0.0.1:%u", (unsigned)nd[i].port);
+            hosts[i] = addr[i];
+        }
+
+        const char *cache = "test_psync_net.tmp";
+        remove(cache);
+        const char *fastest = NULL;
+        long r = kw_psync_headers(&pcp, hosts, NODES, 0, 0, NODES, cache, &fastest);
+        for (int i = 0; i < NODES; i++) kw_testnode_stop(&nd[i]);
+
+        if (r != PN) { fprintf(stderr, "FAIL: parallel fill returned %ld, want %d\n", r, PN); return 1; }
+
+        /* the cache has to load as one linked chain and end where the chain does,
+           which is what says every segment landed at the right offset */
+        kw_headerstore ps;
+        kw_headerstore_init(&ps);
+        if (!kw_headerstore_load(&ps, cache)) { fprintf(stderr, "FAIL: filled cache will not load\n"); return 1; }
+        if (ps.count != PN) { fprintf(stderr, "FAIL: cache holds %zu, want %d\n", ps.count, PN); return 1; }
+        for (int i = 0; i < PN; i++)
+            if (memcmp(ps.h[i].hash, ch[i].hash, 32) != 0) {
+                fprintf(stderr, "FAIL: height %d is not the header served\n", i + 1); return 1;
+            }
+        kw_headerstore_free(&ps);
+
+        /* a second run leaves the cache alone rather than refilling it */
+        if (kw_psync_headers(&pcp, hosts, NODES, 0, 0, NODES, cache, NULL) != 0) {
+            fprintf(stderr, "FAIL: refilled a cache that already existed\n"); return 1;
+        }
+        remove(cache);
+
+        /* and with nothing listening it fails and leaves no cache behind, so the
+           caller falls back to the sequential sync rather than onto a part file */
+        const char *dead[1] = { "127.0.0.1:1" };
+        if (kw_psync_headers(&pcp, dead, 1, 0, 0, 2, cache, NULL) != -1) {
+            fprintf(stderr, "FAIL: a fill with no peer did not fail\n"); return 1;
+        }
+        FILE *leftover = fopen(cache, "rb");
+        if (leftover) { fclose(leftover); fprintf(stderr, "FAIL: a failed fill left a cache\n"); return 1; }
+        char part[64]; snprintf(part, sizeof part, "%s.part", cache);
+        leftover = fopen(part, "rb");
+        if (leftover) { fclose(leftover); fprintf(stderr, "FAIL: a failed fill left its part file\n"); return 1; }
+    }
+
+    printf("psync ok: two segments assembled out of order and loaded linked, wrong\n"
+           "  terminal and broken link refused, and 40 headers filled over 4 segments\n"
+           "  by 3 threads against 3 peers, landing linked and in order\n");
     return 0;
 }
