@@ -138,7 +138,10 @@ it answers over a unix socket.
 
 kwd needs a peer that serves bip158 filters, since it builds the filter cache at
 startup and exits if it cannot. most mainnet nodes do not serve them, so this is
-the first thing to check when it will not start.
+the first thing to check when it will not start. the socket is created 0600 with
+no group and no mode option, so whatever asks has to run as the user kwd runs as;
+a caller under its own account gets a permission denied on a path that otherwise
+looks right.
 
     kwd --node NODE --headers h --filters f --socket /run/kwd.sock
     kw outpoint --daemon /run/kwd.sock --watch ADDR --outpoint TXID:VOUT --since H
