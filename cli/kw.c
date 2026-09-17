@@ -1881,8 +1881,17 @@ int main(int argc, char **argv)
        kwui has always checked; this did not. */
     if (!kw_ec_start()) { fprintf(stderr, "kw: no entropy, so no curve context\n"); return 1; }
     const kw_chainparams *cp = chain_for(net);
-    /* parallel sync with no --node: the dns seeds supply the peers */
-    if (g_nnodes == 0 && peers > 1) {
+    /* No --node: the dns seeds supply the peers. Gated on the command needing one
+       rather than on --peers, which left every default invocation pointing at
+       127.0.0.1 and failing there: --peers is 1 unless asked otherwise, so a plain
+       kw height reached no network at all while the README said the seeds would
+       supply it. Offline commands are excluded so making a key or signing does not
+       announce itself with a dns lookup, and --daemon asks kwd rather than a peer. */
+    int wants_peer = (!strcmp(cmd, "scan") || !strcmp(cmd, "height") ||
+                      !strcmp(cmd, "sweep") || !strcmp(cmd, "cfcheckpoints") ||
+                      !strcmp(cmd, "send") ||
+                      (!strcmp(cmd, "outpoint") && !daemon_arg));
+    if (g_nnodes == 0 && wants_peer) {
         const char *sn = seed_nodes(cp, tor);
         if (sn) node = sn;
     }
