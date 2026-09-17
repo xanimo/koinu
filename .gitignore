@@ -54,3 +54,5 @@
 /mkvectors_chain
 /test/test_sighash
 /test/fakenode
+/test/test_chainsel
+/test/test_change
