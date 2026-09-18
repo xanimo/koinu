@@ -79,6 +79,19 @@ out:
    Mainnet's anchors sit 25000 apart. */
 #define KW_PSYNC_MAX_SPAN 1000000
 
+/* How long the whole fill may go without completing a single segment before it is
+   called off. A stall is what warrants giving up; slowness is not.
+
+   Counting failures was wrong three ways. A budget across the run let transient
+   churn add up to abandoning a run that was nearly done, and more workers reached
+   the total sooner, so raising --peers made failure likelier rather than the fill
+   faster. A per-segment budget called off runs that were completing steadily. And
+   resetting those counters on each completion still failed, because a refused
+   connection comes back in milliseconds while a segment takes tens of seconds, so
+   one fast-failing segment outruns every slow success. Time since the last
+   completed segment is the thing that actually distinguishes the two. */
+#define KW_PSYNC_STALL_SECONDS 300.0
+
 typedef struct {
     const kw_chainparams *cp;
     const char *const *hosts; size_t nhosts;
@@ -90,6 +103,10 @@ typedef struct {
     size_t done, nseg, giveups;
     uint8_t *state;              /* per segment: 0 pending, 1 in flight, 2 done */
     uint8_t *claims;             /* workers currently on it */
+    double   last_done;          /* when a segment last completed */
+    int      ever_connected;     /* any host has answered at least once */
+    size_t   connect_fails;
+    size_t   bad_seg;            /* what was being attempted when it stalled */
     size_t host_segs[KW_PSYNC_MAX_HOSTS];    /* per-node serving tally */
     long   host_hdrs[KW_PSYNC_MAX_HOSTS];
     long   host_srv[KW_PSYNC_MAX_HOSTS];     /* headers timed, win or lose */
@@ -133,7 +150,12 @@ static void drop_host(psync_ctx *c, size_t host, int connect_failed)
 {
     pthread_mutex_lock(&c->lock);
     c->host_active[host]--;
-    if (connect_failed) c->host_fails[host]++;
+    if (connect_failed) { c->host_fails[host]++; c->connect_fails++; }
+    /* Nothing has ever answered, so this is a peer list that does not work rather
+       than a fill that has stalled. Said now instead of after the stall window,
+       which is five minutes to learn that a port is closed. */
+    if (connect_failed && !c->ever_connected && c->connect_fails > 3 * c->nhosts)
+        c->failed = 1;
     pthread_mutex_unlock(&c->lock);
 }
 
@@ -143,6 +165,7 @@ static void drop_host(psync_ctx *c, size_t host, int connect_failed)
 static void host_connected(psync_ctx *c, size_t host)
 {
     pthread_mutex_lock(&c->lock);
+    c->ever_connected = 1;
     c->host_fails[host] = 0;
     pthread_mutex_unlock(&c->lock);
 }
@@ -241,6 +264,7 @@ static void *worker(void *arg)
         if (won) {
             c->state[i] = 2;
             c->done++;
+            c->last_done = now_mono();
             c->host_segs[host]++;
             c->host_hdrs[host] += (long)(h1 - h0);
             if (kw_net_verbose)
@@ -248,7 +272,8 @@ static void *worker(void *arg)
                         h0, h1, c->hosts[host], c->done, c->nseg);
         } else if (!done) {
             if (c->state[i] == 1 && c->claims[i] == 0) c->state[i] = 0;   /* requeue */
-            if (++c->giveups > 3 * c->nseg) c->failed = 1;
+            c->giveups++;
+            if (now_mono() - c->last_done > KW_PSYNC_STALL_SECONDS) { c->failed = 1; c->bad_seg = i; }
         }
         pthread_mutex_unlock(&c->lock);
 
@@ -315,6 +340,7 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     if (!c.state || !c.claims) {
         free(c.state); free(c.claims); fclose(pf); remove(part); return -1;
     }
+    c.last_done = now_mono();
 
     if (npeers < 1) npeers = 1;
     if ((size_t)npeers > c.nseg) npeers = (int)c.nseg;
@@ -328,6 +354,23 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     free(th);
 
     int ok = started > 0 && !c.failed && c.done == c.nseg;
+    if (!ok) {
+        /* Say which of the three it was, since "parallel header sync failed" sent
+           a reader looking at their network when the answer was a retry budget. */
+        if (!started)
+            fprintf(stderr, "kw: no download threads started\n");
+        else if (!c.ever_connected)
+            fprintf(stderr, "kw: no peer answered, so nothing was downloaded\n");
+        else if (c.bad_seg)
+            fprintf(stderr, "kw: no segment finished in %.0f seconds, last attempt was "
+                            "headers %u-%u, %zu of %zu segments were done\n",
+                    KW_PSYNC_STALL_SECONDS,
+                    cp->checkpoints[c.bad_seg - 1].height, cp->checkpoints[c.bad_seg].height,
+                    c.done, c.nseg);
+        else
+            fprintf(stderr, "kw: the parallel fill gave up with %zu of %zu segments done\n",
+                    c.done, c.nseg);
+    }
     if (ok) {
         double bestrate = -1;
         for (size_t i = 0; i < nhosts; i++) {
