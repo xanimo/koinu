@@ -273,7 +273,13 @@ static void *worker(void *arg)
         } else if (!done) {
             if (c->state[i] == 1 && c->claims[i] == 0) c->state[i] = 0;   /* requeue */
             c->giveups++;
-            if (now_mono() - c->last_done > KW_PSYNC_STALL_SECONDS) { c->failed = 1; c->bad_seg = i; }
+            /* Only when this was the last worker on the segment. A racing loser
+               failing says nothing about whether the run is moving: at the tail
+               every idle worker races the one straggler and fails against it
+               quickly, so counting those declared a stall while the straggler was
+               downloading. That failed a fill with all 255 segments done. */
+            if (c->claims[i] == 0 &&
+                now_mono() - c->last_done > KW_PSYNC_STALL_SECONDS) { c->failed = 1; c->bad_seg = i; }
         }
         pthread_mutex_unlock(&c->lock);
 
