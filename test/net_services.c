@@ -69,8 +69,13 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--testnet")) cp = &KW_DOGE_TESTNET;
 
     char addrs[64][KW_SEED_ADDRLEN];
-    size_t n = kw_seed_resolve(cp, addrs, 64);
-    printf("%zu peers from the dns seeds\n\n", n);
+    size_t n = 0;
+    for (int i = 1; i < argc; i++)          /* explicit addresses, else the seeds */
+        if (argv[i][0] != '-' && n < 64) snprintf(addrs[n++], KW_SEED_ADDRLEN, "%s", argv[i]);
+    if (!n) {
+        n = kw_seed_resolve(cp, addrs, 64);
+        printf("%zu peers from the dns seeds\n\n", n);
+    }
 
     int reached = 0, filters = 0;
     for (size_t i = 0; i < n; i++) {
