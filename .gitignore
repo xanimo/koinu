@@ -57,3 +57,8 @@
 /test/test_chainsel
 /test/test_change
 /net_services
+/h.kwh
+/*.kwh
+/nanopc.txt
+/local.txt
+/offsite.txt
