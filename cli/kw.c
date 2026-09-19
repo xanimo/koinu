@@ -1365,9 +1365,17 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     if (since >= 0) {
         /* range: test filters over [since, tip] and report the outpoint's
            creation and spend seen there. requires the filter cache. */
-        if (!use_cf || !filters_path) { fprintf(stderr, "kw: --since requires --cf and --filters\n"); kw_headerstore_free(&s); goto out; }
+        /* Filters narrow the range to the blocks worth fetching. Without them the
+           whole range is fetched, which is why this needs a --since that bounds it
+           and why it is not offered for the unbounded scan below. */
+        const char *fp = (use_cf && filters_path) ? filters_path : NULL;
+        if (!fp && since == 0) {
+            fprintf(stderr, "kw: --since 0 with no filters would fetch every block; "
+                            "give a height, or use --cf --filters\n");
+            kw_headerstore_free(&s); goto out;
+        }
         kw_outpoint_result r;
-        int ok = kw_query_outpoint_range(&p, &s, filters_path, 1, spk, spklen, txint, vout, (uint32_t)since, &r);
+        int ok = kw_query_outpoint_range(&p, &s, fp, 1, spk, spklen, txint, vout, (uint32_t)since, &r);
         kw_headerstore_free(&s);
         if (ok != 1) { fprintf(stderr, "kw: filter/block scan failed\n"); goto out; }
         if (r.status == 1) { printf("spent at height %ld depth %ld\n", r.height, r.tipheight - r.height + 1); rc = 3; }

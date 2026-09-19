@@ -19,6 +19,7 @@
 #include "headers.h"
 #include "cf.h"
 #include "cfstore.h"
+#include "cf.h"
 #include "chainsel.h"
 
 #include <errno.h>
@@ -71,6 +72,7 @@ static int peer_dial(kw_peer *p, const char *host)
 
 static kw_peer g_peer[KWD_MAX_PEERS];
 static int     g_alive[KWD_MAX_PEERS];
+static int     g_filters;            /* the peers serve bip158 and the cache is built */
 
 /* The first connection still standing, which is what the filter and block queries
    use. They need a peer, not a particular one. */
@@ -181,8 +183,14 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     kw_peer *p = first_live();
     if (!p) { write_all(fd, "1 no peer\n", 10); return; }
 
+    /* Without filters the range is fetched whole, so an unbounded request would
+       pull the chain. The caller has to say where to start. */
+    if (!g_filters && since == 0) {
+        write_all(fd, "1 since required without filters\n", 33); return;
+    }
     kw_outpoint_result r;
-    if (kw_query_outpoint_range(p, s, filters_path, 1, spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
+    if (kw_query_outpoint_range(p, s, g_filters ? filters_path : NULL, 1,
+                                spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
         write_all(fd, "1 scan failed\n", 14); return;
     }
     int n;
@@ -258,9 +266,19 @@ int main(int argc, char **argv)
     if (nh < 0) { fprintf(stderr, "kwd: header sync failed\n"); goto done; }
     if (headers_path) kw_headerstore_save(&s, headers_path);
     {
+        /* Filters make a query cost the blocks that match rather than the blocks
+           in the range. No peer on the public network serves them, so refusing to
+           start without them meant refusing to start at all. Runs either way and
+           says which. */
         kw_peer *fp = first_live();
-        if (!fp || kw_cfstore_sync(fp, &s, filters_path, 1) < 0) {
+        if (!fp) { fprintf(stderr, "kwd: no peer\n"); goto done; }
+        if (fp->peer_services && !(fp->peer_services & KW_NODE_COMPACT_FILTERS)) {
+            fprintf(stderr, "kwd: peer serves no compact filters, answering from blocks; "
+                            "a request costs every block since its --since\n");
+        } else if (kw_cfstore_sync(fp, &s, filters_path, 1) < 0) {
             fprintf(stderr, "kwd: filter sync failed\n"); goto done;
+        } else {
+            g_filters = 1;
         }
     }
 
