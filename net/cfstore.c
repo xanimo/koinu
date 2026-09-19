@@ -119,6 +119,11 @@ long kw_cfstore_count(const char *path)
 long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                      uint32_t base_height)
 {
+    if (p && p->peer_services && !(p->peer_services & KW_NODE_COMPACT_FILTERS))
+        fprintf(stderr, "kw: this peer does not serve compact filters (services %#llx); "
+                        "use --spv, or a node with filters enabled\n",
+                (unsigned long long)p->peer_services);
+
     /* count via the index (O(1)) rather than streaming the whole cache */
     long have;
     FILE *tf = fopen(path, "rb");
