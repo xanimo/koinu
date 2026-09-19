@@ -95,6 +95,10 @@ typedef struct { int status; long height; uint64_t value; long tipheight; } kw_o
    [since, tip] and reading only the matching blocks. Updates the filter cache
    delta first. Returns 1, or -1 on error. Reused by the daemon so a resident
    header store and peer answer queries without reloading. */
+/* (filters_path) NULL means no filters: every block at or above (since) is fetched
+   and checked. The filter only ever narrowed the candidate list, so this answers
+   the same question at the cost of the blocks in the range, which is the only way
+   to ask it on a network where no peer serves bip158. */
 int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *filters_path,
                             uint32_t base_height, const uint8_t *spk, size_t spklen,
                             const uint8_t txid[32], uint32_t vout, uint32_t since,

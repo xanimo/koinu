@@ -302,13 +302,29 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
                             const uint8_t txid[32], uint32_t vout, uint32_t since,
                             kw_outpoint_result *res)
 {
-    if (kw_cfstore_sync(p, s, filters_path, base_height) < 0) return -1;
-
-    kw_gcs_item it = { spk, spklen };
     uint32_t *heights = (uint32_t *)malloc((s->count ? s->count : 1) * sizeof *heights);
     if (!heights) return -1;
-    long nm = kw_cfstore_match_range(filters_path, s, base_height, since, &it, 1, heights, s->count);
-    if (nm < 0) { free(heights); return -1; }
+
+    long nm;
+    if (filters_path) {
+        if (kw_cfstore_sync(p, s, filters_path, base_height) < 0) { free(heights); return -1; }
+        kw_gcs_item it = { spk, spklen };
+        nm = kw_cfstore_match_range(filters_path, s, base_height, since, &it, 1, heights, s->count);
+        if (nm < 0) { free(heights); return -1; }
+    } else {
+        /* No filters, so every block in the range is a candidate. A filter only
+           ever narrowed which blocks to fetch; the block is what answers the
+           question either way. Bounded by (since), which is what makes this
+           usable on a chain where no peer serves filters at all. */
+        (void)spk; (void)spklen;
+        nm = 0;
+        for (size_t i = 0; i < s->count; i++) {
+            uint32_t h = base_height + (uint32_t)i;
+            if (h >= since) heights[nm++] = h;
+        }
+        if (kw_net_verbose)
+            fprintf(stderr, "[spv] no filters, fetching %ld block(s) from %u\n", nm, since);
+    }
 
     long created_h = -1, spent_h = -1; uint64_t value = 0;
     for (long i = 0; i < nm; i++) {
