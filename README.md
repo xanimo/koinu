@@ -92,6 +92,12 @@ downloads only the blocks that match; --spv falls back to downloading full
 blocks and scanning them, for peers that do not serve filters. both learn
 nothing about the wallet beyond which blocks it wanted.
 
+the filter backend needs a node you run with filters enabled. probing the peers
+dogecoin's dns seeds hand out, 47 of 48 answered and none advertised bip158, so
+against the public network today the filter path does not run and --spv is what
+is left. kwd needs filters too, which is why it exits at startup against a seed
+peer. test/net_services.c is the probe if you want to re-measure.
+
 filters are checked against the peer's committed filter-header chain, and the
 verified tip is kept beside the cache so a later delta sync has to connect to
 it. --headers and --filters name caches that make a second run resume from the

@@ -22,6 +22,7 @@ typedef struct {
     uint8_t *msg;   size_t mcap;         /* holds the last parsed payload */
     int32_t  peer_version;
     int32_t  peer_height;
+    uint64_t peer_services;              /* BIP159 service bits from its version */
     int64_t  peer_feerate;               /* last BIP133 feefilter, koinu/kB, 0 if none */
     const kw_chainparams *cp;            /* the network connected to; NULL from kw_peer_from_fd */
 } kw_peer;

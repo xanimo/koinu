@@ -150,10 +150,21 @@ int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_heigh
     return 1;
 }
 
+/* A peer that does not advertise BIP157 will not answer getcfheaders, and the
+   caller otherwise learns that as a wire timeout. Said once, plainly. */
+static void warn_no_filters(const kw_peer *p)
+{
+    if (p && p->peer_services && !(p->peer_services & KW_NODE_COMPACT_FILTERS))
+        fprintf(stderr, "kw: this peer does not serve compact filters (services %#llx); "
+                        "use --spv, or a node with filters enabled\n",
+                (unsigned long long)p->peer_services);
+}
+
 long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                 kw_utxoset *us, const kw_watchset *ws, uint32_t base_height)
 {
     if (s->count == 0) return 0;
+    warn_no_filters(p);
 
     kw_gcs_item *items = NULL;
     if (ws->count) {
