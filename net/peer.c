@@ -192,6 +192,7 @@ int kw_peer_handshake(kw_peer *p, int32_t start_height)
             if (kw_msg_version_parse(pl, pn, &pv, ua, sizeof ua)) {
                 p->peer_version = pv.version;
                 p->peer_height = pv.start_height;
+                p->peer_services = pv.services;
             }
             got_version = 1;
             if (!kw_peer_send(p, "verack", NULL, 0)) return 0;

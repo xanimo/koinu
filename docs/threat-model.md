@@ -77,7 +77,9 @@ height 6300000, so a peer serving a different filter set is caught at the first
 anchor it crosses. Above the last anchor the base is still the peer's word. Compact
 filters are served by too few nodes to compare peers against each other, so this is
 an anchor table rather than a quorum, and the anchors were generated from one node's
-cfheaders rather than derived from blocks.
+cfheaders rather than derived from blocks. Too few is currently none: of 48 peers
+from the dns seeds, 47 answered and none advertised bip158, so this section
+describes a backend that needs a node you run yourself.
 
 A peer cannot invent a confirmation above the newest anchor, since it would have to
 mine the headers and the body has to hash to the header. It can withhold one, and a

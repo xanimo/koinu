@@ -28,6 +28,12 @@
 
 #define KW_CF_TYPE_BASIC 0x00
 
+/* BIP157's service bit. A peer without it will not answer getcfheaders, and no
+   peer reachable from dogecoin's dns seeds advertised it when this was written:
+   47 of 48 answered and none of them served filters. The filter backend needs a
+   node you run with them enabled. */
+#define KW_NODE_COMPACT_FILTERS (1ULL << 6)
+
 /* Build a getcfilters: filter type, start height, stop block hash (internal
    order). Returns length or 0. */
 size_t kw_msg_getcfilters_build(uint8_t type, uint32_t start_height,
