@@ -34,7 +34,18 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t stop = 0;
-static void on_sig(int s) { (void)s; stop = 1; }
+
+/* The first signal asks, the second insists. Startup syncs the headers and the
+   filters before it ever reaches the accept loop, and neither of those looks at
+   (stop), so a kill during startup was noted and then ignored for as long as the
+   sync took. test_kwd left twenty-five daemons running on this machine that way,
+   each one outliving the directory it was given. */
+static void on_sig(int s)
+{
+    (void)s;
+    if (stop) _exit(1);
+    stop = 1;
+}
 
 /* How long one client gets. The accept loop is single threaded and answers one
    request per connection, so a client that connects and says nothing holds every
@@ -263,6 +274,7 @@ int main(int argc, char **argv)
         kw_headerstore_free(&s); kw_headerstore_init(&s);
     }
     long nh = kwd_sync(&s, cp);
+    if (stop) goto done;
     if (nh < 0) { fprintf(stderr, "kwd: header sync failed\n"); goto done; }
     if (headers_path) kw_headerstore_save(&s, headers_path);
     {
@@ -280,6 +292,7 @@ int main(int argc, char **argv)
         } else {
             g_filters = 1;
         }
+        if (stop) goto done;
     }
 
     if (strlen(sock) >= sizeof ((struct sockaddr_un *)0)->sun_path) {
