@@ -138,9 +138,15 @@ them.
 a resident daemon for a caller that asks repeatedly and cannot pay the chain load
 each time. kw loads the header cache on every invocation, which is linear in the
 height and was 313 to 321ms at 6.37M headers here; kwd pays that once at startup
-and holds the chain and its peer connections open. a request is then a delta sync
-with those peers, so what it costs depends on them and not on the chain's length.
-it answers over a unix socket.
+and holds the chain and its peer connections open, then answers over a unix
+socket.
+
+measured against mainnet at height 6380305, with a filter cache built from a node
+serving bip158: 8 to 25ms for a repeated query, 287ms over an 80000 block range,
+and 2884ms for the first request after startup, which pays the delta sync. without
+filters the same daemon fetches every block in the range instead, which was 1572ms
+for 46 blocks. the first number is the one to size a budget against and the last
+is the one to size a range against.
 
 kwd needs a peer that serves bip158 filters, since it builds the filter cache at
 startup and exits if it cannot. most mainnet nodes do not serve them, so this is
