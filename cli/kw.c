@@ -35,7 +35,9 @@
 #include "cfstore.h"
 #include "utxo.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,6 +111,26 @@ static void usage(void)
 }
 
 /* trim a trailing newline/CR in place */
+/* A numeric argument, refused rather than guessed at. atoi has no error return,
+   so --gap abc was silently 0 and --gap with a huge value was undefined; a
+   negative --gap reached malloc((size_t)(2 * watched) * 20), where the signed
+   product converts to a size_t near the top of the range and the multiply wraps.
+   That failed the allocation and reported "out of memory" for what was a bad
+   argument. Bounds are the caller's to state. */
+static int arg_int(const char *name, const char *v, int lo, int hi, int *out)
+{
+    if (!v) { fprintf(stderr, "kw: %s wants a number\n", name); return 0; }
+    errno = 0;
+    char *end = NULL;
+    long n = strtol(v, &end, 10);
+    if (errno || end == v || *end || n < lo || n > hi) {
+        fprintf(stderr, "kw: %s wants %d..%d, not \"%s\"\n", name, lo, hi, v);
+        return 0;
+    }
+    *out = (int)n;
+    return 1;
+}
+
 static void chomp(char *s)
 {
     size_t n = strlen(s);
@@ -117,42 +139,103 @@ static void chomp(char *s)
 
 /* Read a secret line from @FILE, stdin ("-"), or a no-echo prompt. A bare value
    is refused: it would sit in argv. Caller frees with pc-style secret wipe. */
+/* The longest legitimate secret: a 24-word BIP39 mnemonic is 188 bytes for the
+   English list, and a passphrase has no standard bound, so this is generous and
+   anything past it is refused rather than grown into. */
+#define KW_SECRET_MAX 512
+
+/* Wipes the whole allocation rather than up to the NUL: chomp moves the NUL back
+   over the newline, and a shorter second read would leave the tail of a longer
+   first one behind. read_secret allocates exactly KW_SECRET_MAX. */
+static void secret_free(char *s)
+{
+    if (!s) return;
+    kw_secure_forget(s, KW_SECRET_MAX);
+    free(s);
+}
+
+/* Read one line into (buf), which the caller owns and locks. Returns its length
+   or -1. No getline: it starts at 120 bytes and reallocs to grow, and realloc
+   copies the contents to a new block and frees the old one untouched, so a
+   24-word mnemonic left most of itself in a freed 120-byte block that nothing
+   could then wipe. That is the normal path for kw restore, not an edge case. */
+static ssize_t read_line_into(FILE *f, char *buf, size_t cap)
+{
+    size_t n = 0;
+    for (;;) {
+        int ch = fgetc(f);
+        if (ch == EOF) return n ? (ssize_t)n : -1;
+        if (ch == '\n') break;
+        if (n + 1 >= cap) return -2;             /* longer than any real secret */
+        buf[n++] = (char)ch;
+    }
+    buf[n] = '\0';
+    return (ssize_t)n;
+}
+
+/* Restore the terminal if the user interrupts the no-echo prompt. Without this a
+   ctrl-C leaves their shell with ECHO off and nothing on screen to explain it. */
+static struct termios kw_tty_saved;
+static volatile sig_atomic_t kw_tty_off = 0;
+
+static void kw_tty_restore(int sig)
+{
+    if (kw_tty_off) { tcsetattr(STDIN_FILENO, TCSAFLUSH, &kw_tty_saved); kw_tty_off = 0; }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 static char *read_secret(const char *arg, const char *prompt)
 {
-    char *line = NULL; size_t cap = 0; ssize_t n;
+    char *line = (char *)malloc(KW_SECRET_MAX);
+    if (!line) return NULL;
+    kw_secure_keep(line, KW_SECRET_MAX);
+    ssize_t n;
 
     if (arg && arg[0] == '@') {
         FILE *f = fopen(arg + 1, "r");
-        if (!f) return NULL;
-        n = getline(&line, &cap, f);
+        if (!f) { secret_free(line); return NULL; }
+        n = read_line_into(f, line, KW_SECRET_MAX);
         fclose(f);
     } else if (arg && !strcmp(arg, "-")) {
-        n = getline(&line, &cap, stdin);
+        n = read_line_into(stdin, line, KW_SECRET_MAX);
     } else if (arg) {
         fprintf(stderr, "kw: pass this via @FILE or - , not on the command line\n");
+        secret_free(line);
         return NULL;
     } else {
-        struct termios old, quiet;
+        struct termios quiet;
         int tty = isatty(STDIN_FILENO);
         fprintf(stderr, "%s", prompt);
-        if (tty) { tcgetattr(STDIN_FILENO, &old); quiet = old; quiet.c_lflag &= ~(tcflag_t)ECHO;
-                   tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet); }
-        n = getline(&line, &cap, stdin);
-        if (tty) { tcsetattr(STDIN_FILENO, TCSAFLUSH, &old); fprintf(stderr, "\n"); }
+        if (tty) {
+            /* a failed tcgetattr would otherwise hand tcsetattr an uninitialised
+               struct and leave the terminal in whatever the stack held */
+            if (tcgetattr(STDIN_FILENO, &kw_tty_saved) != 0) tty = 0;
+        }
+        if (tty) {
+            quiet = kw_tty_saved;
+            quiet.c_lflag &= ~(tcflag_t)ECHO;
+            kw_tty_off = 1;
+            signal(SIGINT, kw_tty_restore);
+            signal(SIGTERM, kw_tty_restore);
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
+        }
+        n = read_line_into(stdin, line, KW_SECRET_MAX);
+        if (tty) {
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &kw_tty_saved);
+            kw_tty_off = 0;
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTERM, SIG_DFL);
+            fprintf(stderr, "\n");
+        }
     }
-    if (n < 0) { free(line); return NULL; }
+    if (n == -2) fprintf(stderr, "kw: that is longer than %d bytes, which no mnemonic "
+                                 "or passphrase needs\n", KW_SECRET_MAX - 1);
+    if (n < 0) { secret_free(line); return NULL; }
     chomp(line);
     return line;
 }
 
-static void secret_free(char *s)
-{
-    if (!s) return;
-    volatile char *p = (volatile char *)s;
-    size_t n = strlen(s);
-    while (n--) *p++ = 0;
-    free(s);
-}
 
 static const kw_chainparams *chain_for(int net) /* 0 main, 1 test, 2 regtest */
 {
@@ -1857,7 +1940,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--keystore"))   path = NEXT();
         else if (!strcmp(a, "--passphrase")) pass_arg = NEXT();
         else if (!strcmp(a, "--mnemonic"))   mnem_arg = NEXT();
-        else if (!strcmp(a, "--words"))    { const char *v = NEXT(); words = v ? atoi(v) : 12; }
+        else if (!strcmp(a, "--words"))    { if (!arg_int("--words", NEXT(), 12, 24, &words)) return 2; }
         else if (!strcmp(a, "--account"))  { const char *v = NEXT(); account = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
         else if (!strcmp(a, "--index"))    { const char *v = NEXT(); index = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
         else if (!strcmp(a, "--change"))     change = 1;
@@ -1876,11 +1959,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--maxfee"))     maxfee_arg = NEXT();
         else if (!strcmp(a, "--change-to"))  change_arg = NEXT();
         else if (!strcmp(a, "--node"))     { node = NEXT(); if (node && g_nnodes < 8) g_nodes[g_nnodes++] = node; }
-        else if (!strcmp(a, "--port"))     { const char *v = NEXT(); port = v ? atoi(v) : -1; }
+        else if (!strcmp(a, "--port"))     { if (!arg_int("--port", NEXT(), 1, 65535, &port)) return 2; }
         else if (!strcmp(a, "--tor"))        tor = 1;
         else if (!strcmp(a, "--spv"))        use_cf = 0;
         else if (!strcmp(a, "--cf"))         use_cf = 1;
-        else if (!strcmp(a, "--gap"))      { const char *v = NEXT(); gap = v ? atoi(v) : 100; }
+        else if (!strcmp(a, "--gap"))      { if (!arg_int("--gap", NEXT(), 1, 100000, &gap)) return 2; }
         else if (!strcmp(a, "--utxos"))      utxos_arg = NEXT();
         else if (!strcmp(a, "--wif"))        wif_arg = NEXT();
         else if (!strcmp(a, "--watch"))      watch_arg = NEXT();
@@ -1891,12 +1974,19 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "--redeem"))     redeem_arg = NEXT();
-        else if (!strcmp(a, "--psbt"))     { const char *v = NEXT(); if (!psbt_arg) psbt_arg = v; else if (npsbt < 8) psbts[npsbt++] = v; }
+        else if (!strcmp(a, "--psbt"))     { const char *v = NEXT();
+            /* Dropping the ninth would combine eight parties and report success,
+               losing a signature nobody was told about. */
+            if (!psbt_arg) psbt_arg = v;
+            else if (npsbt == 8) { fprintf(stderr, "kw: at most %d --psbt to combine\n", 9); return 2; }
+            else if (v) psbts[npsbt++] = v; }
         else if (!strcmp(a, "--scriptsig"))  script_arg = NEXT();
-        else if (!strcmp(a, "--vin"))      { const char *v = NEXT(); vin = v ? atoi(v) : 0; }
-        else if (!strcmp(a, "--sig"))      { const char *v = NEXT(); if (v && nsigs < 15) sigs[nsigs++] = v; }
+        else if (!strcmp(a, "--vin"))      { if (!arg_int("--vin", NEXT(), 0, KW_TX_MAX_IN - 1, &vin)) return 2; }
+        else if (!strcmp(a, "--sig"))      { const char *v = NEXT();
+            if (v && nsigs == 15) { fprintf(stderr, "kw: at most 15 --sig\n"); return 2; }
+            if (v) sigs[nsigs++] = v; }
         else if (!strcmp(a, "--finish"))     finish = 1;
-        else if (!strcmp(a, "--peers"))    { const char *v = NEXT(); peers = v ? atoi(v) : 1; }
+        else if (!strcmp(a, "--peers"))    { if (!arg_int("--peers", NEXT(), 1, 64, &peers)) return 2; }
         else if (!strcmp(a, "--validate-pow")) validate_pow = 1;
         else if (!strcmp(a, "--yes"))        assume_yes = 1;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
