@@ -282,7 +282,23 @@ static int write_new_keystore(const char *path, const uint8_t *blob, size_t n)
         if (w <= 0) { ok = 0; break; }
         off += (size_t)w;
     }
-    close(fd);
+    /* This is the one file whose loss cannot be recovered from anything else in
+       the tree: the seed lives here and the mnemonic was printed once to a
+       terminal. A crash between write and writeback leaves a short file, which
+       fails the exact-length check on open, and O_EXCL then refuses to let the
+       user simply run kw new again at the same path. So the bytes are flushed,
+       and the directory entry after them, before this reports success. */
+    if (ok && fsync(fd) != 0) ok = 0;
+    if (close(fd) != 0) ok = 0;
+    if (ok) {
+        char dir[4200];
+        snprintf(dir, sizeof dir, "%s", path);
+        char *slash = strrchr(dir, '/');
+        if (slash) *slash = '\0'; else snprintf(dir, sizeof dir, ".");
+        int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+        if (dfd >= 0) { if (fsync(dfd) != 0) ok = 0; close(dfd); }
+    }
+    if (!ok) fprintf(stderr, "kw: %s was not written durably; delete it and retry\n", path);
     return ok;
 }
 

@@ -5,6 +5,12 @@
 # in-tree. See docs/PROVENANCE.md.
 
 CC       ?= cc
+# Hardening on the shipped binary. The sanitizer targets below override CFLAGS
+# wholesale, so these apply to the artifact people actually run and nobody
+# rebuilds. _FORTIFY_SOURCE needs an optimised build to do anything.
+HARDEN   ?= -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIE
+HARDLDFLAGS ?= -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -pie
+
 CFLAGS   ?= -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter
 
 # An implicit declaration links against the wrong prototype and returns the
@@ -18,7 +24,8 @@ SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 # argon2 runs single-threaded (parallelism handled in one process), so its
 # thread abstraction is compiled out. pthread is for net/psync's parallel
 # header download, nothing else.
-override CFLAGS += -pthread
+override CFLAGS += -pthread $(HARDEN)
+override LDFLAGS += $(HARDLDFLAGS)
 CPPFLAGS += -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna \
             -Icrypto/vendor/argon2 -DARGON2_NO_THREADS
 
