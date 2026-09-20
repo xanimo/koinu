@@ -97,7 +97,11 @@ int kw_journal_append(const char *path, const kw_journal_entry *e)
         if (w <= 0) { ok = 0; break; }
         off += (size_t)w;
     }
-    close(fd);
+    /* A lost entry is not lost money, it is a change address handed out twice,
+       since kw_change_index reads this to know an index was used. Cheap to make
+       durable at one entry per spend. */
+    if (ok && fsync(fd) != 0) ok = 0;
+    if (close(fd) != 0) ok = 0;
     return ok;
 }
 

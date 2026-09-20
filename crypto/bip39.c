@@ -66,7 +66,11 @@ size_t kw_bip39_from_entropy(const uint8_t *ent, size_t entlen, char *out, size_
         uint32_t idx = get_bits(buf, i * 11, 11);
         const char *w = KW_BIP39_WORDLIST_EN[idx];
         size_t wl = strlen(w);
-        if (k + wl + (i ? 1 : 0) + 1 > outcap) { kw_secure_zero(buf, sizeof buf); return 0; }
+        if (k + wl + (i ? 1 : 0) + 1 > outcap) {
+            kw_secure_zero(buf, sizeof buf);
+            kw_secure_zero(h, sizeof h);          /* as the success path does */
+            return 0;
+        }
         if (i) out[k++] = ' ';
         memcpy(out + k, w, wl); k += wl;
     }
