@@ -33,6 +33,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include "auxpow.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,7 +47,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const uint8_t *in = data + 1;
     size_t len = size - 1;
 
-    switch (which % 10) {
+    switch (which % 11) {
     case 0: {                                  /* a transaction off the wire */
         kw_tx tx;
         if (kw_tx_parse(in, len, &tx) > 0) {
@@ -100,6 +102,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         kw_msg_cfheaders_parse(in, len, &type, stop, prev, &hh, &nh);
         break;
     }
+    case 10: {                                 /* the merged-mining structure check */
+        /* kw_auxpow_parse is reached through cases 3 and 4, but the structure
+           check behind it was reached by nothing except the four real proofs in
+           the test vector, and it is the code that decides whether a header
+           proves its work. Takes 32 bytes as the block hash the proof should
+           commit to, the rest as the blob.
+
+           The corpus entry for this has to be a real proof. Seeded from noise the
+           parser rejects everything and the check never runs at all: 200000
+           iterations reached it zero times, against 1396600 when mutating a
+           genuine one. */
+        if (len < 33) break;
+        uint8_t aux_hash[32];
+        memcpy(aux_hash, in, 32);
+        size_t off = 0;
+        kw_auxpow ap;
+        if (kw_auxpow_parse(in + 32, len - 32, &off, &ap))
+            (void)kw_auxpow_check_structure(&ap, aux_hash, KW_AUXPOW_CHAIN_ID);
+        break;
+    }
     case 6:                                    /* the tracked utxo set */
     case 7:                                    /* the wallet journal */
     case 8:                                    /* a header cache */
@@ -113,13 +135,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         if (len) fwrite(in, 1, len, f);
         fclose(f);
 
-        if (which % 10 == 6) {
+        if (which % 11 == 6) {
             kw_utxoset us;
             if (kw_utxoset_init(&us)) { kw_utxoset_load(&us, path); kw_utxoset_free(&us); }
-        } else if (which % 10 == 7) {
+        } else if (which % 11 == 7) {
             kw_journal j;
             if (kw_journal_init(&j)) { kw_journal_load(&j, path); kw_journal_free(&j); }
-        } else if (which % 10 == 8) {
+        } else if (which % 11 == 8) {
             kw_headerstore hs;
             if (kw_headerstore_init(&hs)) { kw_headerstore_load(&hs, path); kw_headerstore_free(&hs); }
         } else {
