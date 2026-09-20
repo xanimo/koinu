@@ -58,6 +58,45 @@ int main(void)
 
     if (kw_psbt_sign(&a, 0, skA, KW_SIGHASH_ALL) != 1 ||
         kw_psbt_sign(&b, 0, skB, KW_SIGHASH_ALL) != 1) { fprintf(stderr, "FAIL: sign\n"); return 1; }
+
+    /* Two psbts that disagree about the redeem script are not combinable. Taking
+       the first drops the other party's script by argument order, which is the
+       thing the parser refuses to do one layer down. */
+    {
+        kw_psbt x = a, y = a;
+        x.in[0].redeemlen = 3; memcpy(x.in[0].redeem, "\x51\x52\x53", 3);
+        y.in[0].redeemlen = 3; memcpy(y.in[0].redeem, "\x51\x52\x54", 3);
+        if (kw_psbt_combine(&x, &y) != 0) {
+            fprintf(stderr, "FAIL: combined two different redeem scripts\n"); return 1;
+        }
+        kw_psbt z = a, w = a;                       /* identical still combines */
+        if (kw_psbt_combine(&z, &w) != 1) {
+            fprintf(stderr, "FAIL: refused two identical psbts\n"); return 1;
+        }
+    }
+
+    /* A psbt that asks for a sighash this signer cannot produce is refused, not
+       signed with a different one and relabelled. Rewriting the field returned a
+       psbt claiming it had asked for what it got. */
+    {
+        kw_psbt d = a;
+        d.in[0].has_sighash = 1;
+        d.in[0].sighash = 0x02;                      /* SIGHASH_NONE */
+        if (kw_psbt_sign(&d, 0, skA, KW_SIGHASH_ALL) != 0) {
+            fprintf(stderr, "FAIL: signed a psbt that asked for another sighash\n"); return 1;
+        }
+        if (d.in[0].sighash != 0x02) {
+            fprintf(stderr, "FAIL: the declared sighash was rewritten to %u\n", d.in[0].sighash);
+            return 1;
+        }
+        /* and the request it can meet still signs */
+        kw_psbt e = a;
+        e.in[0].has_sighash = 1;
+        e.in[0].sighash = KW_SIGHASH_ALL;
+        if (kw_psbt_sign(&e, 0, skA, KW_SIGHASH_ALL) != 1) {
+            fprintf(stderr, "FAIL: refused a sighash it can satisfy\n"); return 1;
+        }
+    }
     if (a.in[0].nsigs != 1 || b.in[0].nsigs != 1) { fprintf(stderr, "FAIL: sig count\n"); return 1; }
 
     if (!kw_psbt_combine(&a, &b)) { fprintf(stderr, "FAIL: combine\n"); return 1; }
@@ -162,6 +201,7 @@ int main(void)
     }
 
     kw_ec_stop();
+
     printf("psbt ok: create/update/sign/combine/finalize/extract, %d bip174 vectors parsed and round-tripped, %d refused\n",
            parsed, refused);
     return 0;

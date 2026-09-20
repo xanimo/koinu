@@ -74,6 +74,14 @@ int kw_psbt_sign(kw_psbt *p, size_t index, const uint8_t sk[32], uint32_t hashty
     if (index >= p->tx.nin) return 0;
     kw_psbt_in *in = &p->in[index];
     if (!in->redeemlen) return 0;                /* nothing to hash against */
+    /* A psbt can declare the sighash it wants signed. Signing with a different
+       one and then overwriting the field turns a request this signer cannot meet
+       into one it appears to have met: the psbt comes back claiming it asked for
+       what was produced. BIP174 says a signer that cannot satisfy the request
+       fails, so it fails. Nothing here was exploitable, since kw_tx_sighash takes
+       ALL only and the signature commits to every output either way, but the
+       counterparty's declared intent is not this signer's to rewrite. */
+    if (in->has_sighash && in->sighash != hashtype) return 0;
 
     uint8_t pub[33];
     if (!kw_ec_pubkey(sk, pub)) return 0;
@@ -117,6 +125,19 @@ int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
     for (size_t i = 0; i < dst->tx.nin; i++) {
         const kw_psbt_in *s = &src->in[i];
         kw_psbt_in *d = &dst->in[i];
+        /* Conflicts stop the combine rather than resolving by argument order. The
+           parser already refuses a record it cannot represent so the other
+           party's data is never silently dropped; taking the first of two
+           differing redeem scripts drops it just as thoroughly, one layer up, and
+           means the two parties are working from different scripts. */
+        if (d->redeemlen && s->redeemlen &&
+            (d->redeemlen != s->redeemlen || memcmp(d->redeem, s->redeem, s->redeemlen) != 0)) return 0;
+        if (d->finallen && s->finallen &&
+            (d->finallen != s->finallen || memcmp(d->final, s->final, s->finallen) != 0)) return 0;
+        if (d->utxo && s->utxo &&
+            (d->utxolen != s->utxolen || memcmp(d->utxo, s->utxo, s->utxolen) != 0)) return 0;
+        if (d->has_sighash && s->has_sighash && d->sighash != s->sighash) return 0;
+
         if (!d->redeemlen && s->redeemlen) {
             memcpy(d->redeem, s->redeem, s->redeemlen); d->redeemlen = s->redeemlen;
         }
