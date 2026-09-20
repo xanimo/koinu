@@ -353,9 +353,13 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
     pthread_t *th = (pthread_t *)malloc((size_t)npeers * sizeof *th);
     if (!th) { free(c.state); free(c.claims); fclose(pf); remove(part); return -1; }
 
+    /* Written at (started), not at (i), so the two loops agree by construction. A
+       create that fails leaves a hole otherwise: the join loop runs to (started)
+       and so joins an indeterminate pthread_t and skips a live worker, which then
+       writes through c.fd and into a psync_ctx whose frame has returned. */
     int started = 0;
     for (int i = 0; i < npeers; i++)
-        if (pthread_create(&th[i], NULL, worker, &c) == 0) started++;
+        if (pthread_create(&th[started], NULL, worker, &c) == 0) started++;
     for (int i = 0; i < started; i++) pthread_join(th[i], NULL);
     free(th);
 

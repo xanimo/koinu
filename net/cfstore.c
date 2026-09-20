@@ -7,6 +7,7 @@
 #include "sync.h"
 #include "sha2.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -28,9 +29,12 @@ static int fh_load(const char *path, long *count, uint8_t hdr[32])
              memcmp(buf, KW_FH_MAGIC, 4) == 0;
     fclose(f);
     if (!ok) return 0;
-    long c = 0;
-    for (int i = 0; i < 8; i++) c |= (long)buf[4 + i] << (8 * i);
-    *count = c;
+    /* Accumulated unsigned: the eighth byte shifts into a signed long's sign bit,
+       which is undefined rather than wrapping. Range-checked before it narrows. */
+    uint64_t u = 0;
+    for (int i = 0; i < 8; i++) u |= (uint64_t)buf[4 + i] << (8 * i);
+    if (u > (uint64_t)LONG_MAX) return 0;
+    *count = (long)u;
     memcpy(hdr, buf + 12, 32);
     return 1;
 }
@@ -269,7 +273,11 @@ static int ensure_index(const char *path)
     FILE *xf = fopen(ip, "rb");
     if (xf) {
         uint8_t hd[8];
-        if (fread(hd, 1, 8, xf) == 8) { stored = 0; for (int i = 0; i < 8; i++) stored |= (long)hd[i] << (8 * i); }
+        if (fread(hd, 1, 8, xf) == 8) {
+            uint64_t u = 0;
+            for (int i = 0; i < 8; i++) u |= (uint64_t)hd[i] << (8 * i);
+            stored = u > (uint64_t)LONG_MAX ? -1 : (long)u;      /* same sign-bit trap */
+        }
         fclose(xf);
     }
     if (stored == csize) { fclose(cf); return 1; }                 /* current */
