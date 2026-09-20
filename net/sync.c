@@ -188,12 +188,21 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                                             body, sizeof body);
         if (!bn || !kw_peer_send(p, "getheaders", body, bn)) { free(batch); return -1; }
 
-        /* read past anything that is not a headers message, answering pings */
+        /* Read past anything that is not a headers message, answering pings. The
+           socket timeout stops a silent peer, but a peer that sends one
+           well-formed message inside every timeout window would keep a sync alive
+           forever without advancing it, so the detour is also bounded by count. */
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
         int got = 0, r;
+        int skipped = 0;
         while ((r = kw_peer_recv(p, cmd, &pl, &pn)) == 1) {
             if (!strcmp(cmd, "headers")) { got = 1; break; }
             if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+            if (++skipped > KW_SYNC_MAX_SKIP) {
+                if (kw_net_verbose)
+                    fprintf(stderr, "[headers] peer sent %d messages without headers\n", skipped);
+                break;
+            }
         }
         if (!got) { free(batch); return -1; }
 

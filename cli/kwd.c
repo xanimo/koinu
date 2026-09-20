@@ -231,7 +231,15 @@ int main(int argc, char **argv)
             }
             if (v) node[nnode++] = v;
         }
-        else if (!strcmp(argv[i], "--port")) port = (++i < argc) ? atoi(argv[i]) : -1;
+        else if (!strcmp(argv[i], "--port")) {
+            const char *v = (++i < argc) ? argv[i] : NULL;
+            char *end = NULL;
+            long n = v ? strtol(v, &end, 10) : -1;
+            if (!v || end == v || *end || n < 1 || n > 65535) {
+                fprintf(stderr, "kwd: --port wants 1..65535\n"); return 2;
+            }
+            port = (int)n;
+        }
         else if (!strcmp(argv[i], "--socket")) sock = (++i < argc) ? argv[i] : NULL;
         else if (!strcmp(argv[i], "--headers")) headers_path = (++i < argc) ? argv[i] : NULL;
         else if (!strcmp(argv[i], "--filters")) filters_path = (++i < argc) ? argv[i] : NULL;
