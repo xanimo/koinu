@@ -82,12 +82,14 @@ size_t kw_keystore_seal(const uint8_t *secret, size_t secretlen,
     }
 
     /* header is the AAD, so version and kdf params are tamper-evident */
-    kw_chacha20poly1305_encrypt(key, nonce, out, KS_HDR, secret, secretlen,
-                                out + KS_HDR, out + KS_HDR + secretlen);
+    int sealed = kw_chacha20poly1305_encrypt(key, nonce, out, KS_HDR,
+                                             secret, secretlen,
+                                             out + KS_HDR, out + KS_HDR + secretlen);
 
     kw_secure_forget(key, sizeof key);
     kw_secure_zero(salt, sizeof salt);
     kw_secure_zero(nonce, sizeof nonce);
+    if (!sealed) return 0;
     return total;
 }
 

@@ -232,6 +232,9 @@ static int hw_agrees(void)
 #endif
 }
 
+/* Relaxed on purpose. Two threads racing the first call both run hw_agrees and
+   both store, which is fine: the probe has no side effects and they compute the
+   same answer. Nothing is published through this flag, so no ordering is owed. */
 int kw_sha256_hw(void)
 {
     int st = atomic_load_explicit(&hw_state, memory_order_relaxed);

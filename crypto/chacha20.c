@@ -47,10 +47,15 @@ void kw_chacha20_block(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
     kw_secure_zero(s, sizeof s);
 }
 
-void kw_chacha20_xor(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
-                     const uint8_t nonce[KW_CHACHA20_NONCE],
-                     const uint8_t *in, size_t len, uint8_t *out)
+int kw_chacha20_xor(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
+                    const uint8_t nonce[KW_CHACHA20_NONCE],
+                    const uint8_t *in, size_t len, uint8_t *out)
 {
+    /* RFC 8439: the counter must not wrap. At 2^32 blocks it returns to where it
+       started and the keystream repeats, so refuse rather than encrypt the tail
+       of a message with the same bytes as its head. */
+    if ((uint64_t)len > ((uint64_t)UINT32_MAX + 1 - counter) * 64) return 0;
+
     uint8_t ks[64];
     size_t off = 0;
     while (off < len) {
@@ -61,4 +66,5 @@ void kw_chacha20_xor(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
         counter++;
     }
     kw_secure_zero(ks, sizeof ks);
+    return 1;
 }
