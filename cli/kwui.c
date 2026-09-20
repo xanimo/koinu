@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <termios.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -58,21 +59,61 @@ static void h160_to_spk(const uint8_t h160[20], uint8_t spk[25])
 }
 
 /* Read a passphrase without echo. Never taken from argv, where ps could see it. */
+/* The same shape as kw's read_secret and for the same reasons: a fixed buffer
+   this owns and locks rather than getline, whose realloc leaves the first 120
+   bytes of a long secret in a freed block nothing can wipe; tcgetattr checked, so
+   a failure cannot hand tcsetattr an uninitialised struct; and a handler so a
+   ctrl-C at the prompt does not leave the user's terminal with ECHO off. */
+#define KWUI_SECRET_MAX 512
+
+static struct termios kwui_tty_saved;
+static volatile sig_atomic_t kwui_tty_off = 0;
+
+static void kwui_tty_restore(int sig)
+{
+    if (kwui_tty_off) { tcsetattr(STDIN_FILENO, TCSAFLUSH, &kwui_tty_saved); kwui_tty_off = 0; }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 static char *ask_pass(void)
 {
-    struct termios old, quiet;
+    char *line = (char *)malloc(KWUI_SECRET_MAX);
+    if (!line) return NULL;
+    kw_secure_keep(line, KWUI_SECRET_MAX);
+
+    struct termios quiet;
     int tty = isatty(STDIN_FILENO);
     fprintf(stderr, "passphrase: ");
+    if (tty && tcgetattr(STDIN_FILENO, &kwui_tty_saved) != 0) tty = 0;
     if (tty) {
-        tcgetattr(STDIN_FILENO, &old); quiet = old;
+        quiet = kwui_tty_saved;
         quiet.c_lflag &= ~(tcflag_t)ECHO;
+        kwui_tty_off = 1;
+        signal(SIGINT, kwui_tty_restore);
+        signal(SIGTERM, kwui_tty_restore);
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
     }
-    char *line = NULL; size_t cap = 0;
-    ssize_t n = getline(&line, &cap, stdin);
-    if (tty) { tcsetattr(STDIN_FILENO, TCSAFLUSH, &old); fprintf(stderr, "\n"); }
-    if (n < 0) { free(line); return NULL; }
-    while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+
+    size_t n = 0;
+    int truncated = 0;
+    for (;;) {
+        int ch = fgetc(stdin);
+        if (ch == EOF || ch == '\n') break;
+        if (n + 1 >= KWUI_SECRET_MAX) { truncated = 1; break; }
+        line[n++] = (char)ch;
+    }
+    line[n] = '\0';
+    while (n && (line[n-1] == '\r')) line[--n] = '\0';
+
+    if (tty) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &kwui_tty_saved);
+        kwui_tty_off = 0;
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        fprintf(stderr, "\n");
+    }
+    if (truncated || n == 0) { kw_secure_forget(line, KWUI_SECRET_MAX); free(line); return NULL; }
     return line;
 }
 
@@ -559,7 +600,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     uint8_t seed[64]; size_t slen = 0;
     kw_secure_keep(seed, sizeof seed);
     int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
-    kw_secure_zero(pass, strlen(pass)); free(pass);
+    kw_secure_forget(pass, KWUI_SECRET_MAX); free(pass);
     kw_secure_zero(blob, sizeof blob);
     if (!opened || slen != 64) {
         ask_line("   wrong passphrase. enter to go back ", yes, sizeof yes);
@@ -680,7 +721,15 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--regtest")) net = 2;
         else if (!strcmp(a, "--keystore") && i + 1 < argc) ks = argv[++i];
         else if (!strcmp(a, "--utxos") && i + 1 < argc)    utxos = argv[++i];
-        else if (!strcmp(a, "--gap") && i + 1 < argc)      gap = atoi(argv[++i]);
+        else if (!strcmp(a, "--gap") && i + 1 < argc) {
+            const char *v = argv[++i];
+            char *end = NULL;
+            long n = strtol(v, &end, 10);
+            if (end == v || *end || n < 1 || n > 100000) {
+                fprintf(stderr, "kwui: --gap wants 1..100000, not \"%s\"\n", v); return 2;
+            }
+            gap = (int)n;
+        }
         else {
             fprintf(stderr, "usage: kwui [--testnet|--regtest] --keystore PATH"
                             " [--utxos PATH] [--gap N]\n");
@@ -704,7 +753,7 @@ int main(int argc, char **argv)
     uint8_t seed[64]; size_t slen = 0;
     kw_secure_keep(seed, sizeof seed);
     int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
-    kw_secure_zero(pass, strlen(pass)); free(pass);
+    kw_secure_forget(pass, KWUI_SECRET_MAX); free(pass);
     kw_secure_zero(blob, sizeof blob);
     if (!opened || slen != 64) { fprintf(stderr, "kwui: wrong passphrase or corrupt keystore\n"); return 1; }
 
