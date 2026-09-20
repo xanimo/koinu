@@ -46,14 +46,15 @@ static void tag_compute(const uint8_t key[32], const uint8_t nonce[12],
     kw_secure_zero(polykey, sizeof polykey);
 }
 
-void kw_chacha20poly1305_encrypt(const uint8_t key[KW_AEAD_KEY],
+int kw_chacha20poly1305_encrypt(const uint8_t key[KW_AEAD_KEY],
                                  const uint8_t nonce[KW_AEAD_NONCE],
                                  const uint8_t *aad, size_t aadlen,
                                  const uint8_t *pt, size_t ptlen,
                                  uint8_t *ct, uint8_t tag[KW_AEAD_TAG])
 {
-    kw_chacha20_xor(key, 1, nonce, pt, ptlen, ct);
+    if (!kw_chacha20_xor(key, 1, nonce, pt, ptlen, ct)) return 0;
     tag_compute(key, nonce, aad, aadlen, ct, ptlen, tag);
+    return 1;
 }
 
 int kw_chacha20poly1305_decrypt(const uint8_t key[KW_AEAD_KEY],
@@ -71,6 +72,6 @@ int kw_chacha20poly1305_decrypt(const uint8_t key[KW_AEAD_KEY],
         return 0;
     }
     kw_secure_zero(want, sizeof want);
-    kw_chacha20_xor(key, 1, nonce, ct, ctlen, pt);
+    if (!kw_chacha20_xor(key, 1, nonce, ct, ctlen, pt)) return 0;
     return 1;
 }

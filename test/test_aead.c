@@ -4,6 +4,7 @@
 
 #include "chacha20.h"
 #include "aead.h"
+#include "hex.h"
 #include "testutil.h"
 #include "poly1305-donna.h"
 
@@ -70,7 +71,40 @@ int main(void)
         for (size_t i = 0; i < ptlen; i++) if (leak[i] != 0) { fprintf(stderr, "FAIL: plaintext leaked on bad tag\n"); return 1; }
     }
 
+    /* The 32-bit block counter must not wrap, since a wrapped counter repeats the
+       keystream. Starting one block from the end makes 64 bytes the whole budget
+       and 65 one too many. */
+    {
+        uint8_t k[KW_CHACHA20_KEY] = {0}, n12[KW_CHACHA20_NONCE] = {0};
+        uint8_t in[65] = {0}, out[65];
+        memset(out, 0x5a, sizeof out);
+        if (kw_chacha20_xor(k, UINT32_MAX, n12, in, 65, out)) {
+            fprintf(stderr, "FAIL: chacha20 encrypted past the counter\n"); return 1;
+        }
+        for (size_t i = 0; i < sizeof out; i++)
+            if (out[i] != 0x5a) { fprintf(stderr, "FAIL: chacha20 wrote on refusal\n"); return 1; }
+        if (!kw_chacha20_xor(k, UINT32_MAX, n12, in, 64, out)) {
+            fprintf(stderr, "FAIL: chacha20 refused the last block\n"); return 1;
+        }
+    }
+
+    /* kw_hex_encode sizes its output by division, so a length whose doubling
+       wraps is refused instead of passing the guard. */
+    {
+        char small[8];
+        if (kw_hex_encode((const uint8_t *)"x", SIZE_MAX / 2 + 1, small, sizeof small)) {
+            fprintf(stderr, "FAIL: hex encode accepted a wrapping length\n"); return 1;
+        }
+        if (kw_hex_encode((const uint8_t *)"x", 1, small, 0)) {
+            fprintf(stderr, "FAIL: hex encode accepted a zero capacity\n"); return 1;
+        }
+        if (kw_hex_encode((const uint8_t *)"\xab", 1, small, 3) != 2 || strcmp(small, "ab")) {
+            fprintf(stderr, "FAIL: hex encode rejected an exact fit\n"); return 1;
+        }
+    }
+
     if (kw_test_fails()) { fprintf(stderr, "%d aead vector(s) failed\n", kw_test_fails()); return 1; }
-    printf("aead ok: rfc 8439 chacha20 block, poly1305, and chacha20-poly1305 with forgery rejection\n");
+    printf("aead ok: rfc 8439 chacha20 block, poly1305, chacha20-poly1305 with forgery rejection,\n"
+           "  a refused counter wrap and hex output bounds\n");
     return 0;
 }

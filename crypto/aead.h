@@ -14,7 +14,7 @@
 
 /* Encrypt (pt) into (ct) (same length; may alias) and write the authentication
    tag over (aad)+ciphertext. */
-void kw_chacha20poly1305_encrypt(const uint8_t key[KW_AEAD_KEY],
+int kw_chacha20poly1305_encrypt(const uint8_t key[KW_AEAD_KEY],
                                  const uint8_t nonce[KW_AEAD_NONCE],
                                  const uint8_t *aad, size_t aadlen,
                                  const uint8_t *pt, size_t ptlen,

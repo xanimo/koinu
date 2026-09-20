@@ -15,7 +15,9 @@ static int hexval(char c)
 size_t kw_hex_encode(const uint8_t *in, size_t inlen, char *out, size_t outcap)
 {
     static const char *d = "0123456789abcdef";
-    if (outcap < inlen * 2 + 1) return 0;
+    /* Divide rather than multiply: inlen * 2 + 1 wraps above SIZE_MAX/2 and the
+       guard then passes on a length that cannot fit. */
+    if (!outcap || inlen > (outcap - 1) / 2) return 0;
     for (size_t i = 0; i < inlen; i++) {
         out[2*i]     = d[in[i] >> 4];
         out[2*i + 1] = d[in[i] & 0x0f];

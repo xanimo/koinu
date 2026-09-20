@@ -16,8 +16,9 @@ void kw_chacha20_block(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
                        const uint8_t nonce[KW_CHACHA20_NONCE], uint8_t out[64]);
 
 /* XOR (len) bytes of (in) with the keystream starting at (counter). in and out
-   may alias. */
-void kw_chacha20_xor(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
+   may alias. Returns 0 without writing anything if len would run the 32-bit
+   counter past its end, since a wrapped counter repeats the keystream. */
+int kw_chacha20_xor(const uint8_t key[KW_CHACHA20_KEY], uint32_t counter,
                      const uint8_t nonce[KW_CHACHA20_NONCE],
                      const uint8_t *in, size_t len, uint8_t *out);
 
