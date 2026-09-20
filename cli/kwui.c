@@ -557,6 +557,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     char *pass = ask_pass();
     if (!pass) return;
     uint8_t seed[64]; size_t slen = 0;
+    kw_secure_keep(seed, sizeof seed);
     int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
     kw_secure_zero(pass, strlen(pass)); free(pass);
     kw_secure_zero(blob, sizeof blob);
@@ -607,7 +608,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         kw_secure_zero(&key, sizeof key);
     }
     kw_secure_zero(&master, sizeof master);
-    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
     if (!ok) { ask_line("   signing failed. enter to go back ", yes, sizeof yes); return; }
 
     uint8_t raw[16384];
@@ -701,6 +702,7 @@ int main(int argc, char **argv)
     char *pass = ask_pass();
     if (!pass) { fprintf(stderr, "kwui: no passphrase\n"); return 1; }
     uint8_t seed[64]; size_t slen = 0;
+    kw_secure_keep(seed, sizeof seed);
     int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
     kw_secure_zero(pass, strlen(pass)); free(pass);
     kw_secure_zero(blob, sizeof blob);
@@ -723,10 +725,10 @@ int main(int argc, char **argv)
     }
 
     row *rows = (row *)calloc(MAXADDR, sizeof *rows);
-    if (!rows) { kw_utxoset_free(&us); kw_secure_zero(seed, sizeof seed); return 1; }
+    if (!rows) { kw_utxoset_free(&us); kw_secure_forget(seed, sizeof seed); return 1; }
     uint64_t total = 0;
     int n = build_rows(cp, seed, gap, &us, rows, MAXADDR, &total);
-    kw_secure_zero(seed, sizeof seed);     /* addresses are derived; the seed is done */
+    kw_secure_forget(seed, sizeof seed);     /* addresses are derived; the seed is done */
 
     int *vis = (int *)calloc((size_t)(n > 0 ? n : 1), sizeof *vis);
     if (!vis) { free(rows); kw_utxoset_free(&us); kw_ec_stop(); return 1; }

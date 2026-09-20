@@ -533,13 +533,15 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
     if (!kw_bip39_generate(entlen, mnem, sizeof mnem)) { fprintf(stderr, "kw: generate failed\n"); return 1; }
 
     uint8_t seed[64];
+
+    kw_secure_keep(seed, sizeof seed);
     kw_bip39_to_seed(mnem, "", seed);
 
     printf("mnemonic (write this down, it is your only backup):\n  %s\n\n", mnem);
     kw_secure_zero(mnem, sizeof mnem);
 
     int rc = seal_and_report(cp, path, pass_arg, seed);
-    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
     return rc;
 }
 
@@ -552,11 +554,13 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     if (!kw_bip39_check(mnem)) { secret_free(mnem); fprintf(stderr, "kw: invalid mnemonic\n"); return 1; }
 
     uint8_t seed[64];
+
+    kw_secure_keep(seed, sizeof seed);
     kw_bip39_to_seed(mnem, "", seed);
     secret_free(mnem);
 
     int rc = seal_and_report(cp, path, pass_arg, seed);
-    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
     return rc;
 }
 
@@ -573,6 +577,8 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
     if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 1; }
 
     uint8_t seed[64]; size_t slen = 0;
+
+    kw_secure_keep(seed, sizeof seed);
     int opened = kw_keystore_open(blob, n, pass, seed, sizeof seed, &slen);
     secret_free(pass);
     kw_secure_zero(blob, sizeof blob);
@@ -580,7 +586,7 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
 
     char addr[128];
     int ok = derive_address(cp, seed, account, change, index, addr, sizeof addr);
-    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
     if (!ok) { fprintf(stderr, "kw: derivation failed\n"); return 1; }
     if (spk) {
         uint8_t s[25]; size_t sl = 0;
@@ -702,10 +708,12 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     if (!utxos_path) { snprintf(defpath, sizeof defpath, "%s.utxos", path); utxos_path = defpath; }
 
     uint8_t seed[64];
+
+    kw_secure_keep(seed, sizeof seed);
     if (!open_seed(path, pass_arg, seed)) return 1;
     kw_bip32_key master;
     int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
-    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
     if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
 
     /* Everything the key is needed for happens here, before a socket exists. The key
@@ -829,11 +837,13 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     kw_journal_path(upath, jpath, sizeof jpath);
 
     uint8_t seed[64];
+
+    kw_secure_keep(seed, sizeof seed);
     if (!open_seed(path, pass_arg, seed)) return 1;
 
     kw_bip32_key master;
     int rc = 1;
-    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) { kw_secure_zero(seed, sizeof seed); return 1; }
+    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) { kw_secure_forget(seed, sizeof seed); return 1; }
 
     kw_tx tx;
     kw_tx_init(&tx);
@@ -1049,7 +1059,7 @@ out:
     if (keymap) { kw_secure_zero(keymap, (size_t)keymap_n * sizeof *keymap); free(keymap); }
     free(h160map);
     if (have_us) kw_utxoset_free(&us);
-    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
     kw_secure_zero(&master, sizeof master);
     kw_secure_zero(inkeys, sizeof inkeys);
     return rc;

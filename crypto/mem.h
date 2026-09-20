@@ -24,4 +24,18 @@ int kw_memeq_ct(const void *a, const void *b, size_t n);
 int kw_mlock(void *p, size_t n);
 int kw_munlock(void *p, size_t n);
 
+/* Hold (p,n) in RAM while it holds a secret, and give it up once wiped. These
+   exist because kw_mlock had no callers anywhere in the tree while the threat
+   model said the seed was mlock'd: a stack buffer holding 64 bytes of seed is
+   pageable, and a machine with swap can write it to disk in the clear where it
+   survives a reboot. That is not the compromised host the threat model excludes,
+   because nobody has to be present when it happens.
+
+   Best effort on purpose. A container with RLIMIT_MEMLOCK at zero would
+   otherwise make the wallet refuse to start, so a failure says so once and
+   carries on. kw_secure_forget zeroes before it unlocks, in that order, so the
+   bytes are gone before the page can be paged out again. */
+void kw_secure_keep(void *p, size_t n);
+void kw_secure_forget(void *p, size_t n);
+
 #endif /* KOINU_MEM_H */
