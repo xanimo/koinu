@@ -41,7 +41,7 @@ static int listen_local(int *port)
 
 /* The mock proxy. (grant) chooses whether it replies success or refused.
    Exits 0 if the client's handshake was exactly right, nonzero otherwise. */
-static void run_proxy(int ls, int grant)
+static void run_proxy(int ls, int grant, int domain)
 {
     int c = accept(ls, NULL, NULL);
     if (c < 0) _exit(10);
@@ -59,22 +59,35 @@ static void run_proxy(int ls, int grant)
     if (hl != 13 || memcmp(host, "example.onion", 13) != 0) _exit(17);
     if (((pb[0] << 8) | pb[1]) != 22556) _exit(18);
 
-    uint8_t reply[10] = { 0x05, grant ? 0x00 : 0x05, 0x00, 0x01, 0,0,0,0, 0,0 };
-    if (write(c, reply, sizeof reply) != (ssize_t)sizeof reply) _exit(19);
+    if (domain) {
+        /* ATYP 0x03, a length-prefixed bound address at its legal maximum. RFC 1928
+           allows this in a reply and the client discards the address, but it still
+           has to read it: 255 bytes plus the port. Every reply here was ATYP 0x01
+           before, so this branch had never run. */
+        uint8_t reply[4 + 1 + 255 + 2];
+        reply[0] = 0x05; reply[1] = grant ? 0x00 : 0x05; reply[2] = 0x00; reply[3] = 0x03;
+        reply[4] = 255;
+        memset(reply + 5, 'A', 255);
+        reply[260] = 0x58; reply[261] = 0x0c;
+        if (write(c, reply, sizeof reply) != (ssize_t)sizeof reply) _exit(19);
+    } else {
+        uint8_t reply[10] = { 0x05, grant ? 0x00 : 0x05, 0x00, 0x01, 0,0,0,0, 0,0 };
+        if (write(c, reply, sizeof reply) != (ssize_t)sizeof reply) _exit(19);
+    }
 
     if (grant) { uint8_t k = 'K'; if (write(c, &k, 1) != 1) _exit(20); }
     close(c);
     _exit(0);
 }
 
-static int scenario(int grant, int *client_ok)
+static int scenario(int grant, int domain, int *client_ok)
 {
     int port, st;
     int ls = listen_local(&port);
     if (ls < 0) return 0;
     pid_t pid = fork();
     if (pid < 0) { close(ls); return 0; }
-    if (pid == 0) { run_proxy(ls, grant); }   /* never returns */
+    if (pid == 0) { run_proxy(ls, grant, domain); }   /* never returns */
     close(ls);
 
     int fd = kw_socks5_connect("127.0.0.1", port, "example.onion", 22556, 5);
@@ -94,9 +107,16 @@ int main(void)
     signal(SIGPIPE, SIG_IGN);
 
     int client_ok;
-    if (!scenario(1, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: grant path\n"); return 1; }
-    if (!scenario(0, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: refuse path\n"); return 1; }
+    if (!scenario(1, 0, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: grant path\n"); return 1; }
+    if (!scenario(0, 0, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: refuse path\n"); return 1; }
 
-    printf("socks5 ok: greeting, CONNECT domain/port, grant returns usable fd, refuse returns -1\n");
+    /* A reply carrying a domain bound address at its maximum length. The client
+       discards the address but has to read it, and reading 255 bytes into a buffer
+       sized for 16 is a stack overflow that no ATYP 0x01 reply can reach. */
+    if (!scenario(1, 1, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: domain grant path\n"); return 1; }
+    if (!scenario(0, 1, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: domain refuse path\n"); return 1; }
+
+    printf("socks5 ok: greeting, CONNECT domain/port, grant returns usable fd, refuse returns -1,\n"
+           "  and a 255-byte domain bound address in the reply is read without overflowing\n");
     return 0;
 }
