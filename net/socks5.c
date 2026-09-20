@@ -88,7 +88,12 @@ int kw_socks5_connect(const char *proxy_host, int proxy_port,
         if (!read_all(fd, &l, 1)) { close(fd); return -1; }
         skip = l;
     } else { close(fd); return -1; }
-    uint8_t bnd[16 + 2];
+    /* A domain bound address is length-prefixed by a byte the proxy chooses, so
+       this has to hold 255 of them and not the 16 an IPv6 address needs. The
+       address is discarded either way; it still has to be read off the socket.
+       RFC 1928 permits ATYP 0x03 in a reply, so an odd-but-honest proxy reaches
+       this as readily as a hostile one. */
+    uint8_t bnd[255 + 2];
     if (!read_all(fd, bnd, skip + 2)) { close(fd); return -1; }   /* addr + port */
 
     return fd;
