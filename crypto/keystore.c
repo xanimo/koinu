@@ -72,6 +72,8 @@ size_t kw_keystore_seal(const uint8_t *secret, size_t secretlen,
     put_le32(out + 48, (uint32_t)secretlen);
 
     uint8_t key[KW_AEAD_KEY];
+
+    kw_secure_keep(key, sizeof key);
     if (!kw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
                      salt, sizeof salt, params->t_cost, params->m_cost_kib,
                      params->parallelism, key, sizeof key)) {
@@ -83,7 +85,7 @@ size_t kw_keystore_seal(const uint8_t *secret, size_t secretlen,
     kw_chacha20poly1305_encrypt(key, nonce, out, KS_HDR, secret, secretlen,
                                 out + KS_HDR, out + KS_HDR + secretlen);
 
-    kw_secure_zero(key, sizeof key);
+    kw_secure_forget(key, sizeof key);
     kw_secure_zero(salt, sizeof salt);
     kw_secure_zero(nonce, sizeof nonce);
     return total;
@@ -112,6 +114,8 @@ int kw_keystore_open(const uint8_t *blob, size_t bloblen,
     if (ctlen > outcap) return 0;
 
     uint8_t key[KW_AEAD_KEY];
+
+    kw_secure_keep(key, sizeof key);
     if (!kw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
                      salt, KS_SALT, t, m, p, key, sizeof key))
         return 0;
@@ -119,7 +123,7 @@ int kw_keystore_open(const uint8_t *blob, size_t bloblen,
     int ok = kw_chacha20poly1305_decrypt(key, nonce, blob, KS_HDR,
                                          blob + KS_HDR, ctlen,
                                          blob + KS_HDR + ctlen, out);
-    kw_secure_zero(key, sizeof key);
+    kw_secure_forget(key, sizeof key);
     if (!ok) return 0;
     if (secretlen) *secretlen = ctlen;
     return 1;
