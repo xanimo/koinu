@@ -11,6 +11,10 @@
 #include "powq.h"
 #include "pow.h"
 
+/* Messages a peer may send in place of the headers it was asked for before the
+   round is abandoned. A socket timeout only catches a peer that says nothing. */
+#define KW_SYNC_MAX_SKIP 256
+
 /* When nonzero, the sync drivers print progress to stderr. Off by default. */
 extern int kw_net_verbose;
 
