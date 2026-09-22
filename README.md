@@ -79,6 +79,15 @@ any standard finalizer. the legacy field set is what dogecoin needs; a psbt
 carrying segwit or unknown fields is refused rather than parsed with those
 fields dropped.
 
+the two routes do not check the same things. cosign --finish verifies every
+collected signature against the sighash and refuses the set if one fails, so a
+signature that would fail on chain is caught before broadcast. psbt finalize
+writes the scriptSig it is given, which it cannot verify without knowing a
+script it was built not to classify, so the caller checks it or nothing does.
+combine refuses a conflict rather than picking a side: two parties holding
+different redeem scripts, utxos, sighash types, or different signatures under
+one pubkey stop the merge.
+
 passphrases, mnemonics and private keys are read from a file (@path), stdin
 (-), or a no-echo prompt, never from argv. --testnet and --regtest switch
 networks. --tor routes every connection through a socks5 proxy, 127.0.0.1:9050
