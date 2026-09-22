@@ -168,6 +168,9 @@ int kw_utxoset_load(kw_utxoset *us, const char *path)
            back at full width and is refused rather than silently truncated into a
            shorter script that parses. */
         char txidhex[128], spkhex[2 * KW_SPK_MAX + 2];
+        /* sscanf takes a literal width, so tie it to the buffer here: a change to
+           KW_SPK_MAX becomes a build error rather than a silent overflow. */
+        _Static_assert(2 * KW_SPK_MAX + 2 == 130, "the %129s below tracks KW_SPK_MAX");
         unsigned vout, height; unsigned long long value;
         if (sscanf(line, "%127s %u %llu %u %129s", txidhex, &vout, &value, &height, spkhex) != 5) { ok = 0; break; }
         if (strlen(spkhex) > 2 * KW_SPK_MAX) { ok = 0; break; }
