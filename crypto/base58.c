@@ -128,7 +128,7 @@ int kw_base58check_decode(const char *in, uint8_t *out, size_t outcap, size_t *o
     size_t plen = n - 4;
     uint8_t chk[KW_SHA256_LEN];
     kw_hash256(buf, plen, chk);
-    if (kw_memeq_ct(chk, buf + plen, 4) != 0) { kw_secure_zero(buf, sizeof buf); return 0; }
+    if (kw_memcmp_ct(chk, buf + plen, 4) != 0) { kw_secure_zero(buf, sizeof buf); return 0; }
     if (plen > outcap) { kw_secure_zero(buf, sizeof buf); return 0; }
     memcpy(out, buf, plen);
     *outlen = plen;

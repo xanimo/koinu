@@ -15,7 +15,7 @@ void kw_secure_zero(void *p, size_t n)
     while (n--) *v++ = 0;
 }
 
-int kw_memeq_ct(const void *a, const void *b, size_t n)
+int kw_memcmp_ct(const void *a, const void *b, size_t n)
 {
     const unsigned char *x = (const unsigned char *)a;
     const unsigned char *y = (const unsigned char *)b;

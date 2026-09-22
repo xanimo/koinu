@@ -54,7 +54,7 @@ int kw_msg_parse(uint32_t magic, const uint8_t *buf, size_t buflen,
 
     uint8_t want[4];
     checksum(buf + KW_MSG_HDR, len, want);
-    if (kw_memeq_ct(want, buf + 20, 4) != 0) return -1;
+    if (kw_memcmp_ct(want, buf + 20, 4) != 0) return -1;
 
     memcpy(cmd, buf + 4, KW_MSG_CMD);
     cmd[KW_MSG_CMD] = '\0';           /* command is NUL-padded to 12 bytes */

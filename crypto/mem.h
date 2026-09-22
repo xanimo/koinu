@@ -12,10 +12,9 @@
    anything that held key material. */
 void kw_secure_zero(void *p, size_t n);
 
-/* Compare (n) bytes without short-circuiting: returns 0 if equal, nonzero
-   otherwise, and takes the same time whether they differ in the first byte or
-   the last, so it leaks nothing about a secret through timing. */
-int kw_memeq_ct(const void *a, const void *b, size_t n);
+/* memcmp semantics in constant time: 0 when equal, nonzero when not. Named for
+   memcmp rather than for equality so the sense cannot be read backwards. */
+int kw_memcmp_ct(const void *a, const void *b, size_t n);
 
 /* Best-effort pin of (n) bytes at (p) into RAM so secrets are not paged to
    swap, and the matching release. Return 0 on success. A failure is not fatal

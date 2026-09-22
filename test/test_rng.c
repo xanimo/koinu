@@ -31,8 +31,8 @@ int main(void)
     if (!all_zero(s, sizeof s))        { fprintf(stderr, "FAIL: secure_zero\n"); return 1; }
 
     unsigned char x[4] = {1, 2, 3, 4}, y[4] = {1, 2, 3, 4}, z[4] = {1, 2, 3, 5};
-    if (kw_memeq_ct(x, y, 4) != 0)     { fprintf(stderr, "FAIL: ct compare equal\n"); return 1; }
-    if (kw_memeq_ct(x, z, 4) == 0)     { fprintf(stderr, "FAIL: ct compare differ\n"); return 1; }
+    if (kw_memcmp_ct(x, y, 4) != 0)     { fprintf(stderr, "FAIL: ct compare equal\n"); return 1; }
+    if (kw_memcmp_ct(x, z, 4) == 0)     { fprintf(stderr, "FAIL: ct compare differ\n"); return 1; }
 
     printf("rng ok: 64-byte draws differ, selftest passed, secure_zero and ct-compare ok\n");
     return 0;

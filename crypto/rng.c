@@ -68,6 +68,6 @@ int kw_random_selftest(void)
     uint8_t zero = 0;
     for (size_t i = 0; i < sizeof a; i++) zero |= a[i];
     if (zero == 0) return 0;                    /* stuck at all-zero */
-    if (kw_memeq_ct(a, b, sizeof a) == 0) return 0;  /* two draws identical */
+    if (kw_memcmp_ct(a, b, sizeof a) == 0) return 0;  /* two draws identical */
     return 1;
 }

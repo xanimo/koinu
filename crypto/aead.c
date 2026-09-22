@@ -66,7 +66,7 @@ int kw_chacha20poly1305_decrypt(const uint8_t key[KW_AEAD_KEY],
 {
     uint8_t want[KW_AEAD_TAG];
     tag_compute(key, nonce, aad, aadlen, ct, ctlen, want);
-    if (kw_memeq_ct(want, tag, KW_AEAD_TAG) != 0) {
+    if (kw_memcmp_ct(want, tag, KW_AEAD_TAG) != 0) {
         kw_secure_zero(want, sizeof want);
         if (pt) kw_secure_zero(pt, ctlen);   /* never expose unauthenticated data */
         return 0;
