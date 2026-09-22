@@ -77,9 +77,14 @@ int kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *
     c.key[0] = 0x00;
     memcpy(c.key + 1, parent->key + 1, 32);
     if (!kw_ec_seckey_tweak_add(c.key + 1, I)) {     /* ki = (IL + kpar) mod n */
+        /* BIP32: IL >= n or ki == 0 means proceed with the next index, not fail.
+           Around 2^-127, so this has never run, but a wallet that returned an
+           error here would lose the whole branch below it. The last index of a
+           run has no next one. */
         kw_secure_zero(I, sizeof I); kw_secure_zero(data, sizeof data);
         kw_secure_zero(&c, sizeof c);
-        return 0;
+        if (index == UINT32_MAX || index == KW_BIP32_HARDENED - 1) return 0;
+        return kw_bip32_ckd_priv(parent, index + 1, out);
     }
     memcpy(c.chain_code, I + 32, 32);
     c.depth = parent->depth + 1;
