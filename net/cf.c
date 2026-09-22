@@ -317,6 +317,23 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
            question either way. Bounded by (since), which is what makes this
            usable on a chain where no peer serves filters at all. */
         (void)spk; (void)spklen;
+
+        /* Bounded by the span, not by (since) being nonzero. A caller asking from
+           height 1 is asking for the whole chain one block at a time just as much
+           as one asking from 0, and refusing only the literal zero leaves the
+           adjacent value doing the damage. Here rather than in each caller so a
+           new one cannot omit it. */
+        uint32_t tip = base_height + (uint32_t)(s->count ? s->count - 1 : 0);
+        if (s->count && (since > tip || tip - since >= KW_CF_MAX_UNFILTERED_SPAN)) {
+            fprintf(stderr, "kw: %lu blocks from height %u with no filters, which is "
+                            "more than the %u this fetches one at a time; raise --since "
+                            "or serve compact filters\n",
+                    (unsigned long)(since > tip ? 0 : tip - since + 1), since,
+                    KW_CF_MAX_UNFILTERED_SPAN);
+            free(heights);
+            return -1;
+        }
+
         nm = 0;
         for (size_t i = 0; i < s->count; i++) {
             uint32_t h = base_height + (uint32_t)i;
