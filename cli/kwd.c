@@ -194,11 +194,10 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     kw_peer *p = first_live();
     if (!p) { write_all(fd, "1 no peer\n", 10); return; }
 
-    /* Without filters the range is fetched whole, so an unbounded request would
-       pull the chain. The caller has to say where to start. */
-    if (!g_filters && since == 0) {
-        write_all(fd, "1 since required without filters\n", 33); return;
-    }
+    /* Without filters the range is fetched whole. kw_query_outpoint_range refuses
+       a span past KW_CF_MAX_UNFILTERED_SPAN, which is what stops a local client
+       tying up this single-threaded loop for millions of round trips: the request
+       deadline covers reading the line, not the work behind it. */
     kw_outpoint_result r;
     if (kw_query_outpoint_range(p, s, g_filters ? filters_path : NULL, 1,
                                 spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {

@@ -95,6 +95,10 @@ typedef struct { int status; long height; uint64_t value; long tipheight; } kw_o
    [since, tip] and reading only the matching blocks. Updates the filter cache
    delta first. Returns 1, or -1 on error. Reused by the daemon so a resident
    header store and peer answer queries without reloading. */
+/* The most blocks the unfiltered path will fetch. Each is a round trip against
+   one peer, so a whole-chain request is not slow, it is a hang. */
+#define KW_CF_MAX_UNFILTERED_SPAN 50000u
+
 /* (filters_path) NULL means no filters: every block at or above (since) is fetched
    and checked. The filter only ever narrowed the candidate list, so this answers
    the same question at the cost of the blocks in the range, which is the only way

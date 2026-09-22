@@ -1489,11 +1489,8 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
            whole range is fetched, which is why this needs a --since that bounds it
            and why it is not offered for the unbounded scan below. */
         const char *fp = (use_cf && filters_path) ? filters_path : NULL;
-        if (!fp && since == 0) {
-            fprintf(stderr, "kw: --since 0 with no filters would fetch every block; "
-                            "give a height, or use --cf --filters\n");
-            kw_headerstore_free(&s); goto out;
-        }
+        /* kw_query_outpoint_range bounds the unfiltered span itself, and names
+           the count when it refuses. Nothing to check here. */
         kw_outpoint_result r;
         int ok = kw_query_outpoint_range(&p, &s, fp, 1, spk, spklen, txint, vout, (uint32_t)since, &r);
         kw_headerstore_free(&s);
