@@ -88,7 +88,14 @@ int kw_journal_append(const char *path, const kw_journal_entry *e)
                      e->addr[0] ? e->addr : "-");
     if (n <= 0 || (size_t)n >= sizeof line) return 0;
 
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    /* O_EXCL first so we know whether this call created the file. fsyncing the
+       data makes the bytes durable but not the name, and on the spend that
+       creates the journal a crash in that window leaves no journal at all, which
+       kw_change_index reads as "no index used" and answers 0. Only the creating
+       write pays for the directory sync. */
+    int created = 1;
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND, 0600);
+    if (fd < 0) { created = 0; fd = open(path, O_WRONLY | O_APPEND, 0600); }
     if (fd < 0) return 0;
     size_t off = 0, len = (size_t)n;
     int ok = 1;
@@ -102,6 +109,15 @@ int kw_journal_append(const char *path, const kw_journal_entry *e)
        durable at one entry per spend. */
     if (ok && fsync(fd) != 0) ok = 0;
     if (close(fd) != 0) ok = 0;
+
+    if (ok && created) {
+        char dir[4200];
+        snprintf(dir, sizeof dir, "%s", path);
+        char *slash = strrchr(dir, '/');
+        if (slash) *slash = '\0'; else snprintf(dir, sizeof dir, ".");
+        int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+        if (dfd >= 0) { if (fsync(dfd) != 0) ok = 0; close(dfd); }
+    }
     return ok;
 }
 
