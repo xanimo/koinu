@@ -158,16 +158,25 @@ static void secret_free(char *s)
    or -1. No getline: it starts at 120 bytes and reallocs to grow, and realloc
    copies the contents to a new block and frees the old one untouched, so a
    24-word mnemonic left most of itself in a freed 120-byte block that nothing
-   could then wipe. That is the normal path for kw restore, not an edge case. */
-static ssize_t read_line_into(FILE *f, char *buf, size_t cap)
+   could then wipe. That is the normal path for kw restore, not an edge case.
+
+   A descriptor rather than a FILE * for the same reason one layer down. stdio
+   mallocs a BUFSIZ block on first use and never wipes it, so every byte of the
+   secret would sit in a 4096-byte buffer that fclose frees untouched, or that
+   lives in the process past every kw_secure_forget when the source is stdin.
+   One byte per read also stops at the newline, leaving the rest of the stream
+   for whoever reads next. At most KW_SECRET_MAX syscalls. */
+static ssize_t read_line_fd(int fd, char *buf, size_t cap)
 {
     size_t n = 0;
     for (;;) {
-        int ch = fgetc(f);
-        if (ch == EOF) return n ? (ssize_t)n : -1;
+        char ch;
+        ssize_t r = read(fd, &ch, 1);
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r == 0) return n ? (ssize_t)n : -1;  /* eof */
         if (ch == '\n') break;
         if (n + 1 >= cap) return -2;             /* longer than any real secret */
-        buf[n++] = (char)ch;
+        buf[n++] = ch;
     }
     buf[n] = '\0';
     return (ssize_t)n;
@@ -193,12 +202,12 @@ static char *read_secret(const char *arg, const char *prompt)
     ssize_t n;
 
     if (arg && arg[0] == '@') {
-        FILE *f = fopen(arg + 1, "r");
-        if (!f) { secret_free(line); return NULL; }
-        n = read_line_into(f, line, KW_SECRET_MAX);
-        fclose(f);
+        int fd = open(arg + 1, O_RDONLY);
+        if (fd < 0) { secret_free(line); return NULL; }
+        n = read_line_fd(fd, line, KW_SECRET_MAX);
+        close(fd);
     } else if (arg && !strcmp(arg, "-")) {
-        n = read_line_into(stdin, line, KW_SECRET_MAX);
+        n = read_line_fd(STDIN_FILENO, line, KW_SECRET_MAX);
     } else if (arg) {
         fprintf(stderr, "kw: pass this via @FILE or - , not on the command line\n");
         secret_free(line);
@@ -220,7 +229,7 @@ static char *read_secret(const char *arg, const char *prompt)
             signal(SIGTERM, kw_tty_restore);
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
         }
-        n = read_line_into(stdin, line, KW_SECRET_MAX);
+        n = read_line_fd(STDIN_FILENO, line, KW_SECRET_MAX);
         if (tty) {
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &kw_tty_saved);
             kw_tty_off = 0;
