@@ -343,6 +343,10 @@ tsan:
 	@if command -v setarch >/dev/null 2>&1; then \
 	    setarch `uname -m` -R ./test/test_powq && setarch `uname -m` -R ./test/test_psync; \
 	else ./test/test_powq && ./test/test_psync; fi
+	@echo ""
+	@echo "restoring an unsanitized $(LIB): a thread-sanitized one links against"
+	@echo "nothing without the tsan runtime, so the next target would fail."
+	$(MAKE) clean && $(MAKE) $(LIB)
 
 # The fuzzers are only meaningful under the sanitizers: without them a stray
 # read is silently harmless and the run reports success.
