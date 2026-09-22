@@ -25,6 +25,22 @@ static int unhex_rev(const char *hex, uint8_t out[32])
     return 1;
 }
 
+static double now_mono(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* A segment gets its own wall clock and its own cap on messages that are not the
+   answer. SO_RCVTIMEO only catches silence, and a peer that dribbles one header
+   per round, or talks about anything else inside every timeout window, holds the
+   segment forever while resetting the clock. The run-level stall check cannot
+   see that: it is gated on the segment having no claimant, and a worker stuck
+   here never releases its claim. */
+#define KW_PSYNC_SEGMENT_SECONDS 300.0
+#define KW_PSYNC_SEGMENT_SKIP    256
+
 int kw_psync_segment(kw_peer *p, uint8_t *out,
                      const uint8_t start_hash[32], uint32_t start_height,
                      const uint8_t end_hash[32], uint32_t end_height)
@@ -35,8 +51,10 @@ int kw_psync_segment(kw_peer *p, uint8_t *out,
     uint8_t cur[32]; memcpy(cur, start_hash, 32);
     uint32_t h = start_height;
     int ok = 0;
+    double deadline = now_mono() + KW_PSYNC_SEGMENT_SECONDS;
 
     while (h < end_height) {
+        if (now_mono() > deadline) goto out;
         uint8_t body[128];
         size_t bn = kw_msg_getheaders_build(KW_PROTOCOL_VERSION,
                                             (const uint8_t (*)[32])cur, 1, end_hash,
@@ -44,10 +62,11 @@ int kw_psync_segment(kw_peer *p, uint8_t *out,
         if (!bn || !kw_peer_send(p, "getheaders", body, bn)) goto out;
 
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-        int got = 0;
+        int got = 0, skipped = 0;
         while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
             if (!strcmp(cmd, "headers")) { got = 1; break; }
             if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+            if (++skipped > KW_PSYNC_SEGMENT_SKIP) goto out;
         }
         if (!got) goto out;
 
@@ -114,13 +133,6 @@ typedef struct {
     int    host_active[KW_PSYNC_MAX_HOSTS];  /* connections currently on it */
     int    host_fails[KW_PSYNC_MAX_HOSTS];   /* consecutive connect failures */
 } psync_ctx;
-
-static double now_mono(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
-}
 
 /* The host with the best observed rate per connection already on it, so fast
    nodes attract workers without being mobbed. An untried host scores as fast
