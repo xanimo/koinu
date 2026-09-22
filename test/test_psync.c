@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -63,6 +64,58 @@ static int run_segment(const uint8_t *msg, size_t mlen, int fd,
     if (r == 1 && pwrite(fd, buf, (size_t)(h1 - h0) * KW_HDR_REC,
                          4 + (off_t)h0 * KW_HDR_REC) != (ssize_t)((h1 - h0) * KW_HDR_REC)) r = -1;
     kw_peer_close(&p);
+    close(sv[1]);
+    return r;
+}
+
+/* The same, with (chatter) well-formed non-answers ahead of the headers. A peer
+   that talks without answering resets the read timeout on every message, so
+   silence detection never fires and only the detour cap ends it. The chatter is
+   written from a thread because more of it than the socket buffer holds would
+   otherwise deadlock the test against its own reader. */
+typedef struct {
+    int fd; uint32_t magic; int chatter;
+    const uint8_t *msg; size_t mlen;
+} chatty_arg;
+
+static void *chatty_writer(void *v)
+{
+    chatty_arg *a = (chatty_arg *)v;
+    uint8_t frame[2048];
+    for (int i = 0; i < a->chatter; i++) {
+        uint8_t none = 0;
+        size_t an = kw_msg_serialize(a->magic, "addr", &none, 1, frame, sizeof frame);
+        /* MSG_NOSIGNAL: the reader gives up at the cap and closes, which is the
+           behaviour under test, and a plain write would take the process down. */
+        if (!an || send(a->fd, frame, an, MSG_NOSIGNAL) != (ssize_t)an) return NULL;
+    }
+    size_t fn = kw_msg_serialize(a->magic, "headers", a->msg, a->mlen, frame, sizeof frame);
+    if (fn) { ssize_t w = send(a->fd, frame, fn, MSG_NOSIGNAL); (void)w; }
+    return NULL;
+}
+
+static int run_segment_chatty(int chatter, const uint8_t *msg, size_t mlen,
+                              const uint8_t start_hash[32], uint32_t h0,
+                              const uint8_t end_hash[32], uint32_t h1)
+{
+    uint32_t magic = KW_DOGE_REGTEST.magic;
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;
+    struct timeval tv = { 5, 0 };
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    chatty_arg a = { sv[1], magic, chatter, msg, mlen };
+    pthread_t wt;
+    if (pthread_create(&wt, NULL, chatty_writer, &a) != 0) {
+        close(sv[0]); close(sv[1]); return -1;
+    }
+
+    kw_peer p;
+    kw_peer_from_fd(&p, magic, sv[0]);
+    uint8_t buf[NH * KW_HDR_REC];
+    int r = kw_psync_segment(&p, buf, start_hash, h0, end_hash, h1);
+    kw_peer_close(&p);
+    pthread_join(wt, NULL);
     close(sv[1]);
     return r;
 }
@@ -213,8 +266,22 @@ int main(void)
         if (leftover) { fclose(leftover); fprintf(stderr, "FAIL: a failed fill left its part file\n"); return 1; }
     }
 
+    /* A peer that sends well-formed non-answers forever holds the segment and
+       resets the read timeout on every one. Under the cap it still works. */
+    {
+        uint8_t m2[1024];
+        size_t m2len = mk_headers(m2, h, 4);
+        if (run_segment_chatty(8, m2, m2len, anchor, 0, h[3].hash, 4) != 1) {
+            fprintf(stderr, "FAIL: a little chatter should not stop a segment\n"); return 1;
+        }
+        if (run_segment_chatty(300, m2, m2len, anchor, 0, h[3].hash, 4) != 0) {
+            fprintf(stderr, "FAIL: an endlessly chatty peer was not cut off\n"); return 1;
+        }
+    }
+
     printf("psync ok: two segments assembled out of order and loaded linked, wrong\n"
-           "  terminal and broken link refused, and 40 headers filled over 4 segments\n"
-           "  by 3 threads against 3 peers, landing linked and in order\n");
+           "  terminal and broken link refused, 40 headers filled over 4 segments\n"
+           "  by 3 threads against 3 peers landing linked and in order, and a peer\n"
+           "  that talks without answering is cut off rather than holding a segment\n");
     return 0;
 }
