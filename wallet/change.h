@@ -24,8 +24,11 @@
 /* The lowest change index under (n) that holds nothing and appears nowhere in
    the journal at (journal), which may be NULL or absent. Falls back to 0 when
    every one of them has been used, which is the address a wallet that never
-   rotated would have used anyway. */
+   rotated would have used anyway, and sets (exhausted) so a caller can say so
+   rather than reusing an address without telling anyone. (exhausted) may be
+   NULL. */
 uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
-                         const kw_utxoset *us, const char *journal, int n);
+                         const kw_utxoset *us, const char *journal, int n,
+                         int *exhausted);
 
 #endif /* KOINU_CHANGE_H */

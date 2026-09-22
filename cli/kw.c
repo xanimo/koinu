@@ -1070,7 +1070,9 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         if (change_arg) {
             if (!addr_to_spk(cp, change_arg, cspk, &cl)) { fprintf(stderr, "kw: bad --change address\n"); goto out; }
         } else {
-            uint32_t ci = kw_change_index(&master, cp, have_us ? &us : NULL, jpath, change_scan);
+            int cx = 0;
+            uint32_t ci = kw_change_index(&master, cp, have_us ? &us : NULL, jpath, change_scan, &cx);
+            if (cx) fprintf(stderr, "kw: all %d change indices used, reusing 0\n", change_scan);
             kw_bip32_key ck;
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, ci, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
             uint8_t cpub[33], ch[20];
