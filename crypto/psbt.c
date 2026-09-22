@@ -153,6 +153,12 @@ int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
             if (slot == d->nsigs) {
                 if (d->nsigs == KW_PSBT_MAX_SIGS) return 0;
                 d->sigs[d->nsigs++] = s->sigs[k];
+            } else if (d->sigs[slot].siglen != s->sigs[k].siglen ||
+                       memcmp(d->sigs[slot].sig, s->sigs[k].sig, s->sigs[k].siglen) != 0) {
+                /* Same key, two different signatures: the parties signed different
+                   things or one is wrong. Keeping dst's is resolution by argument
+                   order, which is what the rest of this function stopped doing. */
+                return 0;
             }
         }
     }

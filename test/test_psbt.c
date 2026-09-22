@@ -105,6 +105,21 @@ int main(void)
         fprintf(stderr, "FAIL: combine is not idempotent\n"); return 1;
     }
 
+    /* Two different signatures under one pubkey means the parties signed
+       different things, or one of them is wrong. Keeping dst's is resolution by
+       argument order, which is what every other field here refuses. */
+    {
+        kw_psbt x = a, y = a;
+        y.in[0].sigs[0].sig[1] ^= 0x01;          /* same key, different signature */
+        if (kw_psbt_combine(&x, &y) != 0) {
+            fprintf(stderr, "FAIL: combined two signatures under one key\n"); return 1;
+        }
+        kw_psbt z = a, w = a;                    /* byte-identical still combines */
+        if (kw_psbt_combine(&z, &w) != 1 || z.in[0].nsigs != 2) {
+            fprintf(stderr, "FAIL: identical signatures refused\n"); return 1;
+        }
+    }
+
     /* both signatures verify against the sighash they claim to cover */
     uint8_t hash[32];
     if (!kw_tx_sighash(&a.tx, 0, redeem, rl, KW_SIGHASH_ALL, hash)) { fprintf(stderr, "FAIL: sighash\n"); return 1; }
