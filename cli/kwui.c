@@ -26,6 +26,7 @@
 #include "journal.h"
 #include "change.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,13 +96,18 @@ static char *ask_pass(void)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
     }
 
+    /* read(2) rather than fgetc: stdio mallocs a BUFSIZ block on first use and
+       never wipes it, so the passphrase would live in a 4096-byte buffer for the
+       rest of the process, past every kw_secure_forget here. */
     size_t n = 0;
     int truncated = 0;
     for (;;) {
-        int ch = fgetc(stdin);
-        if (ch == EOF || ch == '\n') break;
+        char ch;
+        ssize_t r = read(STDIN_FILENO, &ch, 1);
+        if (r < 0) { if (errno == EINTR) continue; break; }
+        if (r == 0 || ch == '\n') break;
         if (n + 1 >= KWUI_SECRET_MAX) { truncated = 1; break; }
-        line[n++] = (char)ch;
+        line[n++] = ch;
     }
     line[n] = '\0';
     while (n && (line[n-1] == '\r')) line[--n] = '\0';
