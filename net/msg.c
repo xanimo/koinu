@@ -34,7 +34,9 @@ static void w_varstr(W *w, const char *s)
 /* ── bounded reader ──────────────────────────────────────────── */
 typedef struct { const uint8_t *p; size_t len, off; int bad; } R;
 
-static void r_need(R *r, size_t n) { if (r->off + n > r->len) r->bad = 1; }
+/* Subtract rather than add: off is always <= len, so len - off cannot wrap,
+   whereas off + n can for an n taken from a varint. */
+static void r_need(R *r, size_t n) { if (n > r->len - r->off) r->bad = 1; }
 static uint64_t r_le(R *r, int n)
 {
     r_need(r, (size_t)n); if (r->bad) return 0;

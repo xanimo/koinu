@@ -34,17 +34,21 @@ uint64_t kw_gcs_hash(const uint8_t block_hash[32], uint64_t N,
 }
 
 /* varint at the front of the filter; sets *off past it */
-static long read_varint(const uint8_t *p, size_t len, size_t *off)
+/* Out-param rather than a return: the value is a uint64 and long is 32 bits on
+   i386, where truncation turns an absurd N into a small one that passes the
+   caller's bound instead of being refused. */
+static int read_varint(const uint8_t *p, size_t len, size_t *off, uint64_t *out)
 {
-    if (*off >= len) return -1;
+    if (*off >= len) return 0;
     uint8_t pfx = p[(*off)++];
     int n = pfx < 0xfd ? 0 : pfx == 0xfd ? 2 : pfx == 0xfe ? 4 : 8;
-    if (n == 0) return pfx;
-    if (*off + (size_t)n > len) return -1;
+    if (n == 0) { *out = pfx; return 1; }
+    if (len - *off < (size_t)n) return 0;
     uint64_t v = 0;
     for (int i = 0; i < n; i++) v |= (uint64_t)p[*off + i] << (8 * i);
     *off += (size_t)n;
-    return (long)v;
+    *out = v;
+    return 1;
 }
 
 /* MSB-first bit reader over the Golomb-Rice stream */
@@ -72,16 +76,16 @@ static uint64_t gr_next(bitr *b)
 long kw_gcs_decode(const uint8_t *filt, size_t flen, uint64_t *out, size_t cap)
 {
     size_t off = 0;
-    long N = read_varint(filt, flen, &off);
-    if (N < 0 || (size_t)N > cap) return -1;
+    uint64_t N;
+    if (!read_varint(filt, flen, &off, &N) || N > cap) return -1;
     bitr b = { filt + off, (flen - off) * 8, 0, 0 };
     uint64_t val = 0;
-    for (long i = 0; i < N; i++) {
+    for (uint64_t i = 0; i < N; i++) {
         val += gr_next(&b);
         if (b.bad) return -1;
         out[i] = val;
     }
-    return N;
+    return (long)N;
 }
 
 static int cmp_u64(const void *a, const void *b)
@@ -94,11 +98,13 @@ int kw_gcs_match_any(const uint8_t *filt, size_t flen, const uint8_t block_hash[
                      const kw_gcs_item *items, size_t nitems)
 {
     size_t off = 0;
-    long N = read_varint(filt, flen, &off);
-    if (N < 0) return -1;
+    uint64_t N;
+    /* Each element costs at least one bit, so a claimed N past the remaining bits
+       is a lie. Bounding it here also keeps N * KW_GCS_M below 2^64. */
+    if (!read_varint(filt, flen, &off, &N) || N > (flen - off) * 8) return -1;
     if (N == 0 || nitems == 0) return 0;
 
-    uint64_t F = (uint64_t)N * (uint64_t)KW_GCS_M;
+    uint64_t F = N * (uint64_t)KW_GCS_M;
     uint64_t *tv = (uint64_t *)malloc(nitems * sizeof *tv);
     if (!tv) return -1;
     for (size_t i = 0; i < nitems; i++)
@@ -110,7 +116,7 @@ int kw_gcs_match_any(const uint8_t *filt, size_t flen, const uint8_t block_hash[
     uint64_t val = 0;
     size_t ti = 0;
     int found = 0;
-    for (long i = 0; i < N && !found; i++) {
+    for (uint64_t i = 0; i < N && !found; i++) {
         val += gr_next(&b);
         if (b.bad) { free(tv); return -1; }
         while (ti < nitems && tv[ti] < val) ti++;
