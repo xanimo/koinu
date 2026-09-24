@@ -107,7 +107,11 @@ int  kw_script_multisig_parse(const uint8_t *script, size_t scriptlen,
 
 /* Parse a legacy serialized transaction into (tx), bounded by the builder's
    limits (KW_TX_MAX_IN/OUT, KW_TX_SCRIPT_MAX). Returns the bytes consumed
-   (the tx length), or 0 if malformed or over a limit. */
+   (the tx length), or 0 if malformed or over a limit.
+
+   Those limits size this wallet's fixed arrays, they are not consensus, so a
+   valid chain transaction over any of them parses here as malformed. Use
+   kw_tx_scan to walk a block transaction; it has no such bound. */
 size_t kw_tx_parse(const uint8_t *raw, size_t len, kw_tx *tx);
 
 /* Double-SHA256 of the serialization, internal byte order (reverse for display). */
