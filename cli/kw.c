@@ -1690,7 +1690,18 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
             size_t o = 0;                          /* reject: message, ccode, reason, [data] */
             if (o < pn) { uint8_t ml = pl[o++]; o += ml; }      /* skip the command varstr */
             if (o < pn) o++;                                    /* skip ccode */
-            if (o < pn) { uint8_t rl = pl[o++]; if (rl < sizeof reason && o + rl <= pn) { memcpy(reason, pl + o, rl); reason[rl] = 0; } }
+            /* Filter as we copy: this is a peer's string and it lands on a live
+               terminal, where an escape sequence is executed rather than printed. */
+            if (o < pn) {
+                uint8_t rl = pl[o++];
+                if (rl < sizeof reason && o + rl <= pn) {
+                    for (uint8_t i = 0; i < rl; i++) {
+                        unsigned char ch = pl[o + i];
+                        reason[i] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+                    }
+                    reason[rl] = 0;
+                }
+            }
             fprintf(stderr, "rejected: %s%s%s\n", txidhex, reason[0] ? " - " : "", reason);
             rc = 1; break;
         }
