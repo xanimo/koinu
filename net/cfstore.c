@@ -313,6 +313,9 @@ static int ensure_index(const char *path)
 static long index_offset(const char *path, size_t idx)
 {
     char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
+    /* Range-checked before it narrows, for the reason fh_load is: on a 32-bit
+       long the seek target and the stored offset both truncate. */
+    if ((uint64_t)idx > ((uint64_t)LONG_MAX - 8) / 8) return -1;
     FILE *xf = fopen(ip, "rb");
     if (!xf) return -1;
     long r = -1;
@@ -321,7 +324,7 @@ static long index_offset(const char *path, size_t idx)
         if (fread(ob, 1, 8, xf) == 8) {
             uint64_t v = 0;
             for (int i = 0; i < 8; i++) v |= (uint64_t)ob[i] << (8 * i);
-            r = (long)v;
+            if (v <= (uint64_t)LONG_MAX) r = (long)v;
         }
     }
     fclose(xf);
