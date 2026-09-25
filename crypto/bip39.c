@@ -49,6 +49,22 @@ static int word_index(const char *w, size_t len)
 
 static int valid_entlen(size_t n) { return n==16||n==20||n==24||n==28||n==32; }
 
+/* Write the words for (idx) joined by single spaces, which is the sentence
+   BIP39 hashes. Returns the length, or 0 if it does not fit. */
+static size_t join_words(const uint16_t *idx, size_t words, char *out, size_t outcap)
+{
+    size_t k = 0;
+    for (size_t i = 0; i < words; i++) {
+        const char *w = KW_BIP39_WORDLIST_EN[idx[i]];
+        size_t wl = strlen(w);
+        if (k + wl + (i ? 1 : 0) + 1 > outcap) return 0;
+        if (i) out[k++] = ' ';
+        memcpy(out + k, w, wl); k += wl;
+    }
+    out[k] = '\0';
+    return k;
+}
+
 size_t kw_bip39_from_entropy(const uint8_t *ent, size_t entlen, char *out, size_t outcap)
 {
     if (!valid_entlen(entlen)) return 0;
@@ -61,22 +77,13 @@ size_t kw_bip39_from_entropy(const uint8_t *ent, size_t entlen, char *out, size_
     kw_sha256(ent, entlen, h);
     buf[entlen] = h[0];                        /* only the top cs_bits are read */
 
-    size_t k = 0;
-    for (size_t i = 0; i < words; i++) {
-        uint32_t idx = get_bits(buf, i * 11, 11);
-        const char *w = KW_BIP39_WORDLIST_EN[idx];
-        size_t wl = strlen(w);
-        if (k + wl + (i ? 1 : 0) + 1 > outcap) {
-            kw_secure_zero(buf, sizeof buf);
-            kw_secure_zero(h, sizeof h);          /* as the success path does */
-            return 0;
-        }
-        if (i) out[k++] = ' ';
-        memcpy(out + k, w, wl); k += wl;
-    }
-    out[k] = '\0';
+    uint16_t idx[24];
+    for (size_t i = 0; i < words; i++) idx[i] = (uint16_t)get_bits(buf, i * 11, 11);
+    size_t k = join_words(idx, words, out, outcap);
+
     kw_secure_zero(buf, sizeof buf);
     kw_secure_zero(h, sizeof h);
+    kw_secure_zero(idx, sizeof idx);
     return k;
 }
 
@@ -157,17 +164,31 @@ int kw_bip39_to_entropy(const char *mnemonic, uint8_t *out, size_t outcap, size_
 
 int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[KW_BIP39_SEED_LEN])
 {
+    if (!mnemonic) return 0;
     if (!passphrase) passphrase = "";
+
+    /* Seed from the phrase rebuilt out of the parsed words, not from what was
+       typed. parse_words accepts a leading, doubled or trailing space, so a
+       phrase that checks out could otherwise hash to a different seed and
+       restore a wallet nobody has ever funded, with nothing said. */
+    uint16_t idx[24];
+    char norm[KW_BIP39_MNEMONIC_MAX];
+    size_t words = parse_words(mnemonic, idx);
+    size_t mlen = words ? join_words(idx, words, norm, sizeof norm) : 0;
+    kw_secure_zero(idx, sizeof idx);
+    if (!mlen) { kw_secure_zero(norm, sizeof norm); return 0; }
+
     size_t plen = strlen(passphrase);
     size_t saltlen = 8 + plen;                 /* "mnemonic" + passphrase */
     uint8_t *salt = (uint8_t *)malloc(saltlen);
-    if (!salt) return 0;
+    if (!salt) { kw_secure_zero(norm, sizeof norm); return 0; }
     memcpy(salt, "mnemonic", 8);
     memcpy(salt + 8, passphrase, plen);
 
-    int ok = kw_pbkdf2_hmac_sha512((const uint8_t *)mnemonic, strlen(mnemonic),
+    int ok = kw_pbkdf2_hmac_sha512((const uint8_t *)norm, mlen,
                                    salt, saltlen, 2048, seed, KW_BIP39_SEED_LEN);
     kw_secure_zero(salt, saltlen);
     free(salt);
+    kw_secure_zero(norm, sizeof norm);
     return ok;
 }
