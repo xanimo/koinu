@@ -33,7 +33,12 @@ int kw_munlock(void *p, size_t n);
    Best effort on purpose. A container with RLIMIT_MEMLOCK at zero would
    otherwise make the wallet refuse to start, so a failure says so once and
    carries on. kw_secure_forget zeroes before it unlocks, in that order, so the
-   bytes are gone before the page can be paged out again. */
+   bytes are gone before the page can be paged out again.
+
+   They nest by page, so two secrets sharing a page survive each other's forget.
+   Passing a range that was never kept is allowed and unlocks nothing. A process
+   that holds secrets on more pages than the counter tracks keeps every lock for
+   the rest of its life rather than risk releasing one it cannot account for. */
 void kw_secure_keep(void *p, size_t n);
 void kw_secure_forget(void *p, size_t n);
 
