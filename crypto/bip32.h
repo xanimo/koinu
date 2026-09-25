@@ -46,10 +46,14 @@ int  kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *
 /* Strip the secret, leaving the matching extended public key. */
 int kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub);
 
-/* xprv/xpub base58check. serialize returns the string length or 0; parse
-   returns 1 on success and sets only the version half matching the key type. */
+/* xprv/xpub base58check. serialize returns the string length or 0; parse takes
+   the version pair the caller will accept, returns 1 on success, and sets only
+   the version half matching the key type. It refuses everything BIP32 test
+   vector 5 lists: a version it was not given, a version that disagrees with the
+   key type, a bad prefix byte, a secret outside 1..n-1, a public key off the
+   curve, and depth 0 carrying a parent fingerprint or child number. */
 size_t kw_bip32_serialize(const kw_bip32_key *k, char *out, size_t outcap);
-int    kw_bip32_parse(const char *str, kw_bip32_key *out);
+int    kw_bip32_parse(const char *str, kw_bip32_version ver, kw_bip32_key *out);
 
 /* Derive along a path like "m/44'/3'/0'/0/0" ("'" or "h" marks hardened). A
    public master can only walk non-hardened steps. Returns 1 on success. */
