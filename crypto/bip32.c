@@ -117,8 +117,13 @@ int kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *o
     c.is_private = 0;
     if (!kw_bip32_pubkey(parent, c.key)) { kw_secure_zero(I, sizeof I); return 0; }
     if (!kw_ec_pubkey_tweak_add(c.key, I)) {          /* Ki = IL*G + Kpar */
+        /* Same rule as the private side: IL >= n or a point at infinity means
+           the next index, not an error. A watch-only wallet that failed here
+           would part company with the signer that skipped. */
         kw_secure_zero(I, sizeof I);
-        return 0;
+        kw_secure_zero(&c, sizeof c);
+        if (index == KW_BIP32_HARDENED - 1) return 0;
+        return kw_bip32_ckd_pub(parent, index + 1, out);
     }
     memcpy(c.chain_code, I + 32, 32);
     c.depth = parent->depth + 1;
