@@ -77,6 +77,7 @@ size_t kw_keystore_seal(const uint8_t *secret, size_t secretlen,
     if (!kw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
                      salt, sizeof salt, params->t_cost, params->m_cost_kib,
                      params->parallelism, key, sizeof key)) {
+        kw_secure_forget(key, sizeof key);   /* a failed kdf can still have written */
         kw_secure_zero(salt, sizeof salt); kw_secure_zero(nonce, sizeof nonce);
         return 0;
     }
@@ -119,8 +120,10 @@ int kw_keystore_open(const uint8_t *blob, size_t bloblen,
 
     kw_secure_keep(key, sizeof key);
     if (!kw_argon2id((const uint8_t *)passphrase, strlen(passphrase),
-                     salt, KS_SALT, t, m, p, key, sizeof key))
+                     salt, KS_SALT, t, m, p, key, sizeof key)) {
+        kw_secure_forget(key, sizeof key);   /* a failed kdf can still have written */
         return 0;
+    }
 
     int ok = kw_chacha20poly1305_decrypt(key, nonce, blob, KS_HDR,
                                          blob + KS_HDR, ctlen,
