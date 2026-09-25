@@ -160,30 +160,47 @@ size_t kw_bip32_serialize(const kw_bip32_key *k, char *out, size_t outcap)
     return n;
 }
 
-int kw_bip32_parse(const char *str, kw_bip32_key *out)
+/* Everything BIP32 calls invalid is refused here rather than carried into a key
+   the rest of the library would treat as good: an unknown version, a version
+   that disagrees with the key type, a prefix byte that is neither 0x00 nor a
+   compressed point, a secret outside 1..n-1, a public key off the curve, and a
+   depth of zero wearing a parent's fingerprint or child number. The caller says
+   which network it expects, so a mainnet xprv cannot arrive as a testnet key. */
+int kw_bip32_parse(const char *str, kw_bip32_version ver, kw_bip32_key *out)
 {
     uint8_t buf[KW_BIP32_SERIALIZED_LEN + 8];
     size_t n = 0;
     if (!kw_base58check_decode(str, buf, sizeof buf, &n)) return 0;
-    if (n != KW_BIP32_SERIALIZED_LEN) return 0;
+    if (n != KW_BIP32_SERIALIZED_LEN) { kw_secure_zero(buf, sizeof buf); return 0; }
 
     kw_bip32_key k;
     memset(&k, 0, sizeof k);
-    uint32_t ver = rd_be32(buf);
+    uint32_t v = rd_be32(buf);
     k.depth = buf[4];
     memcpy(k.parent_fp, buf + 5, 4);
     k.child_number = rd_be32(buf + 9);
     memcpy(k.chain_code, buf + 13, 32);
     memcpy(k.key, buf + 45, 33);
 
-    if (k.key[0] == 0x00) { k.is_private = 1; k.ver.prv = ver; }
-    else if (k.key[0] == 0x02 || k.key[0] == 0x03) { k.is_private = 0; k.ver.pub = ver; }
-    else { kw_secure_zero(buf, sizeof buf); kw_secure_zero(&k, sizeof k); return 0; }
+    int ok = 1;
+    if (v == ver.prv)      { k.is_private = 1; k.ver.prv = v; ok = k.key[0] == 0x00; }
+    else if (v == ver.pub) { k.is_private = 0; k.ver.pub = v; ok = k.key[0] == 0x02 || k.key[0] == 0x03; }
+    else ok = 0;
 
-    *out = k;
+    if (ok && k.is_private) ok = kw_ec_seckey_verify(k.key + 1);
+    if (ok && !k.is_private) {
+        uint8_t p[33];
+        ok = kw_ec_pubkey_parse(k.key, 33, p);
+    }
+    if (ok && k.depth == 0) {
+        uint8_t zero[4] = {0};
+        ok = memcmp(k.parent_fp, zero, 4) == 0 && k.child_number == 0;
+    }
+
+    if (ok) *out = k;
     kw_secure_zero(buf, sizeof buf);
     kw_secure_zero(&k, sizeof k);
-    return 1;
+    return ok;
 }
 
 int kw_bip32_derive_path(const kw_bip32_key *master, const char *path, kw_bip32_key *out)
