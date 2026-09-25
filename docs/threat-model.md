@@ -12,7 +12,9 @@ stolen keystore without its passphrase yields nothing and a lost mnemonic cannot
 be recovered from the keystore.
 
 What is mlock'd is the seed, the derived key and the buffer a passphrase or
-mnemonic is read into. The derivation's own working memory is not. argon2id
+mnemonic is read into. Those locks are counted per page, because mlock is not
+and two of them share a page often: the derived key sits a frame below the seed
+it decrypts. The derivation's own working memory is not locked. argon2id
 allocates m_cost_kib of passphrase-derived state itself, up to the 1 GiB a
 keystore header may ask for, and bip39 builds "mnemonic" plus the passphrase on
 the heap for the length of 2048 PBKDF2 rounds. Both are wiped before they are
