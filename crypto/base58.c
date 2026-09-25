@@ -79,9 +79,9 @@ int kw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen
     if (size > sizeof bytes) return 0;
     memset(bytes, 0, size);
 
-    /* bytes holds a partially decoded WIF by the time either of these can fire, so
-       both leave by the same door as the success path. The caller zeroes its own
-       buffer; that is the caller's discipline and not this function's. */
+    /* bytes holds a decoded WIF on the way out of here, so every return wipes it,
+       success included. The caller zeroes its own buffer; that is the caller's
+       discipline and not this function's. */
     for (size_t i = zeros; i < inlen; i++) {
         int carry = b58_digit(in[i]);
         if (carry < 0) { kw_secure_zero(bytes, sizeof bytes); return 0; }
@@ -97,12 +97,13 @@ int kw_base58_decode(const char *in, uint8_t *out, size_t outcap, size_t *outlen
     while (it < size && bytes[it] == 0) it++;
 
     size_t n = zeros + (size - it);
-    if (n > outcap) return 0;
+    if (n > outcap) { kw_secure_zero(bytes, sizeof bytes); return 0; }
 
     size_t k = 0;
     for (size_t i = 0; i < zeros; i++) out[k++] = 0;
     for (; it < size; it++) out[k++] = bytes[it];
     *outlen = k;
+    kw_secure_zero(bytes, sizeof bytes);
     return 1;
 }
 
