@@ -72,6 +72,38 @@ int main(void)
            "abandon abandon abandon abandon abandon abandon abandon abandon abandon "
            "abandon abandon abandon abandon abandon art", NULL);
 
+    /* Spacing a phrase differently must not change the wallet. parse_words
+       accepts these, so before the seed was built from the parsed words they
+       each restored somewhere else in silence. The seed is the first vector's,
+       with the empty passphrase. */
+    {
+        static const char *canon =
+            "abandon abandon abandon abandon abandon abandon abandon abandon "
+            "abandon abandon abandon about";
+        static const char *spaced[] = {
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ",
+            " abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "abandon  abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        };
+        uint8_t want[64];
+        if (!kw_bip39_to_seed(canon, "", want)) { fprintf(stderr, "FAIL: canon seed\n"); fails++; }
+        kw_test_check("canonical seed", want, 64,
+            "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1"
+            "9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4");
+        for (size_t i = 0; i < sizeof spaced / sizeof *spaced; i++) {
+            uint8_t got[64];
+            if (!kw_bip39_check(spaced[i])) { fprintf(stderr, "FAIL: check rejected [%s]\n", spaced[i]); fails++; continue; }
+            if (!kw_bip39_to_seed(spaced[i], "", got) || memcmp(got, want, 64) != 0) {
+                fprintf(stderr, "FAIL: spacing changed the seed [%s]\n", spaced[i]); fails++;
+            }
+        }
+        /* a phrase whose words cannot be parsed has no seed to give */
+        uint8_t got[64];
+        if (kw_bip39_to_seed("abandon notaword about", "", got)) {
+            fprintf(stderr, "FAIL: seeded from an unparseable phrase\n"); fails++;
+        }
+    }
+
     /* a tampered checksum must be rejected */
     if (kw_bip39_check("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon")) {
         fprintf(stderr, "FAIL: bad checksum accepted\n"); fails++;
@@ -93,6 +125,7 @@ int main(void)
         fprintf(stderr, "%d bip39 failure(s)\n", fails + kw_test_fails());
         return 1;
     }
-    printf("bip39 ok: wordlist hash, trezor vectors, round trips, checksum rejection, generate\n");
+    printf("bip39 ok: wordlist hash, trezor vectors, round trips, checksum rejection, generate,\n"
+           "  and spacing that check accepts cannot move the seed\n");
     return 0;
 }

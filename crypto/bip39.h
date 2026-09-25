@@ -33,7 +33,9 @@ int kw_bip39_to_entropy(const char *mnemonic, uint8_t *out, size_t outcap, size_
 
 /* Mnemonic to 64-byte seed: PBKDF2-HMAC-SHA512, salt "mnemonic"+passphrase,
    2048 rounds. Pass "" for no passphrase. Does not validate the checksum, per
-   BIP39. Returns 1 on success. */
+   BIP39, but does require known words, and hashes them joined by single spaces
+   however they were spaced on the way in, so a phrase that kw_bip39_check
+   accepts and the seed it yields cannot disagree. Returns 1 on success. */
 int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[KW_BIP39_SEED_LEN]);
 
 #endif /* KOINU_BIP39_H */
