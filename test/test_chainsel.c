@@ -235,6 +235,39 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* One peer, and its chain fails the work check: the store has to come back to
+       what it held. The appends happen before the pool's verdict, so a failure
+       left them behind, and kwd, which keeps its store for the life of the
+       process, then synced onto them and answered from headers nobody checked. */
+    {
+        uint8_t faked[5][80];
+        if (!build_chain(faked, 4, base.hash, EASY, 700))
+            { fprintf(stderr, "FAIL: could not mine the single-peer fork\n"); return 1; }
+        kw_block_header fourth;
+        kw_block_header_parse(faked[3], 80, &fourth);
+        if (!mine_bad(faked[4], fourth.hash, EASY, 799))
+            { fprintf(stderr, "FAIL: could not find a failing header\n"); return 1; }
+
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        kw_headerstore_append(&s, &base);
+
+        kw_peer a;
+        if (!fake_peer(&a, &cp, faked, 5, 2)) { fprintf(stderr, "FAIL: peer\n"); return 1; }
+        kw_peer *const one[1] = { &a };
+        kw_chainsel_result r;
+        long n = kw_sync_headers_best(one, 1, &s, &cp, 1, &r);
+        kw_peer_close(&a);
+
+        if (n >= 0) { fprintf(stderr, "FAIL: a failing chain synced from one peer\n"); return 1; }
+        if (s.count != 1) {
+            fprintf(stderr, "FAIL: %zu headers left in the store after the failure, want 1\n",
+                    s.count);
+            return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
     /* An empty store, which is what every first run has: no cache, or a command
        like sweep that never keeps one. The peer's first header builds on genesis,
        and genesis is not a header the store ever holds, so resolving its parent
@@ -274,7 +307,7 @@ int main(void)
     }
 
     printf("chainsel ok: the heavier of two forks wins over the longer one, the cached\n"
-           "  chain is a candidate, a fork with a header that fails its target is dropped,\n"
+           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind,\n"
            "  and a first run with no cache syncs from genesis\n");
     return 0;
 }

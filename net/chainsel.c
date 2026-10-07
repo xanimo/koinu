@@ -117,6 +117,14 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
     /* One peer is the old behaviour: there is nothing to compare, so do not
        pretend to. The caller says so; this just does the sync. */
     if (npeers == 1) {
+        /* The pool's verdict lands after the headers are appended, so a failure
+           used to leave whatever the peer sent in the store. kw exits and never
+           saves, but kwd holds its store for the life of the process: the next
+           request syncs onto those headers, the peer says there is nothing after
+           that tip, and the query is answered from headers whose work was never
+           checked. The multi-peer path below restores a candidate's rollback for
+           the same reason. */
+        size_t before = s->count;
         kw_powq *q = kw_powq_start(0, 4096);
         if (!q) return -1;
         r.threads = kw_powq_threads(q);
@@ -124,7 +132,11 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
         uint64_t checked = 0;
         int ok = kw_powq_finish(q, &checked, &r.bad_height);
         r.pow_checked += checked;
-        if (n < 0 || !ok) { if (out) *out = r; return -1; }
+        if (n < 0 || !ok) {
+            kw_headerstore_truncate(s, (uint32_t)before);
+            if (out) *out = r;
+            return -1;
+        }
         r.ncandidates = 1; r.winner = 0; r.appended = n;
         r.fork_height = (uint32_t)s->count - (uint32_t)n;
         if (out) *out = r;
