@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static const char *CB_RAW =
     "01000000010000000000000000000000000000000000000000000000000000000000000000"
@@ -108,6 +109,55 @@ int main(void)
             a->height != b->height || a->spklen != b->spklen ||
             memcmp(a->spk, b->spk, a->spklen)) { fprintf(stderr, "FAIL: roundtrip fields\n"); return 1; }
         kw_utxoset_free(&us2);
+
+        /* 0600, since these lines name the same amounts and addresses the
+           journal is 0600 for, and no .tmp left behind. */
+        struct stat st;
+        if (stat(tmp, &st) != 0 || (st.st_mode & 0777) != 0600) {
+            fprintf(stderr, "FAIL: saved mode %o\n", st.st_mode & 0777); return 1;
+        }
+        char tmpname[256];
+        snprintf(tmpname, sizeof tmpname, "%s.tmp", tmp);
+        if (stat(tmpname, &st) == 0) { fprintf(stderr, "FAIL: temp file left behind\n"); return 1; }
+
+        /* A file cut short must not load as a smaller balance. Both of these
+           parse as far as they go: one at a line boundary, one mid-script at an
+           even number of hex digits. */
+        FILE *whole = fopen(tmp, "rb");
+        if (!whole) { fprintf(stderr, "FAIL: reopen\n"); return 1; }
+        char all[8192];
+        size_t alln = fread(all, 1, sizeof all, whole);
+        fclose(whole);
+        size_t at_line = 0;
+        for (size_t i = 0; i + 1 < alln; i++) if (all[i] == '\n') at_line = i + 1;
+        const size_t cuts[2] = { at_line, at_line + 40 };
+        for (int k = 0; k < 2; k++) {
+            if (cuts[k] == 0 || cuts[k] > alln) continue;
+            const char *cutpath = "test_utxo_cut.tmp";
+            FILE *w = fopen(cutpath, "wb");
+            if (!w) { fprintf(stderr, "FAIL: cut open\n"); return 1; }
+            fwrite(all, 1, cuts[k], w);
+            fclose(w);
+            kw_utxoset cut; kw_utxoset_init(&cut);
+            int loaded = kw_utxoset_load(&cut, cutpath);
+            size_t n = kw_utxoset_count(&cut);
+            kw_utxoset_free(&cut);
+            remove(cutpath);
+            if (loaded) {
+                fprintf(stderr, "FAIL: a file cut at %zu loaded %zu utxos as a balance\n",
+                        cuts[k], n); return 1;
+            }
+        }
+
+        /* and an empty file is not a zero balance either */
+        const char *emptypath = "test_utxo_empty.tmp";
+        FILE *e = fopen(emptypath, "wb"); if (e) fclose(e);
+        kw_utxoset empty; kw_utxoset_init(&empty);
+        int eload = kw_utxoset_load(&empty, emptypath);
+        kw_utxoset_free(&empty);
+        remove(emptypath);
+        if (eload) { fprintf(stderr, "FAIL: an empty file loaded as a zero balance\n"); return 1; }
+
         remove(tmp);
     }
 
@@ -137,7 +187,7 @@ int main(void)
         kw_utxoset_free(&o);
     }
 
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation, save/load,\n"
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a cut or empty file refused,\n"
            "  and a value that would wrap the total refused\n");
     return 0;
 }

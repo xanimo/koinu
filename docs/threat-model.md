@@ -113,6 +113,11 @@ locally rather than broadcast. A psbt carrying fields koinu cannot represent is
 refused rather than parsed with those fields dropped, since a combiner that
 silently discards what it does not understand loses the other party's data.
 
+The journal, the utxo set and its scan metadata are 0600 and written through a
+temp file and a rename, since all three name amounts, heights and addresses. The
+utxo set carries its own count, so a file cut short refuses to load rather than
+loading as a smaller balance.
+
 Change goes to the first address the utxo set and the journal agree is unused,
 and signing records it, so consecutive spends do not share one. That means
 signing the same spend twice gives two transactions differing in their change

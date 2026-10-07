@@ -63,6 +63,7 @@ SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" -
 [ -n "$SPK0" ] || { echo "FAIL: no change scriptPubKey" >&2; exit 1; }
 { echo "# koinu utxo set v1"
   echo "0000000000000000000000000000000000000000000000000000000000000002 0 1000000000 1 $SPK0"
+  echo "# end 1"
 } > "$WORK/ks.utxos"
 CH=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
      --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
@@ -86,6 +87,7 @@ rm -f "$WORK/ks.utxos.journal"
 # has forgotten it, so this is the journal's answer, not the utxo set's
 { echo "# koinu utxo set v1"
   echo "0000000000000000000000000000000000000000000000000000000000000002 0 1000000000 1 $SPK0"
+  echo "# end 1"
 } > "$WORK/ks.utxos"
 CADDR1=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --change --index 1)
 [ -n "$CADDR1" ] || { echo "FAIL: no change address at index 1" >&2; exit 1; }
@@ -214,7 +216,7 @@ fi
 SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 0 --spk)
 # the set stores a txid in internal order, so this one reads the same either way
 INTXID=1111111111111111111111111111111111111111111111111111111111111111
-printf '# koinu utxo set v1\n%s 0 100000000000 10 %s\n' "$INTXID" "$SPK0" > "$WORK/u4"
+printf '# koinu utxo set v1\n%s 0 100000000000 10 %s\n# end 1\n' "$INTXID" "$SPK0" > "$WORK/u4"
 if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" --utxos "$WORK/u4" \
        --input "$INTXID:0:10:0" --to "$ADDR1:5" >/dev/null 2>&1; then
     echo "FAIL: signed an --input amount the tracked set disagrees with" >&2; exit 1

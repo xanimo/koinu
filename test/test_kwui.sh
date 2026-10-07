@@ -33,7 +33,7 @@ printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK" > "$WORK/ks.utxos"
 # still spent it and then failed at signing.
 SPK25=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 25 --spk)
 TXID3=3333333333333333333333333333333333333333333333333333333333333333
-printf '%s 0 900000000000 101 %s\n' "$TXID3" "$SPK25" >> "$WORK/ks.utxos"
+printf '%s 0 900000000000 101 %s\n# end 2\n' "$TXID3" "$SPK25" >> "$WORK/ks.utxos"
 printf 'feerate 0\ngap 30\n' > "$WORK/ks.utxos.meta"
 
 # wait until (file) contains (pattern), or fail after ~10s
@@ -77,7 +77,12 @@ wait_for "$WORK/out" 'nothing recorded yet'               # an empty journal say
 printf 'q' >&3
 
 # a receive appended while it runs must appear on a refresh
-printf '%s 1 250000000 101 %s\n' "$TXID2" "$SPK" >> "$WORK/ks.utxos"
+# rewritten whole, the way kw scan writes it, so the count marker stays right
+{ printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK"
+  printf '%s 0 900000000000 101 %s\n' "$TXID3" "$SPK25"
+  printf '%s 1 250000000 101 %s\n' "$TXID2" "$SPK"
+  printf '# end 3\n'
+} > "$WORK/ks.utxos"
 printf 'r' >&3
 wait_for "$WORK/out" '9007.50000000 DOGE across 3'
 

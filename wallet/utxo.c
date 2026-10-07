@@ -6,9 +6,11 @@
 #include "tx.h"
 #include "hex.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── watch set ───────────────────────────────────────────────── */
 int kw_watchset_init(kw_watchset *ws)
@@ -135,13 +137,48 @@ int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,
     return c.ok;
 }
 
+
+/* These files name amounts, heights and addresses, which is why the journal is
+   0600, and it is the same wallet's business here. Written through a temp file
+   in the same directory and renamed, so a reader never sees half a set: the old
+   fopen("w") truncated in place, 0666 under umask, and a crash or a concurrent
+   kwui refresh read whatever had reached the disk as a real balance. */
+static FILE *open_private_temp(const char *path, char *tmp, size_t tmpcap)
+{
+    if ((size_t)snprintf(tmp, tmpcap, "%s.tmp", path) >= tmpcap) return NULL;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "w");
+    if (!f) { close(fd); unlink(tmp); return NULL; }
+    return f;
+}
+
+static int commit_temp(FILE *f, const char *tmp, const char *path, int ok)
+{
+    if (ok && fflush(f) != 0) ok = 0;
+    if (ok && fsync(fileno(f)) != 0) ok = 0;
+    if (fclose(f) != 0) ok = 0;
+    if (ok && rename(tmp, path) != 0) ok = 0;
+    if (!ok) { unlink(tmp); return 0; }
+
+    /* the rename has to reach the disk too, or a crash leaves the old file */
+    char dir[4200];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    const char *d = ".";
+    if (slash) { *slash = '\0'; d = dir[0] ? dir : "/"; }
+    int dfd = open(d, O_RDONLY);
+    if (dfd >= 0) { fsync(dfd); close(dfd); }
+    return 1;
+}
+
 /* ── persistence ─────────────────────────────────────────────── */
 int kw_utxoset_save(const kw_utxoset *us, const char *path)
 {
-    FILE *f = fopen(path, "w");
+    char tmp[4200];
+    FILE *f = open_private_temp(path, tmp, sizeof tmp);
     if (!f) return 0;
-    fprintf(f, "# koinu utxo set v1\n");
-    int ok = 1;
+    int ok = fprintf(f, "# koinu utxo set v1\n") > 0;
     for (size_t i = 0; i < us->count && ok; i++) {
         const kw_utxo *u = &us->u[i];
         char txid[65], spk[2 * KW_SPK_MAX + 1];
@@ -150,19 +187,20 @@ int kw_utxoset_save(const kw_utxoset *us, const char *path)
         if (fprintf(f, "%s %u %llu %u %s\n", txid, u->vout,
                     (unsigned long long)u->value, u->height, spk) < 0) ok = 0;
     }
-    if (fclose(f) != 0) ok = 0;
-    return ok;
+    /* The count last, so a file that was cut short cannot load as a smaller
+       balance. A line boundary or an even number of script bytes both parse. */
+    if (ok && fprintf(f, "# end %llu\n", (unsigned long long)us->count) < 0) ok = 0;
+    return commit_temp(f, tmp, path, ok);
 }
 
 int kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent)
 {
-    char p[4200];
-    snprintf(p, sizeof p, "%s.meta", utxos_path);
-    FILE *f = fopen(p, "w");
+    char p[4200], tmp[4300];
+    if ((size_t)snprintf(p, sizeof p, "%s.meta", utxos_path) >= sizeof p) return 0;
+    FILE *f = open_private_temp(p, tmp, sizeof tmp);
     if (!f) return 0;
     int ok = fprintf(f, "feerate %lld\ngap %d\n", (long long)feerate, extent) > 0;
-    if (fclose(f) != 0) ok = 0;
-    return ok;
+    return commit_temp(f, tmp, p, ok);
 }
 
 void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent)
@@ -186,9 +224,14 @@ int kw_utxoset_load(kw_utxoset *us, const char *path)
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     char line[4 + 2 * KW_SPK_MAX + 128];
-    int ok = 1;
+    int ok = 1, ended = 0;
+    unsigned long long endcount = 0, added = 0;
     while (ok && fgets(line, sizeof line, f)) {
-        if (line[0] == '#' || line[0] == '\n') continue;
+        if (line[0] == '#') {
+            if (sscanf(line, "# end %llu", &endcount) == 1) ended = 1;
+            continue;
+        }
+        if (line[0] == '\n') continue;
         /* Every conversion is width-limited, including the last: a bare %s here let
            a long line in a tampered file write past spkhex and into the frame. The
            buffer is one over the longest legitimate script so an overlong token comes
@@ -207,7 +250,12 @@ int kw_utxoset_load(kw_utxoset *us, const char *path)
             !kw_hex_decode(txidhex, 64, txid, 32) ||
             !kw_hex_decode(spkhex, strlen(spkhex), spk, spklen)) { ok = 0; break; }
         if (!kw_utxoset_add(us, txid, vout, value, height, spk, spklen)) { ok = 0; break; }
+        added++;
     }
     fclose(f);
+    /* No end marker, or one that disagrees, means the file is not the whole set:
+       it was cut short, or it predates the marker. Either way the balance it
+       would load is not the balance, so say so instead of showing it. */
+    if (ok && (!ended || endcount != added)) ok = 0;
     return ok;
 }
