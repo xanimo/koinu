@@ -259,9 +259,13 @@ net_handshake: test/net_handshake.o $(LIB)
 # compiler, so CI can check the known inputs without clang.
 FUZZ_CC ?= clang
 .PHONY: fuzz fuzz-run fuzz-asan
-fuzz: fuzz/fuzz_parse.c $(SECP_LIB)
+fuzz: fuzz/fuzz_parse.c fuzz/fuzz_wire.c $(SECP_LIB)
 	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined $(CPPFLAGS) \
 	    -o fuzz_parse fuzz/fuzz_parse.c $(CORE_SRC) $(SECP_LIB)
+	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined -pthread $(CPPFLAGS) \
+	    -DKW_FUZZ_SOCKS5 -o fuzz_socks5 fuzz/fuzz_wire.c $(CORE_SRC) $(SECP_LIB)
+	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined -pthread $(CPPFLAGS) \
+	    -DKW_FUZZ_KWD -o fuzz_kwd fuzz/fuzz_wire.c $(CORE_SRC) $(SECP_LIB)
 
 fuzz-run: fuzz/fuzz_parse.c $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -DKW_FUZZ_STANDALONE -o fuzz_replay \
@@ -384,7 +388,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_socks5 fuzz_kwd fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

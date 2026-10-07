@@ -79,8 +79,11 @@ Nothing is tagged until all of these pass on the commit being tagged:
     make fuzz-asan      the in-tree corpus and 20000 mutations per target
                         under the sanitizers, which is replay rather than
                         coverage-guided
-    make fuzz           libFuzzer over the same targets, at least 10 minutes
-                        each, which is the one that finds new inputs
+    make fuzz           libFuzzer, three binaries: fuzz_parse over the buffer
+                        and file parsers, fuzz_socks5 over a real loopback
+                        proxy, fuzz_kwd over the daemon's request line. At
+                        least 10 minutes each; this is the one that finds
+                        inputs the corpus does not have
 
 The release binary's hardening is a property of the toolchain that linked it, so
 check the artifact rather than the flags:
