@@ -139,9 +139,14 @@ int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
             p->rlen -= (size_t)c;
             /* capture the peer's fee floor transparently; the caller never sees it */
             if (!strcmp(cmd, "feefilter") && pn >= 8) {
-                int64_t fr = 0;
-                for (int i = 0; i < 8; i++) fr |= (int64_t)p->msg[i] << (8 * i);
-                p->peer_feerate = fr;
+                /* assembled unsigned: the top byte shifted into a signed 64-bit
+                   sign bit is undefined, not a wrap, and any peer can send
+                   0x80 there. The value is then whatever the optimiser made of
+                   it, and under a halt-on-error sanitizer build it is a crash a
+                   peer chooses. */
+                uint64_t fr = 0;
+                for (int i = 0; i < 8; i++) fr |= (uint64_t)p->msg[i] << (8 * i);
+                p->peer_feerate = fr > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)fr;
                 continue;
             }
             if (payload) *payload = p->msg;

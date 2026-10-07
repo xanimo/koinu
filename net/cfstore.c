@@ -115,6 +115,9 @@ long kw_cfstore_count(const char *path)
     if (!f) return 0;
     char m[4];
     if (fread(m, 1, 4, f) != 4 || memcmp(m, KW_CF_MAGIC, 4) != 0) { fclose(f); return -1; }
+    long size = -1;
+    if (fseek(f, 0, SEEK_END) == 0) size = ftell(f);
+    if (size < 4 || fseek(f, 4, SEEK_SET) != 0) { fclose(f); return -1; }
     long n = 0;
     for (;;) {
         uint8_t h[32];
@@ -124,16 +127,45 @@ long kw_cfstore_count(const char *path)
         uint64_t fl;
         if (!rd_varint(f, &fl) || fl > KW_CFSTORE_MAX_FILTER ||
             fseek(f, (long)fl, SEEK_CUR) != 0) { fclose(f); return -1; }
+        /* seeking past the end succeeds, so a record whose filter is short was
+           counted as a whole one and the sync then appended after the torn
+           bytes, which made every later match fail */
+        long end = ftell(f);
+        if (end < 0 || end > size) { fclose(f); return -1; }
         n++;
     }
     fclose(f);
     return n;
 }
 
+/* The size of the cache file, or -1. Every offset the index hands back is
+   checked against it: the index is a file like any other, and an entry claiming
+   an offset past the end used to be passed to truncate(), which grows a file
+   rather than refusing. A 64 MiB entry made a 64 MiB cache of zeros, and the
+   index rebuild then walked it; a fuzzer reached 279 GB that way. */
+static long cache_size(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    long n = -1;
+    if (fseek(f, 0, SEEK_END) == 0) n = ftell(f);
+    fclose(f);
+    return n;
+}
+
+/* An offset from the index, refused unless it lands inside the cache. */
+static long cache_offset(const char *path, size_t idx)
+{
+    long at = index_offset(path, idx);
+    long size = cache_size(path);
+    if (at < 4 || size < 4 || at > size) return -1;
+    return at;
+}
+
 /* The block hash of cached entry (idx), through the height index. */
 static int cache_hash_at(const char *path, size_t idx, uint8_t out[32])
 {
-    long at = index_offset(path, idx);
+    long at = cache_offset(path, idx);
     if (at < 4) return 0;
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
@@ -145,7 +177,7 @@ static int cache_hash_at(const char *path, size_t idx, uint8_t out[32])
 /* Drop every cached entry from (keep) on, and the index with it. */
 static int cache_truncate(const char *path, size_t keep)
 {
-    long at = keep ? index_offset(path, keep) : 4;
+    long at = keep ? cache_offset(path, keep) : 4;
     if (at < 4) return 0;
     if (truncate(path, (off_t)at) != 0) return 0;
     char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
@@ -217,7 +249,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
             return -1;
         }
         if (fhc < have) {
-            long at = index_offset(path, (size_t)fhc);
+            long at = cache_offset(path, (size_t)fhc);
             char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
             if (at < 4 || truncate(path, (off_t)at) != 0) {
                 fprintf(stderr, "kw: cannot drop the unverified tail of %s\n", path);
@@ -355,6 +387,11 @@ static int index_write_from(FILE *cf, FILE *of, long from, long csize)
            backwards, and the loop that follows would rewrite the index forever. */
         if (!rd_varint(cf, &fl) || fl > KW_CFSTORE_MAX_FILTER ||
             fseek(cf, (long)fl, SEEK_CUR) != 0) { ok = 0; break; }
+        /* A seek past the end succeeds, so a record whose filter is short was
+           indexed as a whole one: the next sync then appended after the torn
+           bytes and every match failed from there on. */
+        long end = ftell(cf);
+        if (end < 0 || end > csize) { ok = 0; break; }
         uint8_t ob[8];
         for (int i = 0; i < 8; i++) ob[i] = (uint8_t)((uint64_t)pos >> (8 * i));
         if (fwrite(ob, 1, 8, of) != 8) { ok = 0; break; }
@@ -467,8 +504,8 @@ long kw_cfstore_match_range(const char *path, const kw_headerstore *s, uint32_t 
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     if (start > 0) {
-        long o = index_offset(path, start);
-        if (o < 0 || fseek(f, o, SEEK_SET) != 0) { fclose(f); return -1; }
+        long o = cache_offset(path, start);       /* bounded by the cache's size */
+        if (o < 4 || fseek(f, o, SEEK_SET) != 0) { fclose(f); return -1; }
     } else if (fseek(f, 4, SEEK_SET) != 0) { fclose(f); return -1; }   /* past the tag */
 
     uint8_t *buf = NULL; size_t bcap = 0;

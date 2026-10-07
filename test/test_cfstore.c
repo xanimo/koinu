@@ -19,6 +19,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -52,6 +54,12 @@ static size_t mk_cfilter(uint8_t *out, const uint8_t bh[32], const uint8_t *f, s
 }
 
 /* the <path>.fh sidecar, written by hand: the tests need to damage it */
+static long file_size(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? (long)st.st_size : -1;
+}
+
 static int fh_peek(const char *path, long *count)
 {
     char fp[64]; snprintf(fp, sizeof fp, "%s.fh", path);
@@ -346,6 +354,73 @@ int main(void)
         snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, filter-header anchor enforced\n");
+    /* The .idx sidecar is a file like any other. An entry claiming an offset past
+       the end of the cache used to reach truncate(), which grows a file rather
+       than refusing: a 64 MiB entry made 64 MiB of zeros and the rebuild walked
+       it. And a seek past the end succeeds, so a torn last record was indexed as
+       a whole one, after which the sync appended past the torn bytes and every
+       match failed. */
+    {
+        const char *sp = "test_cfstore_idx.tmp";
+        char idx[80], fh[80];
+        snprintf(idx, sizeof idx, "%s.idx", sp);
+        snprintf(fh, sizeof fh, "%s.fh", sp);
+        remove(sp); remove(idx); remove(fh);
+
+        uint8_t h1[32], h2[32];
+        memset(h1, 0x11, 32); memset(h2, 0x22, 32);
+        uint8_t f1[2] = { 1, 0 }, f2[1] = { 0 };
+        if (!kw_cfstore_append(sp, h1, f1, sizeof f1) ||
+            !kw_cfstore_append(sp, h2, f2, sizeof f2)) {
+            fprintf(stderr, "FAIL: building the idx cache\n"); return 1;
+        }
+        long before = file_size(sp);
+
+        /* an index whose second entry points 64 MiB into a 78-byte file */
+        FILE *f = fopen(idx, "wb");
+        if (!f) { fprintf(stderr, "FAIL: idx open\n"); return 1; }
+        uint8_t w[8];
+        for (int i = 0; i < 8; i++) w[i] = (uint8_t)((uint64_t)before >> (8 * i));
+        fwrite(w, 1, 8, f);
+        for (int i = 0; i < 8; i++) w[i] = (uint8_t)((uint64_t)4 >> (8 * i));
+        fwrite(w, 1, 8, f);
+        uint64_t big = 64u * 1024u * 1024u;
+        for (int i = 0; i < 8; i++) w[i] = (uint8_t)(big >> (8 * i));
+        fwrite(w, 1, 8, f);
+        fclose(f);
+
+        /* a sidecar one behind the cache sends sync down the truncate path */
+        if (!fh_poke(sp, 1, h1)) { fprintf(stderr, "FAIL: fh poke\n"); return 1; }
+
+        kw_headerstore is; kw_headerstore_init(&is);
+        uint8_t raw[80];
+        kw_block_header a, b;
+        memset(raw, 0, 80); raw[0] = 1; raw[36] = 1;
+        kw_block_header_parse(raw, 80, &a);
+        kw_headerstore_append(&is, &a);
+        memcpy(raw + 4, a.hash, 32); raw[36] = 2;
+        kw_block_header_parse(raw, 80, &b);
+        kw_headerstore_append(&is, &b);
+
+        kw_cfstore_sync(NULL, &is, sp, 1);
+        kw_headerstore_free(&is);
+
+        long after = file_size(sp);
+        if (after > before) {
+            fprintf(stderr, "FAIL: an index offset past the end grew the cache "
+                            "from %ld to %ld\n", before, after);
+            return 1;
+        }
+
+        /* a torn last record must not be counted whole */
+        remove(idx); remove(fh);
+        if (truncate(sp, before - 1) != 0) { fprintf(stderr, "FAIL: truncate\n"); return 1; }
+        if (kw_cfstore_count(sp) != -1) {
+            fprintf(stderr, "FAIL: a torn record counted as a whole one\n"); return 1;
+        }
+        remove(sp); remove(idx); remove(fh);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched,\n  an index offset past the end and a torn record refused, filter-header anchor enforced\n");
     return 0;
 }
