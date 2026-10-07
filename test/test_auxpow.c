@@ -432,8 +432,39 @@ int main(void)
     }
 
     if (fail) return 1;
+    /* A parent that claims an auxpow of its own is refused, which Core calls
+       "auxpow parent block has auxpow version": otherwise a proof chains through
+       another proof. The parent's version is in the blob's last 80 bytes. */
+    {
+        size_t hexlen = strlen(b371337);
+        size_t n = hexlen / 2;
+        uint8_t *blob = (uint8_t *)malloc(n);
+        if (!blob || !kw_hex_decode(b371337, hexlen, blob, n) || n <= 80) {
+            fprintf(stderr, "FAIL: auxpow fixture\n"); return 1;
+        }
+
+        uint8_t id[32];
+        kw_hash256(blob, 80, id);
+        kw_auxpow ap;
+        size_t off = 0;
+        if (!kw_auxpow_parse(blob + 80, n - 80, &off, &ap) ||
+            !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID)) {
+            fprintf(stderr, "FAIL: the honest proof no longer parses\n"); return 1;
+        }
+
+        /* the parent is the blob's last 80 bytes: set its auxpow version bit */
+        uint8_t *parent = blob + 80 + (off - 80);
+        parent[1] |= 0x01;
+        off = 0;
+        if (kw_auxpow_parse(blob + 80, n - 80, &off, &ap) &&
+            kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID)) {
+            fprintf(stderr, "FAIL: a parent claiming its own auxpow was accepted\n"); return 1;
+        }
+        free(blob);
+    }
+
     printf("auxpow ok: 4 real mainnet proofs verify and fail with one bit of the parent\n"
            "  moved, none meets its own target, and 9 tampers on a built proof plus\n"
-           "  truncation and an impossible target are refused\n");
+           "  truncation, an impossible target and a parent claiming its own auxpow\n  are refused\n");
     return 0;
 }

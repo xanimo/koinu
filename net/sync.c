@@ -5,6 +5,7 @@
 #include "sync.h"
 #include "sha2.h"
 #include "pow.h"
+#include "auxpow.h"
 #include "msg.h"
 #include "hex.h"
 
@@ -95,6 +96,17 @@ int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
         if (kw_u256_add(out, &w)) return 0;         /* wrapped: not a real chain */
     }
     return 1;
+}
+
+int kw_sync_version_ok(const kw_chainparams *cp, uint32_t height, uint32_t version)
+{
+    if (!cp) return 0;
+    if (cp->magic != KW_DOGE_MAINNET.magic) return 1;
+    if (height < KW_AUXPOW_START_MAINNET) return 1;
+
+    /* legacy is version 1, or 2, which carries no chain id */
+    if (version == 1 || version == 2) return 0;
+    return (int32_t)(version >> 16) == KW_AUXPOW_CHAIN_ID;
 }
 
 int kw_sync_time_ok(const kw_headerstore *s, const kw_chainparams *cp,
@@ -279,6 +291,12 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
             if (!kw_sync_bits_ok(s, cp, height, kw_header_bits(batch[i].raw))) {
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] %u carries the wrong difficulty\n", height);
+                free(batch);
+                return -1;
+            }
+            if (!kw_sync_version_ok(cp, height, kw_header_version(batch[i].raw))) {
+                if (kw_net_verbose)
+                    fprintf(stderr, "[headers] %u does not say it belongs to this chain\n", height);
                 free(batch);
                 return -1;
             }

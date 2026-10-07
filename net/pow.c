@@ -208,6 +208,12 @@ uint32_t kw_header_bits(const uint8_t header[80])
            ((uint32_t)header[74] << 16) | ((uint32_t)header[75] << 24);
 }
 
+uint32_t kw_header_version(const uint8_t header[80])
+{
+    return (uint32_t)header[0] | ((uint32_t)header[1] << 8) |
+           ((uint32_t)header[2] << 16) | ((uint32_t)header[3] << 24);
+}
+
 uint32_t kw_header_time(const uint8_t header[80])
 {
     return (uint32_t)header[68] | ((uint32_t)header[69] << 8) |

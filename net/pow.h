@@ -58,10 +58,11 @@ int  kw_bits_work(uint32_t bits, kw_u256 *out);
    encodes. 0 if it is above, or if (bits) is not a usable target. */
 int  kw_pow_check(const uint8_t pow_hash[32], uint32_t bits);
 
-/* nBits out of an 80-byte header, which is bytes 72..75 little-endian, and the
-   timestamp, which is bytes 68..71. */
+/* nBits out of an 80-byte header, which is bytes 72..75 little-endian, the
+   timestamp, which is bytes 68..71, and nVersion, which is bytes 0..3. */
 uint32_t kw_header_bits(const uint8_t header[80]);
 uint32_t kw_header_time(const uint8_t header[80]);
+uint32_t kw_header_version(const uint8_t header[80]);
 
 /* ── the retarget rule ─────────────────────────────────────────────────── */
 

@@ -7,6 +7,7 @@
  * rounds. The driver should append both and stop. */
 
 #include "sync.h"
+#include "auxpow.h"
 #include "peer.h"
 #include "headers.h"
 #include "proto.h"
@@ -413,8 +414,32 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* Dogecoin's strict chain id. Nothing read a header's own version, so a
+       legacy v1 header after the merge-mining start, and a header claiming
+       another chain's id, were both accepted on their work alone. */
+    {
+        const kw_chainparams *m = &KW_DOGE_MAINNET, *t = &KW_DOGE_TESTNET;
+        uint32_t above = KW_AUXPOW_START_MAINNET + 100000;
+        if (kw_sync_version_ok(m, above, 1) || kw_sync_version_ok(m, above, 2)) {
+            fprintf(stderr, "FAIL: a legacy version was accepted above the start height\n"); return 1;
+        }
+        if (kw_sync_version_ok(m, above, 0x00630004u)) {
+            fprintf(stderr, "FAIL: another chain's id was accepted\n"); return 1;
+        }
+        if (!kw_sync_version_ok(m, above, 0x00620004u) ||
+            !kw_sync_version_ok(m, above, 0x00620102u)) {
+            fprintf(stderr, "FAIL: this chain's own version was refused\n"); return 1;
+        }
+        if (!kw_sync_version_ok(m, KW_AUXPOW_START_MAINNET - 1, 1)) {
+            fprintf(stderr, "FAIL: a legacy version was refused below the start height\n"); return 1;
+        }
+        if (!kw_sync_version_ok(t, above, 1)) {
+            fprintf(stderr, "FAIL: testnet is not subject to mainnet's start height\n"); return 1;
+        }
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
-           "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network,\n"
+           "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network, the chain id demanded above the merge-mining start,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
        "  a cached chain checked against the pins on load by hashing it,\n  and a locator, a work sum and a rollback to choose between chains with\n");

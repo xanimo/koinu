@@ -36,6 +36,11 @@
 /* Dogecoin's merged-mining chain id, which the parent must not share. */
 #define KW_AUXPOW_CHAIN_ID 0x0062
 
+/* The first mainnet height at which merged mining is in force. From here a
+   header has to say it belongs to this chain, and a legacy header is not a
+   header of this chain at all. */
+#define KW_AUXPOW_START_MAINNET 371337u
+
 typedef struct {
     const uint8_t *coinbase;    /* the parent's coinbase transaction, as serialised */
     size_t         coinbase_len;

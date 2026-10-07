@@ -11,6 +11,8 @@
 #include "scrypt.h"
 #include "sha2.h"
 
+#include "headers.h"
+
 #include <string.h>
 
 /* ── reading ─────────────────────────────────────────────────────────────
@@ -28,6 +30,13 @@ static uint64_t r_varint(R *r)
     if (r->off + n > r->len) { r->bad = 1; return 0; }
     for (size_t i = 0; i < n; i++) v |= (uint64_t)r->p[r->off + i] << (8 * i);
     r->off += n;
+    /* Core refuses a non-canonical compact size, and so must this: the coinbase's
+       bytes are its txid's preimage, so two encodings of one length are two
+       txids for one transaction. */
+    if ((n == 2 && v < 0xfd) || (n == 4 && v <= 0xffff) || (n == 8 && v <= 0xffffffffu)) {
+        r->bad = 1;
+        return 0;
+    }
     return v;
 }
 
@@ -77,7 +86,8 @@ static void r_tx(R *r, kw_auxpow *ap)
     int segwit = 0;
     size_t vin_start = start + 4;
     if (nin == 0) {                                 /* marker, flag, then the real vin */
-        r_skip(r, 1);
+        const uint8_t *flag = r_take(r, 1);
+        if (!flag || *flag != 0x01) { r->bad = 1; return; }   /* the only flag Core takes */
         segwit = 1;
         vin_start = r->off;                         /* the txid covers neither */
         nin = r_varint(r);
@@ -203,8 +213,13 @@ int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
     if (ap->nchain > KW_AUXPOW_MAX_CHAIN) return 0;
 
     /* the parent must be on another chain, or the work is not borrowed at all */
-    int32_t parent_chain = (int32_t)(rd32le(ap->parent) >> 16);
+    uint32_t parent_version = rd32le(ap->parent);
+    int32_t parent_chain = (int32_t)(parent_version >> 16);
     if (parent_chain == chain_id) return 0;
+    /* and it must be an ordinary block of that chain: Core refuses a parent that
+       claims an auxpow of its own ("auxpow parent block has auxpow version"),
+       which would otherwise let a proof chain through another proof */
+    if (parent_version & KW_BLOCK_VERSION_AUXPOW) return 0;
 
     /* this block's hash has to sit in the tree the parent's coinbase commits to */
     uint8_t root[32];
