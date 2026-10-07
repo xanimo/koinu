@@ -59,81 +59,89 @@ int kw_bip32_from_seed(const uint8_t *seed, size_t seedlen,
 int kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *out)
 {
     if (!parent->is_private) return 0;
+    /* The parent has to be a key before a failed tweak can mean "that index is
+       unusable, take the next one". Without this, an invalid parent or a curve
+       context that is not up failed every index in turn, and the skip recursed
+       toward 2^31 frames and took the stack with it. */
+    if (!kw_ec_seckey_verify(parent->key + 1)) return 0;
 
-    uint8_t data[37], I[64];
-    if (index >= KW_BIP32_HARDENED) {
-        data[0] = 0x00;
-        memcpy(data + 1, parent->key + 1, 32);      /* the secret */
-    } else if (!kw_bip32_pubkey(parent, data)) {    /* compressed pub */
+    /* BIP32: IL >= n or ki == 0 means proceed with the next index, not fail.
+       Around 2^-127, so this has never run, but a wallet that returned an error
+       here would lose the whole branch below it. A hardened index walks within
+       the hardened half; the last index of either run has no next one. */
+    const uint32_t last = index >= KW_BIP32_HARDENED ? UINT32_MAX : KW_BIP32_HARDENED - 1;
+
+    for (uint32_t i = index; ; i++) {
+        uint8_t data[37], I[64];
+        if (i >= KW_BIP32_HARDENED) {
+            data[0] = 0x00;
+            memcpy(data + 1, parent->key + 1, 32);      /* the secret */
+        } else if (!kw_bip32_pubkey(parent, data)) {    /* compressed pub */
+            kw_secure_zero(data, sizeof data);
+            return 0;
+        }
+        be32(data + 33, i);
+        kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
+
+        kw_bip32_key c;
+        memset(&c, 0, sizeof c);
+        c.is_private = 1;
+        c.key[0] = 0x00;
+        memcpy(c.key + 1, parent->key + 1, 32);
+        int tweaked = kw_ec_seckey_tweak_add(c.key + 1, I);   /* ki = (IL + kpar) mod n */
+        if (tweaked) {
+            memcpy(c.chain_code, I + 32, 32);
+            c.depth = parent->depth + 1;
+            c.child_number = i;
+            if (!fingerprint(parent, c.parent_fp)) tweaked = 0;
+        }
+        if (tweaked) {
+            c.ver = parent->ver;
+            *out = c;
+        }
+        kw_secure_zero(I, sizeof I);
         kw_secure_zero(data, sizeof data);
-        return 0;
-    }
-    be32(data + 33, index);
-    kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
-
-    kw_bip32_key c;
-    memset(&c, 0, sizeof c);
-    c.is_private = 1;
-    c.key[0] = 0x00;
-    memcpy(c.key + 1, parent->key + 1, 32);
-    if (!kw_ec_seckey_tweak_add(c.key + 1, I)) {     /* ki = (IL + kpar) mod n */
-        /* BIP32: IL >= n or ki == 0 means proceed with the next index, not fail.
-           Around 2^-127, so this has never run, but a wallet that returned an
-           error here would lose the whole branch below it. The last index of a
-           run has no next one. */
-        kw_secure_zero(I, sizeof I); kw_secure_zero(data, sizeof data);
         kw_secure_zero(&c, sizeof c);
-        if (index == UINT32_MAX || index == KW_BIP32_HARDENED - 1) return 0;
-        return kw_bip32_ckd_priv(parent, index + 1, out);
+        if (tweaked) return 1;
+        if (i == last) return 0;
     }
-    memcpy(c.chain_code, I + 32, 32);
-    c.depth = parent->depth + 1;
-    c.child_number = index;
-    if (!fingerprint(parent, c.parent_fp)) {
-        kw_secure_zero(I, sizeof I); kw_secure_zero(data, sizeof data);
-        kw_secure_zero(&c, sizeof c);
-        return 0;
-    }
-    c.ver = parent->ver;
-
-    *out = c;
-    kw_secure_zero(I, sizeof I);
-    kw_secure_zero(data, sizeof data);
-    kw_secure_zero(&c, sizeof c);
-    return 1;
 }
 
 int kw_bip32_ckd_pub(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *out)
 {
     if (index >= KW_BIP32_HARDENED) return 0;         /* impossible without the secret */
 
-    uint8_t data[37], I[64];
-    if (!kw_bip32_pubkey(parent, data)) return 0;
-    be32(data + 33, index);
-    kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
+    /* Same reason as the private side: an off-curve parent, or no curve context,
+       is not a reason to try the next index for ever. */
+    uint8_t ppub[33];
+    if (!kw_bip32_pubkey(parent, ppub) || !kw_ec_pubkey_parse(ppub, 33, ppub)) return 0;
 
-    kw_bip32_key c;
-    memset(&c, 0, sizeof c);
-    c.is_private = 0;
-    if (!kw_bip32_pubkey(parent, c.key)) { kw_secure_zero(I, sizeof I); return 0; }
-    if (!kw_ec_pubkey_tweak_add(c.key, I)) {          /* Ki = IL*G + Kpar */
-        /* Same rule as the private side: IL >= n or a point at infinity means
-           the next index, not an error. A watch-only wallet that failed here
-           would part company with the signer that skipped. */
+    for (uint32_t i = index; ; i++) {
+        uint8_t data[37], I[64];
+        memcpy(data, ppub, 33);
+        be32(data + 33, i);
+        kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
+
+        kw_bip32_key c;
+        memset(&c, 0, sizeof c);
+        c.is_private = 0;
+        memcpy(c.key, ppub, 33);
+        int tweaked = kw_ec_pubkey_tweak_add(c.key, I);   /* Ki = IL*G + Kpar */
+        if (tweaked) {
+            memcpy(c.chain_code, I + 32, 32);
+            c.depth = parent->depth + 1;
+            c.child_number = i;
+            if (!fingerprint(parent, c.parent_fp)) tweaked = 0;
+        }
+        if (tweaked) {
+            c.ver = parent->ver;
+            *out = c;
+        }
         kw_secure_zero(I, sizeof I);
         kw_secure_zero(&c, sizeof c);
-        if (index == KW_BIP32_HARDENED - 1) return 0;
-        return kw_bip32_ckd_pub(parent, index + 1, out);
+        if (tweaked) return 1;
+        if (i == KW_BIP32_HARDENED - 1) return 0;
     }
-    memcpy(c.chain_code, I + 32, 32);
-    c.depth = parent->depth + 1;
-    c.child_number = index;
-    if (!fingerprint(parent, c.parent_fp)) { kw_secure_zero(I, sizeof I); return 0; }
-    c.ver = parent->ver;
-
-    *out = c;
-    kw_secure_zero(I, sizeof I);
-    return 1;
 }
 
 int kw_bip32_neuter(const kw_bip32_key *prv, kw_bip32_key *pub)
@@ -220,11 +228,14 @@ int kw_bip32_derive_path(const kw_bip32_key *master, const char *path, kw_bip32_
         uint32_t index = 0;
         int digits = 0;
         while (*p >= '0' && *p <= '9') {
-            index = index * 10 + (uint32_t)(*p - '0');
-            if (index >= KW_BIP32_HARDENED) return 0;   /* number too large */
+            uint32_t d = (uint32_t)(*p - '0');
+            /* checked before the multiply: index * 10 wrapped past 2^32 first, so
+               m/10000000000 came back as m/1410065408 rather than refused */
+            if (index > (KW_BIP32_HARDENED - 1 - d) / 10) { kw_secure_zero(&cur, sizeof cur); return 0; }
+            index = index * 10 + d;
             p++; digits++;
         }
-        if (!digits) return 0;
+        if (!digits) { kw_secure_zero(&cur, sizeof cur); return 0; }
         if (*p == '\'' || *p == 'h' || *p == 'H') { index += KW_BIP32_HARDENED; p++; }
 
         kw_bip32_key next;
@@ -236,7 +247,7 @@ int kw_bip32_derive_path(const kw_bip32_key *master, const char *path, kw_bip32_
         kw_secure_zero(&next, sizeof next);
 
         if (*p == '/') p++;
-        else if (*p != '\0') return 0;
+        else if (*p != '\0') { kw_secure_zero(&cur, sizeof cur); return 0; }
     }
 
     *out = cur;

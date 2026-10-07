@@ -126,6 +126,33 @@ int main(void)
         }
     }
 
+    /* m/10000000000 wrapped index * 10 past 2^32 before the hardened check, so it
+       derived m/1410065408 instead of being refused. And a derivation whose
+       parent is not a key must not walk every index looking for one: the skip
+       rule exists for a tweak that leaves the range, not for an invalid parent,
+       and recursing over 2^31 indices took the stack with it. */
+    {
+        kw_bip32_key bad;
+        if (kw_bip32_derive_path(&m, "m/10000000000", &bad)) {
+            fprintf(stderr, "FAIL: an index past 2^31-1 derived something\n"); fails++;
+        }
+        if (!kw_bip32_derive_path(&m, "m/2147483647", &bad)) {
+            fprintf(stderr, "FAIL: the last non-hardened index was refused\n"); fails++;
+        }
+        kw_bip32_key nonkey, child;
+        memset(&nonkey, 0, sizeof nonkey);
+        nonkey.is_private = 1;                       /* a zero secret is not a key */
+        if (kw_bip32_ckd_priv(&nonkey, 0, &child)) {
+            fprintf(stderr, "FAIL: derived a child of an invalid parent\n"); fails++;
+        }
+        memset(&nonkey, 0, sizeof nonkey);
+        nonkey.key[0] = 0x02;
+        memset(nonkey.key + 1, 0xff, 32);            /* x past the field: not a point */
+        if (kw_bip32_ckd_pub(&nonkey, 0, &child)) {
+            fprintf(stderr, "FAIL: derived a child of an off-curve parent\n"); fails++;
+        }
+    }
+
     kw_ec_stop();
     if (fails) { fprintf(stderr, "%d bip32 vector(s) failed\n", fails); return 1; }
 
@@ -151,7 +178,7 @@ int main(void)
     if (!kw_ec_start()) { fprintf(stderr, "FAIL: ec restart\n"); return 1; }
 
     printf("bip32 ok: vector 1 (m, m/0', m/0'/1), path parse, priv/pub agreement, round trip,\n"
-           "  16 invalid keys from vector 5 and a foreign version refused,\n"
+           "  16 invalid keys from vector 5 and a foreign version refused, an index past\n  2^31-1 and an invalid parent refused,\n"
            "  and every public-key operation refuses with no curve context\n");
     return 0;
 }
