@@ -126,8 +126,25 @@ int kw_peer_send(kw_peer *p, const char *cmd, const uint8_t *payload, size_t ple
     return ok;
 }
 
+/* seconds since (t0) on the monotonic clock */
+static long since_ms(const struct timespec *t0)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (now.tv_sec - t0->tv_sec) * 1000 + (now.tv_nsec - t0->tv_nsec) / 1000000;
+}
+
 int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen)
 {
+    /* One exchange, one deadline, and a count of what was swallowed on the way.
+       A feefilter is taken here and the loop continues without returning, so a
+       peer sending one every 100ms kept this function busy for as long as it
+       liked: the read timeout never fired because bytes kept arriving, and the
+       callers' skip counters never saw a message. */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int swallowed = 0;
+
     for (;;) {
         const uint8_t *pl = NULL; size_t pn = 0;
         int c = kw_msg_parse(p->magic, p->rbuf, p->rlen, cmd, &pl, &pn);
@@ -147,12 +164,18 @@ int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
                 uint64_t fr = 0;
                 for (int i = 0; i < 8; i++) fr |= (uint64_t)p->msg[i] << (8 * i);
                 p->peer_feerate = fr > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)fr;
+                if (++swallowed > KW_PEER_MAX_SKIP) return -1;
+                if (since_ms(&t0) > KW_PEER_EXCHANGE_SECONDS * 1000L) return -1;
                 continue;
             }
             if (payload) *payload = p->msg;
             if (plen) *plen = pn;
             return 1;
         }
+        /* and a peer dribbling a byte per timeout window keeps the reads
+           succeeding without ever completing a message */
+        if (since_ms(&t0) > KW_PEER_EXCHANGE_SECONDS * 1000L) return -1;
+
         /* need more: grow to the announced frame size, or by a chunk */
         if (p->rlen >= KW_MSG_HDR) {
             uint32_t l = get_le32(p->rbuf + 16);

@@ -54,6 +54,12 @@ int  kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *ple
    time. net/sync.c had this bound and the other drivers did not. */
 #define KW_PEER_MAX_SKIP 256
 
+/* The longest one exchange may take, whatever arrives during it. SO_RCVTIMEO
+   bounds a single read and the skip counters bound what a caller is handed, so
+   neither sees a peer that keeps kw_peer_recv itself busy: a feefilter is
+   consumed inside it and the loop goes round again without returning. */
+#define KW_PEER_EXCHANGE_SECONDS 120
+
 /* Wait for a (want) message, answering pings and dropping at most
    KW_PEER_MAX_SKIP others. Returns 1 with (payload)/(plen) set, 0 otherwise. */
 int  kw_peer_wait(kw_peer *p, const char *want, const uint8_t **payload, size_t *plen);

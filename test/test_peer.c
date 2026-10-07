@@ -12,14 +12,31 @@
 #include "msg.h"
 #include "chainparams.h"
 
+#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+/* A peer sending feefilters for as long as the socket takes them. */
+struct flood { int fd; volatile int stop; };
+
+static void *flood_feefilters(void *v)
+{
+    struct flood *f = (struct flood *)v;
+    uint8_t ff[8], frame[KW_MSG_HDR + 8];
+    memset(ff, 0xff, sizeof ff);                  /* a top byte of 0xff too */
+    size_t n = kw_msg_serialize(KW_DOGE_REGTEST.magic, "feefilter",
+                                ff, sizeof ff, frame, sizeof frame);
+    while (!f->stop && n && write(f->fd, frame, n) == (ssize_t)n) { }
+    return NULL;
+}
+
 int main(void)
 {
+    signal(SIGPIPE, SIG_IGN);                     /* the flood outlives its reader */
     uint32_t magic = KW_DOGE_REGTEST.magic;
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) { fprintf(stderr, "FAIL: socketpair\n"); return 1; }
@@ -72,6 +89,49 @@ int main(void)
 
     kw_peer_close(&p);
     close(sv[1]);
-    printf("peer ok: handshake over a socketpair, sent version+verack, recv reassembles\n");
+    /* A feefilter is consumed inside kw_peer_recv, which then goes round again
+       without returning, so neither the socket timeout nor any caller's skip
+       counter saw a peer sending one every 100ms: it held a sync open for as
+       long as it liked. The exchange is bounded by a count and a deadline. */
+    {
+        int sv[2];
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+            fprintf(stderr, "FAIL: socketpair\n"); return 1;
+        }
+        /* macos gives a unix socket 8192 bytes, which 256 frames of 32 do not
+           fit in. Asked for here so the shape that hung there hangs everywhere. */
+        int small = 8192;
+        setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &small, sizeof small);
+        setsockopt(sv[0], SOL_SOCKET, SO_RCVBUF, &small, sizeof small);
+
+        kw_peer p;
+        kw_peer_from_fd(&p, KW_DOGE_REGTEST.magic, sv[0]);
+
+        /* Fed by a thread rather than written up front: writing them all before
+           the reader starts blocks once that buffer is full. */
+        struct flood f = { sv[1], 0 };
+        pthread_t th;
+        if (pthread_create(&th, NULL, flood_feefilters, &f) != 0) {
+            fprintf(stderr, "FAIL: cannot start the flood\n"); return 1;
+        }
+
+        char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
+        int r = kw_peer_recv(&p, cmd, &pl, &pn);
+        f.stop = 1;
+        kw_peer_close(&p);                        /* the writer's EPIPE */
+        pthread_join(th, NULL);
+        close(sv[1]);
+        if (r != -1) {
+            fprintf(stderr, "FAIL: an endless feefilter stream did not end the "
+                            "exchange (r=%d)\n", r);
+            return 1;
+        }
+        if (p.peer_feerate < 0) {
+            fprintf(stderr, "FAIL: a 0xff.. feefilter came back negative\n"); return 1;
+        }
+    }
+
+    printf("peer ok: handshake over a socketpair, sent version+verack, recv reassembles,\n"
+           "  and a feefilter flood ends the exchange instead of owning it\n");
     return 0;
 }
