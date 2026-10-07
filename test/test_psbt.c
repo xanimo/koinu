@@ -115,6 +115,47 @@ int main(void)
         }
     }
 
+    /* Combine is where a counterparty's bytes arrive, and threat-model.md says
+       every counterparty signature is verified before a spend is assembled. It
+       was comparing bytes only when two entries shared a pubkey, so a blob under
+       a key in the script, or a real signature from a key outside it, went
+       straight in. */
+    {
+        kw_psbt dst = a, src = a;
+        src.in[0].nsigs = 1;
+        memcpy(src.in[0].sigs[0].pubkey, pubB, 33);
+        memset(src.in[0].sigs[0].sig, 0x41, 20);
+        src.in[0].sigs[0].sig[19] = KW_SIGHASH_ALL;
+        src.in[0].sigs[0].siglen = 20;
+        if (kw_psbt_combine(&dst, &src) != 0) {
+            fprintf(stderr, "FAIL: combined a signature that does not verify\n"); return 1;
+        }
+
+        uint8_t skC[32]; memset(skC, 0x33, 32);
+        uint8_t pubC[33];
+        if (!kw_ec_pubkey(skC, pubC)) { fprintf(stderr, "FAIL: pubkey C\n"); return 1; }
+        uint8_t der[KW_EC_SIG_DER_MAX + 1]; size_t dl = sizeof der;
+        if (!kw_tx_signature(&tx, 0, skC, redeem, rl, KW_SIGHASH_ALL, der, &dl)) {
+            fprintf(stderr, "FAIL: sign with C\n"); return 1;
+        }
+        kw_psbt dst2 = a, src2 = a;
+        src2.in[0].nsigs = 1;
+        memcpy(src2.in[0].sigs[0].pubkey, pubC, 33);
+        memcpy(src2.in[0].sigs[0].sig, der, dl);
+        src2.in[0].sigs[0].siglen = dl;
+        if (kw_psbt_combine(&dst2, &src2) != 0) {
+            fprintf(stderr, "FAIL: combined a signature from a key the script does not name\n"); return 1;
+        }
+
+        /* and an output's redeem script conflicts the way an input's does */
+        kw_psbt o1 = a, o2 = a;
+        o1.out[0].redeem[0] = 0x51; o1.out[0].redeemlen = 1;
+        o2.out[0].redeem[0] = 0x52; o2.out[0].redeemlen = 1;
+        if (kw_psbt_combine(&o1, &o2) != 0) {
+            fprintf(stderr, "FAIL: resolved an output redeem conflict by argument order\n"); return 1;
+        }
+    }
+
     /* A psbt that asks for a sighash this signer cannot produce is refused, not
        signed with a different one and relabelled. Rewriting the field returned a
        psbt claiming it had asked for what it got. */
@@ -257,7 +298,7 @@ int main(void)
 
     kw_ec_stop();
 
-    printf("psbt ok: create/update/sign/combine/finalize/extract, sign bound to its utxo, %d bip174 vectors parsed and round-tripped, %d refused\n",
+    printf("psbt ok: create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused, %d bip174 vectors parsed and round-tripped, %d refused\n",
            parsed, refused);
     return 0;
 }

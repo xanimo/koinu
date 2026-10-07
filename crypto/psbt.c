@@ -146,6 +146,32 @@ int kw_psbt_get_sig(const kw_psbt *p, size_t index, size_t n,
     return 1;
 }
 
+/* 0x21 followed by the key: the only way a compressed pubkey appears in a
+   script, whether the script is bare multisig or has branches around it. */
+static int redeem_names_key(const uint8_t *script, size_t len, const uint8_t pub[33])
+{
+    for (size_t i = 0; i + 34 <= len; i++)
+        if (script[i] == 0x21 && memcmp(script + i + 1, pub, 33) == 0) return 1;
+    return 0;
+}
+
+/* A signature is only worth carrying if it verifies against the sighash this
+   input's redeem script produces, under a key that script names. threat-model.md
+   says every counterparty signature is checked before a spend is assembled, and
+   combine is where a counterparty's bytes arrive. */
+static int sig_verifies(const kw_psbt *p, size_t index, const kw_psbt_sig *s)
+{
+    const kw_psbt_in *in = &p->in[index];
+    if (!in->redeemlen || s->siglen < 2) return 0;
+    uint32_t hashtype = s->sig[s->siglen - 1];
+    if (in->has_sighash && hashtype != in->sighash) return 0;
+    if (!redeem_names_key(in->redeem, in->redeemlen, s->pubkey)) return 0;
+
+    uint8_t h[32];
+    if (!kw_tx_sighash(&p->tx, index, in->redeem, in->redeemlen, hashtype, h)) return 0;
+    return kw_ec_verify(s->pubkey, h, s->sig, s->siglen - 1);
+}
+
 int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
 {
     uint8_t a[32], b[32];
@@ -180,6 +206,7 @@ int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
             size_t slot = d->nsigs;
             for (size_t j = 0; j < d->nsigs; j++)
                 if (memcmp(d->sigs[j].pubkey, s->sigs[k].pubkey, 33) == 0) { slot = j; break; }
+            if (!sig_verifies(dst, i, &s->sigs[k])) return 0;
             if (slot == d->nsigs) {
                 if (d->nsigs == KW_PSBT_MAX_SIGS) return 0;
                 d->sigs[d->nsigs++] = s->sigs[k];
@@ -192,11 +219,18 @@ int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
             }
         }
     }
-    for (size_t i = 0; i < dst->tx.nout; i++)
+    for (size_t i = 0; i < dst->tx.nout; i++) {
+        /* An output's redeem script conflicts the same way an input's does, and
+           keeping dst's was resolution by argument order in the one place this
+           function still did it. */
+        if (dst->out[i].redeemlen && src->out[i].redeemlen &&
+            (dst->out[i].redeemlen != src->out[i].redeemlen ||
+             memcmp(dst->out[i].redeem, src->out[i].redeem, src->out[i].redeemlen) != 0)) return 0;
         if (!dst->out[i].redeemlen && src->out[i].redeemlen) {
             memcpy(dst->out[i].redeem, src->out[i].redeem, src->out[i].redeemlen);
             dst->out[i].redeemlen = src->out[i].redeemlen;
         }
+    }
     return 1;
 }
 
