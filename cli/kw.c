@@ -506,10 +506,10 @@ static long headers_sync(kw_headerstore *s, const kw_chainparams *cp, kw_peer *p
        stderr: an operator running this has no other way to see that it happened. */
     if (quiet) {
         fprintf(stderr, "kw: checked the work of %llu header(s) from height %u, %d peer(s) asked\n",
-                (unsigned long long)cr.pow_checked, pow_from, cr.npeers);
+                (unsigned long long)cr.pow_checked, cr.pow_from, cr.npeers);
     } else {
         printf("checked the work of %llu header(s) from height %u on %d thread(s)\n",
-               (unsigned long long)cr.pow_checked, pow_from, cr.threads);
+               (unsigned long long)cr.pow_checked, cr.pow_from, cr.threads);
         if (nhp < 2)
             printf("one peer, so nothing compared its chain against another\'s by work; "
                    "pass --node twice for that\n");

@@ -278,6 +278,41 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* The tail bound has to count what the comparison will hold. With an empty
+       store the cached tail is zero, so it never fired while each peer served
+       the whole chain and each candidate was held and hashed in full. A peer's
+       advertised height says how far that is before anything is fetched. */
+    {
+        uint8_t chain[3][80];
+        if (!build_chain(chain, 3, base.hash, EASY, 900))
+            { fprintf(stderr, "FAIL: could not mine the span fork\n"); return 1; }
+
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        kw_headerstore_append(&s, &base);
+
+        kw_peer a, b;
+        /* one full round each: the fallback syncs straight from peer 0 without
+           the fork-point round the comparison would have spent first */
+        if (!fake_peer(&a, &cp, chain, 3, 1) || !fake_peer(&b, &cp, chain, 3, 1))
+            { fprintf(stderr, "FAIL: peers\n"); return 1; }
+        a.peer_height = 400000;                  /* more than the bound allows */
+        b.peer_height = 400000;
+        kw_peer *const peers[2] = { &a, &b };
+
+        kw_chainsel_result r;
+        long n = kw_sync_headers_best(peers, 2, &s, &cp, 1, &r);
+        kw_peer_close(&a); kw_peer_close(&b);
+
+        if (n != 3) { fprintf(stderr, "FAIL: appended %ld with one peer, want 3\n", n); return 1; }
+        if (r.ncandidates != 1) {
+            fprintf(stderr, "FAIL: %d candidates weighed past the bound, want 1\n",
+                    r.ncandidates);
+            return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
     /* An empty store, which is what every first run has: no cache, or a command
        like sweep that never keeps one. The peer's first header builds on genesis,
        and genesis is not a header the store ever holds, so resolving its parent
@@ -317,7 +352,7 @@ int main(void)
     }
 
     printf("chainsel ok: the heavier of two forks wins over the longer one, the cached\n"
-           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind,\n"
+           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind, a span past the bound falls back\n  to one peer,\n"
            "  and a first run with no cache syncs from genesis\n");
     return 0;
 }

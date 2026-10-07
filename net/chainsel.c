@@ -116,6 +116,9 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
 
     /* One peer is the old behaviour: there is nothing to compare, so do not
        pretend to. The caller says so; this just does the sync. */
+    r.pow_from = pow_from;
+    if (out) *out = r;
+
     if (npeers == 1) {
         /* The pool's verdict lands after the headers are appended, so a failure
            used to leave whatever the peer sent in the store. kw exits and never
@@ -157,11 +160,24 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
        ranges line up, so they are lined up here rather than documented and hoped
        for. Lowering it only ever checks more. */
     if (pow_from > floor + 1) pow_from = floor + 1;
+    r.pow_from = pow_from;
+
+    /* The bound belongs on what the comparison will hold, not only on what the
+       cache already holds. With an empty store ntail is 0, so it never fired
+       while every peer served the whole chain, each candidate was held in memory
+       and hashed in full, and the winner was copied again. A peer's advertised
+       height is what says how far that is before a byte is fetched. */
+    size_t span = s->count - floor;
+    for (int i = 0; i < npeers; i++) {
+        if (!peers[i] || peers[i]->peer_height <= 0) continue;
+        uint32_t ph = (uint32_t)peers[i]->peer_height;
+        if (ph > floor && (size_t)(ph - floor) > span) span = ph - floor;
+    }
 
     size_t ntail = s->count - floor;
-    if (ntail > KW_CHAINSEL_MAX_TAIL) {
+    if (span > KW_CHAINSEL_MAX_TAIL) {
         fprintf(stderr, "kw: %zu headers above the newest anchor, too many to weigh "
-                        "several peers' chains; using one\n", ntail);
+                        "several peers' chains; using one\n", span);
         kw_peer *const one[1] = { peers[0] };
         return kw_sync_headers_best(one, 1, s, cp, pow_from, out);
     }

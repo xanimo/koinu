@@ -34,6 +34,8 @@ typedef struct {
     uint32_t bad_height;      /* set when a peer was dropped for a bad header */
     uint64_t pow_checked;     /* headers whose work was checked, over all candidates */
     int      threads;         /* validator threads one candidate's pool ran on */
+    uint32_t pow_from;        /* the height work was actually checked from, which is
+                                 the caller's value or lower, never higher */
 } kw_chainsel_result;
 
 /* Sync the tail from every peer in (peers) and leave (s) holding the chain with
