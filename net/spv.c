@@ -208,13 +208,8 @@ int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
     size_t bn = kw_msg_getdata_blocks_build((const uint8_t (*)[32])hash, 1, body, sizeof body);
     if (!bn || !kw_peer_send(p, "getdata", body, bn)) return 0;
 
-    char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-    int got = 0;
-    while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
-        if (!strcmp(cmd, "block")) { got = 1; break; }
-        if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
-    }
-    if (!got) return 0;
+    const uint8_t *pl = NULL; size_t pn = 0;
+    if (!kw_peer_wait(p, "block", &pl, &pn)) return 0;
 
     /* the block we asked for, not some other one. The body is not checked against
        the header here: every function that reads one does that itself, and doing

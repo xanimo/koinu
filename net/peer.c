@@ -162,6 +162,24 @@ int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
     }
 }
 
+int kw_peer_wait(kw_peer *p, const char *want, const uint8_t **payload, size_t *plen)
+{
+    char cmd[13];
+    const uint8_t *pl = NULL;
+    size_t pn = 0;
+    int skipped = 0;
+    while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
+        if (!strcmp(cmd, want)) {
+            if (payload) *payload = pl;
+            if (plen) *plen = pn;
+            return 1;
+        }
+        if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+        if (++skipped > KW_PEER_MAX_SKIP) return 0;
+    }
+    return 0;
+}
+
 int kw_peer_handshake(kw_peer *p, int32_t start_height)
 {
     kw_msg_version v;
@@ -182,10 +200,11 @@ int kw_peer_handshake(kw_peer *p, int32_t start_height)
     size_t bl = kw_msg_version_build(&v, body, sizeof body);
     if (!bl || !kw_peer_send(p, "version", body, bl)) return 0;
 
-    int got_version = 0, got_verack = 0;
+    int got_version = 0, got_verack = 0, skipped = 0;
     while (!got_verack) {
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
         if (kw_peer_recv(p, cmd, &pl, &pn) != 1) return 0;
+        if (++skipped > KW_PEER_MAX_SKIP) return 0;
 
         if (!strcmp(cmd, "version")) {
             kw_msg_version pv; char ua[256];

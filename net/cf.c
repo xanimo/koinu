@@ -135,12 +135,8 @@ int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_heigh
                                           s->h[s1 - 1].hash, body, sizeof body);
     if (!bn || !kw_peer_send(p, "getcfheaders", body, bn)) return 0;
 
-    char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-    for (;;) {
-        if (kw_peer_recv(p, cmd, &pl, &pn) != 1) return 0;
-        if (!strcmp(cmd, "cfheaders")) break;
-        if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
-    }
+    const uint8_t *pl = NULL; size_t pn = 0;
+    if (!kw_peer_wait(p, "cfheaders", &pl, &pn)) return 0;
 
     uint8_t type, stop[32]; const uint8_t *hp; size_t nh;
     if (!kw_msg_cfheaders_parse(pl, pn, &type, stop, prev, &hp, &nh)) return 0;
@@ -207,13 +203,8 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
         if (!bn || !kw_peer_send(p, "getcfilters", body, bn)) { err = 1; break; }
 
         for (size_t k = s0; k < s1 && !err; k++) {
-            char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-            int got = 0;
-            while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
-                if (!strcmp(cmd, "cfilter")) { got = 1; break; }
-                if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
-            }
-            if (!got) { err = 1; break; }
+            const uint8_t *pl = NULL; size_t pn = 0;
+            if (!kw_peer_wait(p, "cfilter", &pl, &pn)) { err = 1; break; }
 
             uint8_t type, bh[32]; const uint8_t *filt; size_t flen;
             if (!kw_msg_cfilter_parse(pl, pn, &type, bh, &filt, &flen)) { err = 1; break; }

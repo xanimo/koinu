@@ -48,6 +48,16 @@ int  kw_peer_send(kw_peer *p, const char *cmd, const uint8_t *payload, size_t pl
    timeout; -1 on a framing/checksum/socket error. */
 int  kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen);
 
+/* How many messages a peer may send in place of the one it was asked for before
+   the exchange is abandoned. A socket timeout only bounds one read, so a peer
+   pinging faster than that holds a loop forever, and kwd serves one request at a
+   time. net/sync.c had this bound and the other drivers did not. */
+#define KW_PEER_MAX_SKIP 256
+
+/* Wait for a (want) message, answering pings and dropping at most
+   KW_PEER_MAX_SKIP others. Returns 1 with (payload)/(plen) set, 0 otherwise. */
+int  kw_peer_wait(kw_peer *p, const char *want, const uint8_t **payload, size_t *plen);
+
 /* Send version, exchange verack (answering any ping), recording the peer's
    version and advertised height. Returns 1 once verack is received. */
 int  kw_peer_handshake(kw_peer *p, int32_t start_height);

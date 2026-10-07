@@ -77,13 +77,8 @@ static int fork_point(kw_peer *p, const kw_headerstore *s, const kw_chainparams 
                                         body, sizeof body);
     if (!bn || !kw_peer_send(p, "getheaders", body, bn)) return -1;
 
-    char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-    int got = 0;
-    while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
-        if (!strcmp(cmd, "headers")) { got = 1; break; }
-        if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
-    }
-    if (!got) return -1;
+    const uint8_t *pl = NULL; size_t pn = 0;
+    if (!kw_peer_wait(p, "headers", &pl, &pn)) return -1;
 
     /* The whole message has to be parsed to read the first header: the parser
        refuses a batch that exceeds the cap rather than filling what fits. */

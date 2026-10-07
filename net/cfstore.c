@@ -168,6 +168,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         }
         have_chain = have > 0;
     }
+
     if ((size_t)have == s->count) return (long)s->count;
 
     uint8_t (*fh)[32] = (uint8_t (*)[32])malloc(1000 * 32);
@@ -196,13 +197,8 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         if (!bn || !kw_peer_send(p, "getcfilters", body, bn)) { free(fh); return -1; }
 
         for (size_t k = s0; k < s1; k++) {
-            char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
-            int got = 0;
-            while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
-                if (!strcmp(cmd, "cfilter")) { got = 1; break; }
-                if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
-            }
-            if (!got) { free(fh); return -1; }
+            const uint8_t *pl = NULL; size_t pn = 0;
+            if (!kw_peer_wait(p, "cfilter", &pl, &pn)) { free(fh); return -1; }
 
             uint8_t type, bh[32]; const uint8_t *filt; size_t flen;
             if (!kw_msg_cfilter_parse(pl, pn, &type, bh, &filt, &flen)) { free(fh); return -1; }
