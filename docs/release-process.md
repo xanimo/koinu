@@ -70,12 +70,30 @@ assuming: the point is that the tail is known, not that the file changed.
 Nothing is tagged until all of these pass on the commit being tagged:
 
     make check          43/43 suites
-    make asan           exit 0, not just quiet output
-    make tsan           the validator pool and the parallel header sync
-    make fuzz-asan      the parsers under the sanitizers
+    make asan           exit 0, which now means what it says: the sanitized
+                        builds carry -fno-sanitize-recover=undefined, so a
+                        ubsan report ends the run instead of printing and
+                        exiting 0
+    make tsan           test_powq and test_psync only, which is the threaded
+                        code: the validator pool and the parallel download
+    make fuzz-asan      the in-tree corpus and 20000 mutations per target
+                        under the sanitizers, which is replay rather than
+                        coverage-guided
+    make fuzz           libFuzzer over the same targets, at least 10 minutes
+                        each, which is the one that finds new inputs
+
+The release binary's hardening is a property of the toolchain that linked it, so
+check the artifact rather than the flags:
+
+    readelf -d kw | grep -E 'BIND_NOW|FLAGS'      # BIND_NOW, NOW PIE
+    readelf -lW kw | grep GNU_RELRO               # present
+    objdump -d kw | grep -c endbr64               # nonzero on x86_64
+
+The Makefile probes each flag against the compiler and drops what it cannot
+take, so a toolchain without one builds quietly without it.
 
 CI runs check, asan and fuzz-asan on every push, on x86_64 gcc and clang, i386, and
-arm64. `make tsan` is not in CI and is run here. A release also wants a live check against a
+arm64. `make tsan` and `make fuzz` are not in CI and are run here. A release also wants a live check against a
 real node, since the offline suite has never caught a serialization bug on its
 own: sync headers, scan a funded address, and confirm an outpoint.
 

@@ -5,11 +5,26 @@
 # in-tree. See docs/PROVENANCE.md.
 
 CC       ?= cc
+, := ,
+
+# Every hardening flag is probed against this compiler and linker rather than
+# assumed: the list is otherwise whatever the builder's toolchain happens to
+# turn on by default, which is how -z now and full RELRO came to be present
+# under Ubuntu's gcc and absent under clang on the same objects. A flag that
+# does not probe is dropped rather than failing the build, since the macos
+# linker takes none of the -z forms.
+cc_ok  = $(shell $(CC) $(1) -x c /dev/null -c -o /dev/null >/dev/null 2>&1 && echo $(1))
+ld_ok  = $(shell printf 'int main(void){return 0;}' > .hard$$$$.c; \
+                 $(CC) $(1) .hard$$$$.c -o /dev/null >/dev/null 2>&1 && echo $(1); \
+                 rm -f .hard$$$$.c)
+
 # Hardening on the shipped binary. The sanitizer targets below override CFLAGS
 # wholesale, so these apply to the artifact people actually run and nobody
 # rebuilds. _FORTIFY_SOURCE needs an optimised build to do anything.
-HARDEN   ?= -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIE
-HARDLDFLAGS ?= -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -pie
+HARDEN   ?= -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIE \
+            $(call cc_ok,-fstack-clash-protection) $(call cc_ok,-fcf-protection=full)
+HARDLDFLAGS ?= $(call ld_ok,-Wl$(,)-z$(,)relro) $(call ld_ok,-Wl$(,)-z$(,)now) \
+               $(call ld_ok,-Wl$(,)-z$(,)noexecstack) $(call ld_ok,-pie)
 
 CFLAGS   ?= -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter
 
@@ -54,15 +69,15 @@ $(LIB): $(CORE_OBJ)
 	$(AR) rcs $@ $^
 
 kw: cli/kw.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ cli/kw.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ cli/kw.o $(LIB) $(SECP_LIB)
 
 # resident outpoint-confirmation daemon
 kwd: cli/kwd.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ cli/kwd.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ cli/kwd.o $(LIB) $(SECP_LIB)
 
 # read-only terminal view of a wallet
 kwui: cli/kwui.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ cli/kwui.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ cli/kwui.o $(LIB) $(SECP_LIB)
 
 # The one submodule, built via its own autotools into a static lib. Only objects
 # that reference it (ec.o, pulled in by test_ec) need it at link time.
@@ -81,163 +96,163 @@ $(SECP_LIB): $(SECP_DIR)/include/secp256k1.h
 	    --disable-tests --disable-exhaustive-tests --disable-benchmark && $(MAKE)
 
 test/test_cpu: test/test_cpu.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 test/test_rng: test/test_rng.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 test/test_sha2: test/test_sha2.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_sha2.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_sha2.o test/testutil.o $(LIB)
 
 test/test_ripemd160: test/test_ripemd160.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_ripemd160.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_ripemd160.o test/testutil.o $(LIB)
 
 test/test_hmac: test/test_hmac.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_hmac.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_hmac.o test/testutil.o $(LIB)
 
 test/test_siphash: test/test_siphash.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_siphash.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_siphash.o $(LIB)
 
 test/test_pbkdf2: test/test_pbkdf2.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_pbkdf2.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_pbkdf2.o test/testutil.o $(LIB)
 
 test/test_scrypt: test/test_scrypt.o test/scrypt_portable.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_scrypt.o test/scrypt_portable.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_scrypt.o test/scrypt_portable.o test/testutil.o $(LIB)
 
 test/test_base58: test/test_base58.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_base58.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_base58.o test/testutil.o $(LIB)
 
 test/test_ec: test/test_ec.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_ec.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_ec.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_bip32: test/test_bip32.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_bip32.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_bip32.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_bip39: test/test_bip39.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_bip39.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_bip39.o test/testutil.o $(LIB)
 
 test/test_address: test/test_address.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_address.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_address.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_aead: test/test_aead.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_aead.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_aead.o test/testutil.o $(LIB)
 
 test/test_argon2: test/test_argon2.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_argon2.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_argon2.o test/testutil.o $(LIB)
 
 test/test_keystore: test/test_keystore.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_keystore.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_keystore.o $(LIB)
 
 test/test_tx: test/test_tx.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_tx.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_tx.o $(LIB) $(SECP_LIB)
 
 test/test_psbt: test/test_psbt.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_psbt.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_psbt.o $(LIB) $(SECP_LIB)
 
 test/test_pow: test/test_pow.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_pow.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_pow.o test/testutil.o $(LIB)
 
 test/test_auxpow: test/test_auxpow.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 test/test_powq: test/test_powq.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 test/test_proto: test/test_proto.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_proto.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_proto.o test/testutil.o $(LIB)
 
 test/test_msg: test/test_msg.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_msg.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_msg.o test/testutil.o $(LIB)
 
 test/test_peer: test/test_peer.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_peer.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_peer.o $(LIB)
 
 test/test_socks5: test/test_socks5.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_socks5.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_socks5.o $(LIB)
 
 test/test_headers: test/test_headers.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_headers.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_headers.o test/testutil.o $(LIB)
 
 test/test_sync: test/test_sync.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_sync.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_sync.o test/testutil.o $(LIB)
 
 test/test_psync: test/test_psync.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_psync.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_psync.o $(LIB)
 
 test/test_sighash: test/test_sighash.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB) $(SECP_LIB)
 
 test/test_utxo: test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_utxo.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_fee: test/test_fee.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 test/test_chainsel: test/test_chainsel.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_chainsel.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_chainsel.o $(LIB) $(SECP_LIB)
 
 test/test_change: test/test_change.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_change.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_change.o $(LIB) $(SECP_LIB)
 
 test/test_journal: test/test_journal.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 test/test_spv: test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_spv.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_gcs: test/test_gcs.o test/testutil.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_gcs.o test/testutil.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_gcs.o test/testutil.o $(LIB)
 
 test/test_cf: test/test_cf.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_cf.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_cf.o test/testutil.o $(LIB) $(SECP_LIB)
 
 test/test_cfstore: test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_cfstore.o test/testutil.o $(LIB) $(SECP_LIB)
 
 # writes sighash vectors from a run of mainnet blocks, over p2p
 mkvectors_chain: test/mkvectors_chain.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB) $(SECP_LIB)
 
 # regenerates the block-header anchor table from a synced header cache
 gen_checkpoints: test/gen_checkpoints.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 # checks the retarget rule against a KWH2 header cache, built on demand: the
 # cache is 700MB for mainnet and ships nowhere
 pow_chain: test/pow_chain.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
 
 net_sync: test/net_sync.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_sync.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_sync.o $(LIB)
 
 # live SPV balance tool, built on demand, not part of `make check`
 net_spv: test/net_spv.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_spv.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_spv.o $(LIB) $(SECP_LIB)
 
 # live BIP157 compact-filter balance tool, needs a peer that serves filters
 net_cf: test/net_cf.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_cf.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_cf.o $(LIB) $(SECP_LIB)
 
 # live p2sh 2-of-2 co-sign harness, built on demand
 net_multisig: test/net_multisig.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_multisig.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_multisig.o $(LIB) $(SECP_LIB)
 
 # fetches a block and checks its merged-mining proof against a real peer
 net_services: test/net_services.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_services.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_services.o $(LIB) $(SECP_LIB)
 
 net_powtail: test/net_powtail.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_powtail.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_powtail.o $(LIB) $(SECP_LIB)
 
 net_auxpow: test/net_auxpow.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_auxpow.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_auxpow.o $(LIB) $(SECP_LIB)
 
 # live handshake tool, built on demand, not part of `make check`
 test/fakenode: test/fakenode.o $(LIB) $(SECP_LIB)
-	$(CC) $(CFLAGS) -o $@ test/fakenode.o $(LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/fakenode.o $(LIB) $(SECP_LIB)
 
 net_handshake: test/net_handshake.o $(LIB)
-	$(CC) $(CFLAGS) -o $@ test/net_handshake.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_handshake.o $(LIB)
 
 # Fuzz targets over the parsers that read bytes a peer chose. `make fuzz` needs
 # clang for libFuzzer; `make fuzz-run CORPUS=dir` replays a corpus with any
@@ -319,10 +334,15 @@ check: $(TESTS) kw kwd kwui test/fakenode
 # everything, because the sanitized binaries are the point of a failure, and says so
 # loudly: the object files are sanitized too, so a plain make after a failed run
 # relinks them into $(LIB).
+# -fno-sanitize-recover=undefined is what makes this a gate: without it ubsan
+# prints its report, the process exits 0, and signed overflow or a bad shift
+# passes unless somebody reads the log. UBSAN_OPTIONS says the same thing to a
+# runtime that was built elsewhere.
+asan: export UBSAN_OPTIONS = halt_on_error=1:print_stacktrace=1
 asan:
 	$(MAKE) clean
 	@if $(MAKE) check CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-	    -fsanitize=address,undefined -fno-omit-frame-pointer"; then \
+	    -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"; then \
 	    $(MAKE) clean && $(MAKE) $(LIB); \
 	else \
 	    echo "" >&2; \
@@ -350,10 +370,11 @@ tsan:
 
 # The fuzzers are only meaningful under the sanitizers: without them a stray
 # read is silently harmless and the run reports success.
+fuzz-asan: export UBSAN_OPTIONS = halt_on_error=1:print_stacktrace=1
 fuzz-asan:
 	$(MAKE) clean
 	@if $(MAKE) fuzz-run CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-	    -fsanitize=address,undefined -fno-omit-frame-pointer"; then \
+	    -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"; then \
 	    $(MAKE) clean && $(MAKE) $(LIB); \
 	else \
 	    echo "" >&2; \
