@@ -189,6 +189,22 @@ if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
     echo "FAIL: dust change folded into the fee escaped the limit" >&2; exit 1
 fi
 
+# --input's amount decides the fee, the printed total and the --maxfee cap, and
+# legacy sighash does not commit to input value, so a wrong one signs a valid
+# transaction that pays the difference to the miner. Where the tracked set knows
+# the outpoint, the two have to agree.
+SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 0 --spk)
+# the set stores a txid in internal order, so this one reads the same either way
+INTXID=1111111111111111111111111111111111111111111111111111111111111111
+printf '# koinu utxo set v1\n%s 0 100000000000 10 %s\n' "$INTXID" "$SPK0" > "$WORK/u4"
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" --utxos "$WORK/u4" \
+       --input "$INTXID:0:10:0" --to "$ADDR1:5" >/dev/null 2>&1; then
+    echo "FAIL: signed an --input amount the tracked set disagrees with" >&2; exit 1
+fi
+./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" --utxos "$WORK/u4" \
+     --input "$INTXID:0:1000:0" --to "$ADDR1:5" >/dev/null \
+    || { echo "FAIL: the agreeing amount was refused" >&2; exit 1; }
+
 # cosign: two fixed keys (0x11.., 0x22..) co-sign a 2-of-2 P2SH spend. The
 # unsigned tx and redeem script match test_tx's fixtures; outputs are
 # deterministic (RFC 6979) so they are pinned.
@@ -257,4 +273,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"

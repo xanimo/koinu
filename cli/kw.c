@@ -991,6 +991,31 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             if (!parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
             uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
             uint32_t index = (uint32_t)strtoul(is, NULL, 10);
+            /* The typed amount is what the fee, the printed total and the --maxfee
+               cap are computed from, and legacy sighash does not commit to input
+               value, so a transaction built on a wrong one is valid and the
+               difference goes to the miner. The tracked set is the only record of
+               what the outpoint is worth, so check it where it has one and say so
+               where it does not. */
+            if (have_us) {
+                uint8_t tdisp[32], tint[32];
+                if (!kw_hex_decode(txid, 64, tdisp, 32)) {
+                    fprintf(stderr, "kw: bad --input txid\n"); goto out;
+                }
+                for (int b = 0; b < 32; b++) tint[b] = tdisp[31 - b];
+                const kw_utxo *known = NULL;
+                for (size_t u = 0; u < us.count; u++)
+                    if (us.u[u].vout == vout && memcmp(us.u[u].txid, tint, 32) == 0) { known = &us.u[u]; break; }
+                if (known && known->value != amt) {
+                    fprintf(stderr, "kw: --input %s:%u holds %llu koinu in the tracked set, "
+                                    "not the %llu given; the difference would go to the miner\n",
+                            txid, vout, (unsigned long long)known->value, (unsigned long long)amt);
+                    goto out;
+                }
+                if (!known)
+                    fprintf(stderr, "kw: --input %s:%u is not in the tracked set, "
+                                    "so its amount is taken as given\n", txid, vout);
+            }
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 0, index, &inkeys[nin])) {
                 fprintf(stderr, "kw: cannot derive input %d\n", i); goto out;
             }
