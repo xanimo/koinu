@@ -280,6 +280,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "kwd: header cache corrupt, starting fresh\n");
         kw_headerstore_free(&s); kw_headerstore_init(&s);
     }
+    /* The same check kw runs on a cache it loads, and for the same reason: a
+       cached chain is only this chain if it carries the blocks this release
+       pins. kwd was taking the file's word for it. */
+    {
+        uint32_t bad = 0;
+        if (s.count && !kw_sync_anchors_ok(&s, cp, &bad)) {
+            fprintf(stderr, "kwd: header cache does not match the block this release "
+                            "pins at height %u, starting fresh\n", bad);
+            kw_headerstore_free(&s); kw_headerstore_init(&s);
+        }
+    }
     long nh = kwd_sync(&s, cp);
     if (stop) goto done;
     if (nh < 0) { fprintf(stderr, "kwd: header sync failed\n"); goto done; }

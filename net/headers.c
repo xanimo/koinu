@@ -284,6 +284,19 @@ int kw_headerstore_load(kw_headerstore *s, const char *path)
     }
     free(buf);
     fclose(f);
+
+    /* KWH2 stores each hash so a load does not rehash 6.36M headers, and the
+       link check above only proves each record agrees with the next record's
+       claim. The tip has no next record, and it is what every later locator,
+       delta sync and query is built from, so that one is hashed. An anchor check
+       by the caller hashes the raw at every pinned height; between them a record
+       whose stored hash is not its header's is caught where it matters. */
+    if (ok && s->count) {
+        kw_block_header *tip = &s->h[s->count - 1];
+        uint8_t h[32];
+        kw_hash256(tip->raw, KW_HEADER_LEN, h);
+        if (memcmp(h, tip->hash, 32) != 0) ok = 0;
+    }
     return ok;
 }
 

@@ -325,6 +325,56 @@ int main(void)
         free(bh);
     }
 
+    /* KWH2 stores each hash so a load does not rehash the chain, and the link
+       check only proves a record agrees with the next record's claim. The tip
+       has no next record and is what every later sync builds on, so a stored
+       hash that is not its header's must stop the load. */
+    {
+        const char *path = "test_headers_tip.tmp";
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        uint8_t raw[80], prev[32];
+        memset(prev, 0, sizeof prev);
+        for (int i = 0; i < 3; i++) {
+            memset(raw, 0, sizeof raw);
+            raw[0] = 1;
+            if (i) memcpy(raw + 4, prev, 32);
+            raw[36] = (uint8_t)(i + 1);
+            kw_block_header h;
+            if (!kw_block_header_parse(raw, 80, &h) || !kw_headerstore_append(&s, &h)) {
+                fprintf(stderr, "FAIL: building the tip chain\n"); return 1;
+            }
+            memcpy(prev, h.hash, 32);
+        }
+        if (!kw_headerstore_save(&s, path)) { fprintf(stderr, "FAIL: save\n"); return 1; }
+        kw_headerstore_free(&s);
+
+        kw_headerstore back;
+        kw_headerstore_init(&back);
+        if (!kw_headerstore_load(&back, path) || back.count != 3) {
+            fprintf(stderr, "FAIL: honest load\n"); return 1;
+        }
+        kw_headerstore_free(&back);
+
+        /* flip a byte of the last record's raw header, leaving its stored hash */
+        FILE *f = fopen(path, "r+b");
+        if (!f || fseek(f, 4 + 2 * 112 + 36, SEEK_SET) != 0) {
+            fprintf(stderr, "FAIL: reopen\n"); return 1;
+        }
+        fputc(0xee, f);
+        fclose(f);
+
+        kw_headerstore bad;
+        kw_headerstore_init(&bad);
+        int loaded = kw_headerstore_load(&bad, path);
+        kw_headerstore_free(&bad);
+        remove(path);
+        if (loaded) {
+            fprintf(stderr, "FAIL: a tip whose stored hash is not its header's loaded\n");
+            return 1;
+        }
+    }
+
     printf("headers ok: hashes, parse, auxpow skip, store links, getheaders, disk cache v1+v2,\n"
            "  delta save, and 10000 records over three chunks with a cut record and a link\n"
            "  broken on the chunk boundary refused\n");
