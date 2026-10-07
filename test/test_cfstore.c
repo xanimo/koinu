@@ -209,6 +209,58 @@ int main(void)
         lens[1] = mk_cfilter(msgs + lens[0], h2.hash, f2, sizeof f2);
         if (sync_round(&s, sp, msgs, lens, cmds, 2) != 2) { fprintf(stderr, "FAIL: sync delta\n"); return 1; }
 
+        /* A reorg replaces h2 with b2. The cache holds a filter for a block that
+           is no longer the chain, and nothing compared the two: the counts
+           matched, so sync returned early and every later match failed on the
+           mismatch until the file was deleted by hand. The stale entry is
+           dropped and the replacement fetched in the same run. */
+        {
+            kw_block_header b2;
+            memset(raw, 0, 80); raw[0] = 9; memcpy(raw + 4, h1.hash, 32);
+            kw_block_header_parse(raw, 80, &b2);
+
+            kw_headerstore rs; kw_headerstore_init(&rs);
+            kw_headerstore_append(&rs, &h1);
+            kw_headerstore_append(&rs, &b2);
+
+            uint8_t fb[1] = { 0xee }, hashb[32];
+            kw_hash256(fb, sizeof fb, hashb);
+            lens[0] = mk_cfheaders(msgs, b2.hash, chain1, hashb);
+            lens[1] = mk_cfilter(msgs + lens[0], b2.hash, fb, sizeof fb);
+            if (sync_round(&rs, sp, msgs, lens, cmds, 2) != 2) {
+                fprintf(stderr, "FAIL: the cache did not follow a reorg\n"); return 1;
+            }
+            /* and the entry it now holds is the new block's, not the old one's:
+               tag, then (hash, length, filter) each, so entry 1 starts after
+               entry 0's two-byte filter */
+            uint8_t got[32];
+            FILE *cf = fopen(sp, "rb");
+            if (!cf || fseek(cf, 4 + 32 + 1 + (long)sizeof f1, SEEK_SET) != 0 ||
+                fread(got, 1, 32, cf) != 32) {
+                fprintf(stderr, "FAIL: cannot read the cache back\n"); return 1;
+            }
+            fclose(cf);
+            if (memcmp(got, b2.hash, 32) != 0) {
+                fprintf(stderr, "FAIL: the cache still holds the orphaned block\n"); return 1;
+            }
+            long fhc = 0;
+            if (!fh_peek(sp, &fhc) || fhc != 2) {
+                fprintf(stderr, "FAIL: sidecar says %ld after a reorg\n", fhc); return 1;
+            }
+            kw_headerstore_free(&rs);
+
+            /* put h2 back for the cases below */
+            kw_headerstore rs2; kw_headerstore_init(&rs2);
+            kw_headerstore_append(&rs2, &h1);
+            kw_headerstore_append(&rs2, &h2);
+            lens[0] = mk_cfheaders(msgs, h2.hash, chain1, hash2);
+            lens[1] = mk_cfilter(msgs + lens[0], h2.hash, f2, sizeof f2);
+            if (sync_round(&rs2, sp, msgs, lens, cmds, 2) != 2) {
+                fprintf(stderr, "FAIL: could not restore the original chain\n"); return 1;
+            }
+            kw_headerstore_free(&rs2);
+        }
+
         /* a delta that does not link to the pinned tip is refused */
         kw_headerstore_append(&s, &h3);
         uint8_t wrong[32]; memset(wrong, 0, 32);
@@ -294,6 +346,6 @@ int main(void)
         snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched, filter-header anchor enforced\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, filter-header anchor enforced\n");
     return 0;
 }

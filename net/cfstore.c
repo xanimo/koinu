@@ -14,21 +14,24 @@
 #include <string.h>
 
 static const char KW_CF_MAGIC[4] = { 'K', 'W', 'F', '1' };
-static const char KW_FH_MAGIC[4] = { 'K', 'W', 'F', 'H' };
+static const char KW_FH_MAGIC[4]  = { 'K', 'W', 'F', 'H' };   /* v1: no chain base */
+static const char KW_FH_MAGIC2[4] = { 'K', 'W', 'F', 'I' };
 
 /* The verified filter-header tip in <path>.fh: tag, entry count (8 LE), the
    filter header after that many entries. Binds a later delta sync to the chain
    already verified, so the peer cannot quietly rewrite cached history. */
-static int fh_load(const char *path, long *count, uint8_t hdr[32])
+static int fh_load(const char *path, long *count, uint8_t hdr[32], uint8_t base[32], int *has_base)
 {
     char fp[4200]; snprintf(fp, sizeof fp, "%s.fh", path);
     FILE *f = fopen(fp, "rb");
     if (!f) return 0;
-    uint8_t buf[4 + 8 + 32];
-    int ok = fread(buf, 1, sizeof buf, f) == sizeof buf &&
-             memcmp(buf, KW_FH_MAGIC, 4) == 0;
+    uint8_t buf[4 + 8 + 32 + 32];
+    size_t n = fread(buf, 1, sizeof buf, f);
     fclose(f);
-    if (!ok) return 0;
+    if (n < 4 + 8 + 32) return 0;
+    int v2 = memcmp(buf, KW_FH_MAGIC2, 4) == 0;
+    if (!v2 && memcmp(buf, KW_FH_MAGIC, 4) != 0) return 0;
+    if (v2 && n != sizeof buf) return 0;
     /* Accumulated unsigned: the eighth byte shifts into a signed long's sign bit,
        which is undefined rather than wrapping. Range-checked before it narrows. */
     uint64_t u = 0;
@@ -36,18 +39,25 @@ static int fh_load(const char *path, long *count, uint8_t hdr[32])
     if (u > (uint64_t)LONG_MAX) return 0;
     *count = (long)u;
     memcpy(hdr, buf + 12, 32);
+    if (has_base) *has_base = v2;
+    if (v2 && base) memcpy(base, buf + 44, 32);
     return 1;
 }
 
-static int fh_save(const char *path, long count, const uint8_t hdr[32])
+/* The base is the filter header of the block before the first cached filter.
+   Written since the first sync is the only moment it is known, and without it a
+   cache that has to drop a reorganised tail cannot re-derive what its new tip's
+   verified header is, which left deleting the whole file as the only answer. */
+static int fh_save(const char *path, long count, const uint8_t hdr[32], const uint8_t base[32])
 {
     char fp[4200]; snprintf(fp, sizeof fp, "%s.fh", path);
     FILE *f = fopen(fp, "wb");
     if (!f) return 0;
-    uint8_t buf[4 + 8 + 32];
-    memcpy(buf, KW_FH_MAGIC, 4);
+    uint8_t buf[4 + 8 + 32 + 32];
+    memcpy(buf, KW_FH_MAGIC2, 4);
     for (int i = 0; i < 8; i++) buf[4 + i] = (uint8_t)((uint64_t)count >> (8 * i));
     memcpy(buf + 12, hdr, 32);
+    memcpy(buf + 44, base, 32);
     int ok = fwrite(buf, 1, sizeof buf, f) == sizeof buf;
     if (fclose(f) != 0) ok = 0;
     return ok;
@@ -120,6 +130,59 @@ long kw_cfstore_count(const char *path)
     return n;
 }
 
+/* The block hash of cached entry (idx), through the height index. */
+static int cache_hash_at(const char *path, size_t idx, uint8_t out[32])
+{
+    long at = index_offset(path, idx);
+    if (at < 4) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    int ok = fseek(f, at, SEEK_SET) == 0 && fread(out, 1, 32, f) == 32;
+    fclose(f);
+    return ok;
+}
+
+/* Drop every cached entry from (keep) on, and the index with it. */
+static int cache_truncate(const char *path, size_t keep)
+{
+    long at = keep ? index_offset(path, keep) : 4;
+    if (at < 4) return 0;
+    if (truncate(path, (off_t)at) != 0) return 0;
+    char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
+    remove(ip);
+    return keep == 0 || ensure_index(path);
+}
+
+/* Re-derive the verified filter-header chain over the first (n) cached entries,
+   starting from (base). Reads the kept filters; no network. */
+static int chain_over(const char *path, size_t n, const uint8_t base[32], uint8_t out[32])
+{
+    uint8_t cur[32];
+    memcpy(cur, base, 32);
+    if (n == 0) { memcpy(out, cur, 32); return 1; }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fseek(f, 4, SEEK_SET) != 0) { fclose(f); return 0; }
+    int ok = 1;
+    for (size_t i = 0; i < n && ok; i++) {
+        uint8_t h[32];
+        uint64_t fl;
+        if (fread(h, 1, 32, f) != 32 || !rd_varint(f, &fl) ||
+            fl > KW_CFSTORE_MAX_FILTER) { ok = 0; break; }
+        uint8_t *filt = (uint8_t *)malloc((size_t)fl ? (size_t)fl : 1);
+        if (!filt) { ok = 0; break; }
+        if (fread(filt, 1, (size_t)fl, f) != (size_t)fl) { free(filt); ok = 0; break; }
+        uint8_t fhash[32];
+        kw_hash256(filt, (size_t)fl, fhash);
+        free(filt);
+        kw_cf_header_step(fhash, cur, cur);
+    }
+    fclose(f);
+    if (ok) memcpy(out, cur, 32);
+    return ok;
+}
+
 long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                      uint32_t base_height)
 {
@@ -144,10 +207,10 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
        cache with no sidecar is refused rather than adopted, and a cache reaching
        past the sidecar has the unbacked tail dropped. Re-adopting either from the
        peer would hand back the trust-on-first-use the sidecar exists to end. */
-    uint8_t chain[32]; int have_chain = 0;
+    uint8_t chain[32], cbase[32]; int have_chain = 0, have_base = 0;
     long fhc = 0;
     if (have > 0) {
-        if (!fh_load(path, &fhc, chain) || fhc < 0 || fhc > have) {
+        if (!fh_load(path, &fhc, chain, cbase, &have_base) || fhc < 0 || fhc > have) {
             fprintf(stderr, "kw: %s.fh is missing or does not match %s, so those filters "
                             "cannot be tied to a verified chain; delete both and sync again\n",
                     path, path);
@@ -169,7 +232,58 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         have_chain = have > 0;
     }
 
+    /* A reorg replaces blocks this cache already holds, and the filters it holds
+       for them are filters for blocks that are no longer the chain. Nothing
+       compared the two, so a matching count returned early here and every later
+       match failed on the hash mismatch instead: scan, outpoint and kwd stayed
+       broken until someone deleted the file by hand. Walk back from the tip to
+       the last entry that still agrees with the headers, drop the rest, and let
+       the fetch below refill it. */
+    if (have > 0) {
+        size_t agree = (size_t)have < s->count ? (size_t)have : s->count;
+        while (agree > 0) {
+            uint8_t h[32];
+            if (!cache_hash_at(path, agree - 1, h)) return -1;
+            if (memcmp(h, s->h[agree - 1].hash, 32) == 0) break;
+            agree--;
+        }
+        if (agree < (size_t)have) {
+            /* The new tip's verified filter header has to be re-derived over what
+               is kept, which needs the chain base. A cache written before the
+               sidecar carried one cannot do that, so it goes and is refetched. */
+            if (!have_base) {
+                char ip[4200], fp[4200];
+                snprintf(ip, sizeof ip, "%s.idx", path);
+                snprintf(fp, sizeof fp, "%s.fh", path);
+                remove(path); remove(ip); remove(fp);
+                fprintf(stderr, "kw: the chain moved under %s and it predates the "
+                                "chain base, so it is being rebuilt\n", path);
+                have = 0; have_chain = 0; fhc = 0;
+            } else {
+                uint8_t newtip[32];
+                if (!cache_truncate(path, agree) ||
+                    !chain_over(path, agree, cbase, newtip) ||
+                    !fh_save(path, (long)agree, newtip, cbase)) {
+                    fprintf(stderr, "kw: cannot roll %s back to height %u\n",
+                            path, base_height + (uint32_t)agree);
+                    return -1;
+                }
+                fprintf(stderr, "kw: the chain moved, dropped %ld filters from %s "
+                                "above height %u\n",
+                        have - (long)agree, path, base_height + (uint32_t)agree);
+                have = (long)agree;
+                fhc = (long)agree;
+                memcpy(chain, newtip, 32);
+                have_chain = have > 0;
+            }
+        }
+    }
+
     if ((size_t)have == s->count) return (long)s->count;
+    /* Past here a peer is needed. A caller that has none gets an error rather
+       than a dereference, which is what a rollback turned into: the cache was
+       short by the blocks it had just dropped. */
+    if (!p) return -1;
 
     uint8_t (*fh)[32] = (uint8_t (*)[32])malloc(1000 * 32);
     if (!fh) return -1;
@@ -181,6 +295,8 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
 
         uint8_t prev[32];
         if (!kw_cf_fetch_headers(p, s, base_height, s0, s1, prev, fh)) { free(fh); return -1; }
+        /* the chain before the first cached filter, knowable only here */
+        if (s0 == 0 && !have_base) { memcpy(cbase, prev, 32); have_base = 1; }
         if (have_chain && memcmp(prev, chain, 32) != 0) {
             if (kw_net_verbose) fprintf(stderr, "[cf] filter-header chain broke at height %u\n",
                                         base_height + (uint32_t)s0);
@@ -216,7 +332,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
 
             if (!kw_cfstore_append(path, bh, filt, flen)) { free(fh); return -1; }
         }
-        if (!fh_save(path, (long)s1, chain)) { free(fh); return -1; }
+        if (!fh_save(path, (long)s1, chain, cbase)) { free(fh); return -1; }
         if (kw_net_verbose) fprintf(stderr, "[cf] cached %zu/%zu filters\n", s1, s->count);
     }
     free(fh);
