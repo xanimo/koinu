@@ -57,6 +57,14 @@ int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
 int kw_utxoset_save(const kw_utxoset *us, const char *path);
 int kw_utxoset_load(kw_utxoset *us, const char *path);
 
+/* Scan metadata, written beside the utxo file as "<path>.meta": the peer's
+   advertised feefilter (so a later offline sign defaults to it) and how many
+   addresses per chain the scan watched (so every reader derives far enough to
+   key every tracked utxo, rather than each one guessing with its own gap).
+   Read leaves both at 0 when there is no file. Write returns 1 on success. */
+int  kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent);
+void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent);
+
 /* Apply one transaction at (height): remove UTXOs it spends, add outputs paying
    a watched script. Returns 1, or 0 if the transaction is malformed. */
 int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,

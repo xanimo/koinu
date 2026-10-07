@@ -632,11 +632,18 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
            the spends each was avoiding linking */
         char jp[4200];
         kw_journal_path(utxos, jp, sizeof jp);
+        /* The rows hold the change chain's own indices, so the count to rotate
+           over is how many of those there are. Passing nrows let the index come
+           back past the last change row, match nothing below, and fall through to
+           index 0, reusing an address with the note saying all of them were
+           used. */
+        int nchange = 0;
+        for (int i = 0; i < nrows; i++) if (rows[i].change == 1) nchange++;
         int cx = 0;
-        uint32_t ci = kw_change_index(&master, cp, us, jp, nrows, &cx);
+        uint32_t ci = kw_change_index(&master, cp, us, jp, nchange, &cx);
         if (cx) snprintf(cnote, sizeof cnote,
                          "   all %d change indices are used, so change reuses the first\r\n",
-                         nrows);
+                         nchange);
         int ri = -1;
         for (int i = 0; i < nrows; i++)
             if (rows[i].change == 1 && rows[i].index == ci) { ri = i; break; }
@@ -782,6 +789,15 @@ int main(int argc, char **argv)
             if (!kw_utxoset_load(&us, utxos)) utxos_partial = 1;
         }
     }
+
+    /* kw scan records how many addresses per chain it watched. Deriving fewer
+       than that hides every coin past the end: the rows, and so the balance,
+       stopped at kwui's own --gap while send_flow still selected those coins
+       from the set and then failed at signing. */
+    int extent = 0;
+    kw_scanmeta_read(utxos, NULL, &extent);
+    if (extent > gap) gap = extent;
+    if (gap > MAXADDR / 2) gap = MAXADDR / 2;
 
     row *rows = (row *)calloc(MAXADDR, sizeof *rows);
     if (!rows) { kw_utxoset_free(&us); kw_secure_forget(seed, sizeof seed); return 1; }

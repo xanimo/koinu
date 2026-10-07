@@ -28,6 +28,14 @@ TXID1=1111111111111111111111111111111111111111111111111111111111111111
 TXID2=2222222222222222222222222222222222222222222222222222222222222222
 printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK" > "$WORK/ks.utxos"
 
+# A coin past kwui's --gap but inside what kw scan watched. kwui used to derive
+# its own gap only, so this one was missing from the balance while send_flow
+# still spent it and then failed at signing.
+SPK25=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 25 --spk)
+TXID3=3333333333333333333333333333333333333333333333333333333333333333
+printf '%s 0 900000000000 101 %s\n' "$TXID3" "$SPK25" >> "$WORK/ks.utxos"
+printf 'feerate 0\ngap 30\n' > "$WORK/ks.utxos.meta"
+
 # wait until (file) contains (pattern), or fail after ~10s
 wait_for() {
     i=0
@@ -51,7 +59,9 @@ UI_PID=$!
 exec 3<> "$WORK/in"
 
 printf 'a test passphrase\n' >&3
-wait_for "$WORK/out" '5.00000000 DOGE across 1'          # the row list totalled it
+# 5 DOGE at index 0 plus 9000 at index 25, which is past --gap 2 and inside the
+# extent the meta records
+wait_for "$WORK/out" '9005.00000000 DOGE across 2'
 
 printf '\n' >&3
 wait_for "$WORK/out" 'receive address'                    # enter opened the address
@@ -69,11 +79,12 @@ printf 'q' >&3
 # a receive appended while it runs must appear on a refresh
 printf '%s 1 250000000 101 %s\n' "$TXID2" "$SPK" >> "$WORK/ks.utxos"
 printf 'r' >&3
-wait_for "$WORK/out" '7.50000000 DOGE across 2'
+wait_for "$WORK/out" '9007.50000000 DOGE across 3'
 
 printf 'q' >&3
 exec 3>&-
 wait "$UI_PID" || { echo "FAIL: kwui exited non-zero" >&2; exit 1; }
 UI_PID=""
 
-echo "kwui ok: browse, address, coins, empty history, refresh picks up a new output"
+echo "kwui ok: browse, address, coins, empty history, refresh picks up a new output,"
+echo "  and a coin past --gap inside the scan's extent is counted"

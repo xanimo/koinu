@@ -154,6 +154,33 @@ int kw_utxoset_save(const kw_utxoset *us, const char *path)
     return ok;
 }
 
+int kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent)
+{
+    char p[4200];
+    snprintf(p, sizeof p, "%s.meta", utxos_path);
+    FILE *f = fopen(p, "w");
+    if (!f) return 0;
+    int ok = fprintf(f, "feerate %lld\ngap %d\n", (long long)feerate, extent) > 0;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent)
+{
+    if (feerate) *feerate = 0;
+    if (extent) *extent = 0;
+    char p[4200];
+    snprintf(p, sizeof p, "%s.meta", utxos_path);
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    char key[32]; long long v;
+    while (fscanf(f, "%31s %lld", key, &v) == 2) {
+        if (!strcmp(key, "feerate") && feerate) *feerate = (int64_t)v;
+        else if (!strcmp(key, "gap") && extent) *extent = (int)v;
+    }
+    fclose(f);
+}
+
 int kw_utxoset_load(kw_utxoset *us, const char *path)
 {
     FILE *f = fopen(path, "r");

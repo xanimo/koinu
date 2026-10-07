@@ -433,29 +433,6 @@ static int open_seed(const char *path, const char *pass_arg, uint8_t seed[64])
     return 1;
 }
 
-/* Scan metadata sits beside the utxo file: the peer's advertised feefilter (so a
-   later offline sign defaults to it) and the address count scan watched (so sign
-   derives far enough to key every tracked utxo). */
-static void write_scan_meta(const char *utxos, int64_t feerate, int extent)
-{
-    char p[4200]; snprintf(p, sizeof p, "%s.meta", utxos);
-    FILE *f = fopen(p, "w");
-    if (f) { fprintf(f, "feerate %lld\ngap %d\n", (long long)feerate, extent); fclose(f); }
-}
-static void read_scan_meta(const char *utxos, int64_t *feerate, int *extent)
-{
-    *feerate = 0; *extent = 0;
-    char p[4200]; snprintf(p, sizeof p, "%s.meta", utxos);
-    FILE *f = fopen(p, "r");
-    if (!f) return;
-    char key[32]; long long v;
-    while (fscanf(f, "%31s %lld", key, &v) == 2) {
-        if (!strcmp(key, "feerate")) *feerate = (int64_t)v;
-        else if (!strcmp(key, "gap")) *extent = (int)v;
-    }
-    fclose(f);
-}
-
 /* every --node given, so the parallel fill can spread over several */
 /* How many peers a header sync asks. Three is enough for one to be wrong and the
    other two to disagree with it, and each one costs a connection and a tail. */
@@ -896,7 +873,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_headerstore_free(&s);
 
     if (kw_utxoset_save(&us, utxos_path)) {
-        write_scan_meta(utxos_path, p.peer_feerate, watched);
+        kw_scanmeta_write(utxos_path, p.peer_feerate, watched);
         record_receives(cp, watch, watch_cap, watched, &us, utxos_path);
         printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
                nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
@@ -1037,7 +1014,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         /* scan metadata: default the rate to the peer floor it recorded, and
            derive as far as it watched so every tracked utxo's key is available */
         int64_t hint = 0; int extent = 0;
-        read_scan_meta(up, &hint, &extent);
+        kw_scanmeta_read(up, &hint, &extent);
         if (!feerate_arg) rate = peer_rate(rate, hint);
         int derive_n = gap; if (extent > derive_n) derive_n = extent;
         change_scan = derive_n;
