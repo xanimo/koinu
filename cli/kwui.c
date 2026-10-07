@@ -156,8 +156,13 @@ static uint64_t tally_rows(const kw_utxoset *us, row *rows, int n)
 static int build_rows(const kw_chainparams *cp, const uint8_t seed[64], int gap,
                       const kw_utxoset *us, row *rows, int cap, uint64_t *total)
 {
+    /* the master key is the seed in another encoding, so it is pinned like one */
     kw_bip32_key master;
-    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) return 0;
+    kw_secure_keep(&master, sizeof master);
+    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) {
+        kw_secure_forget(&master, sizeof master);
+        return 0;
+    }
 
     int n = 0;
     *total = 0;
@@ -179,7 +184,7 @@ static int build_rows(const kw_chainparams *cp, const uint8_t seed[64], int gap,
             n++;
         }
     }
-    kw_secure_zero(&master, sizeof master);
+    kw_secure_forget(&master, sizeof master);
     *total = tally_rows(us, rows, n);
     return n;
 }
@@ -602,6 +607,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     }
     kw_tx_add_output(&tx, want, dspk, dl);
     kw_bip32_key master;
+    kw_secure_keep(&master, sizeof master);
     int ok = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
 
     char caddr[80] = { 0 }, cnote[96] = { 0 };
@@ -644,7 +650,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         ok = kw_tx_sign_p2pkh(&tx, (size_t)i, key.key + 1, u->spk, 25);   /* 0x00 || d */
         kw_secure_zero(&key, sizeof key);
     }
-    kw_secure_zero(&master, sizeof master);
+    kw_secure_forget(&master, sizeof master);
     kw_secure_forget(seed, sizeof seed);
     if (!ok) { ask_line("   signing failed. enter to go back ", yes, sizeof yes); return; }
 

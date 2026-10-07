@@ -149,6 +149,7 @@ static int decode(const char *mnemonic, uint8_t *ent_out, size_t entcap, size_t 
 
     kw_secure_zero(buf, sizeof buf);
     kw_secure_zero(h, sizeof h);
+    kw_secure_zero(idx, sizeof idx);      /* the words are the mnemonic */
     return ok;
 }
 

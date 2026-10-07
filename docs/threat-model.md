@@ -11,8 +11,11 @@ and wiped after. The mnemonic is printed once at creation and never stored, so a
 stolen keystore without its passphrase yields nothing and a lost mnemonic cannot
 be recovered from the keystore.
 
-What is mlock'd is the seed, the derived key and the buffer a passphrase or
-mnemonic is read into. Those locks are counted per page, because mlock is not
+What is mlock'd is the seed, the master and child BIP32 keys derived from it,
+the key the keystore derives from a passphrase, a WIF decoded for a sweep or a
+co-signature, and the buffer a passphrase or mnemonic is read into. The master
+xprv is the seed in another encoding, so calling the seed the only secret and
+locking only the seed was a distinction without a difference. Those locks are counted per page, because mlock is not
 and two of them share a page often: the derived key sits a frame below the seed
 it decrypts. The derivation's own working memory is not locked. argon2id
 allocates m_cost_kib of passphrase-derived state itself, up to the 1 GiB a

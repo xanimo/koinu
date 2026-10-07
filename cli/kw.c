@@ -582,7 +582,13 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
     uint8_t seed[64];
 
     kw_secure_keep(seed, sizeof seed);
-    kw_bip39_to_seed(mnem, "", seed);
+    /* Checked: on a failure the buffer is whatever was on the stack, and sealing
+       that under a mnemonic gives a keystore the mnemonic does not restore. */
+    if (!kw_bip39_to_seed(mnem, "", seed)) {
+        kw_secure_forget(seed, sizeof seed);
+        fprintf(stderr, "kw: cannot derive a seed from that mnemonic\n");
+        return 1;
+    }
 
     printf("mnemonic (write this down, it is your only backup):\n  %s\n\n", mnem);
     kw_secure_zero(mnem, sizeof mnem);
@@ -603,7 +609,13 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     uint8_t seed[64];
 
     kw_secure_keep(seed, sizeof seed);
-    kw_bip39_to_seed(mnem, "", seed);
+    /* Checked: on a failure the buffer is whatever was on the stack, and sealing
+       that under a mnemonic gives a keystore the mnemonic does not restore. */
+    if (!kw_bip39_to_seed(mnem, "", seed)) {
+        kw_secure_forget(seed, sizeof seed);
+        fprintf(stderr, "kw: cannot derive a seed from that mnemonic\n");
+        return 1;
+    }
     secret_free(mnem);
 
     int rc = seal_and_report(cp, path, pass_arg, seed);
@@ -759,15 +771,20 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_secure_keep(seed, sizeof seed);
     if (!open_seed(path, pass_arg, seed)) return 1;
     kw_bip32_key master;
+    kw_secure_keep(&master, sizeof master);
     int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
     kw_secure_forget(seed, sizeof seed);
-    if (!have_master) { fprintf(stderr, "kw: master derivation failed\n"); return 1; }
+    if (!have_master) {
+        kw_secure_forget(&master, sizeof master);
+        fprintf(stderr, "kw: master derivation failed\n");
+        return 1;
+    }
 
     /* Everything the key is needed for happens here, before a socket exists. The key
        is wiped on the next line and the scan runs without it. */
     int watch_cap = scan_watch_cap(gap);
     kw_scan_addr *watch = derive_watch(cp, &master, watch_cap);
-    kw_secure_zero(&master, sizeof master);
+    kw_secure_forget(&master, sizeof master);
     if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); return 1; }
 
     kw_net_verbose = 1;
@@ -888,13 +905,22 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     kw_secure_keep(seed, sizeof seed);
     if (!open_seed(path, pass_arg, seed)) return 1;
 
+    /* The master key is the seed in another encoding, and each derived child is a
+       spending key, so they are pinned like the seed rather than merely wiped.
+       threat-model.md called the seed the only secret while these sat pageable. */
     kw_bip32_key master;
     int rc = 1;
-    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) { kw_secure_forget(seed, sizeof seed); return 1; }
+    kw_secure_keep(&master, sizeof master);
+    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) {
+        kw_secure_forget(&master, sizeof master);
+        kw_secure_forget(seed, sizeof seed);
+        return 1;
+    }
 
     kw_tx tx;
     kw_tx_init(&tx);
     kw_bip32_key inkeys[KW_TX_MAX_IN];
+    kw_secure_keep(inkeys, sizeof inkeys);
     uint8_t prevspk[KW_TX_MAX_IN][25];
     int nin = 0;
     uint64_t total_in = 0;
@@ -1000,6 +1026,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         keymap = (kw_bip32_key *)malloc((size_t)keymap_n * sizeof *keymap);
         h160map = malloc((size_t)keymap_n * 20);
         if (!keymap || !h160map) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+        kw_secure_keep(keymap, (size_t)keymap_n * sizeof *keymap);
         int m = 0;
         for (int chg = 0; chg <= 1; chg++)
             for (int i = 0; i < derive_n; i++) {
@@ -1135,12 +1162,12 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         rc = 0;
     }
 out:
-    if (keymap) { kw_secure_zero(keymap, (size_t)keymap_n * sizeof *keymap); free(keymap); }
+    if (keymap) { kw_secure_forget(keymap, (size_t)keymap_n * sizeof *keymap); free(keymap); }
     free(h160map);
     if (have_us) kw_utxoset_free(&us);
     kw_secure_forget(seed, sizeof seed);
-    kw_secure_zero(&master, sizeof master);
-    kw_secure_zero(inkeys, sizeof inkeys);
+    kw_secure_forget(&master, sizeof master);
+    kw_secure_forget(inkeys, sizeof inkeys);
     return rc;
 }
 
@@ -1179,7 +1206,8 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
     if (port <= 0) port = cp->p2p_port;
 
     uint8_t sk[32]; int comp = 0;
-    if (!wif_decode(cp, wif_arg, sk, &comp)) return 1;
+    kw_secure_keep(sk, sizeof sk);
+    if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); return 1; }
 
     uint8_t pub[65], h[20], spk[25];
     size_t publen = comp ? 33 : 65;
@@ -1280,7 +1308,7 @@ out:
     if (have_us) kw_utxoset_free(&us);
     if (peer_open) kw_peer_close(&p);
     kw_watchset_free(&ws);
-    kw_secure_zero(sk, sizeof sk);
+    kw_secure_forget(sk, sizeof sk);
     return rc;
 }
 
@@ -1735,11 +1763,12 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
     }
 
     uint8_t sk[32]; int comp = 0;
-    if (!wif_decode(cp, wif_arg, sk, &comp)) return 1;
+    kw_secure_keep(sk, sizeof sk);
+    if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); return 1; }
 
     uint8_t mysig[KW_EC_SIG_DER_MAX + 1]; size_t mylen = sizeof mysig;
     int ok = kw_tx_signature(&tx, (size_t)vin, sk, redeem, rl, KW_SIGHASH_ALL, mysig, &mylen);
-    kw_secure_zero(sk, sizeof sk);
+    kw_secure_forget(sk, sizeof sk);
     if (!ok) { fprintf(stderr, "kw: sign failed\n"); return 1; }
 
     if (!finish) {
@@ -1887,9 +1916,10 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
             if (!un || !kw_psbt_set_utxo(&p, (size_t)vin, u, un)) goto out;
         }
         uint8_t sk[32]; int comp = 0;
-        if (!wif_decode(cp, wif_arg, sk, &comp)) goto out;
+        kw_secure_keep(sk, sizeof sk);
+        if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); goto out; }
         int s = kw_psbt_sign(&p, (size_t)vin, sk, KW_SIGHASH_ALL);
-        kw_secure_zero(sk, sizeof sk);
+        kw_secure_forget(sk, sizeof sk);
         if (s != 1) {
             fprintf(stderr, s == -1 ? "kw: input already holds the maximum signatures\n"
                                     : "kw: sign failed; the input needs a --redeem script and "
