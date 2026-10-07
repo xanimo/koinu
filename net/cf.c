@@ -313,10 +313,9 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
         if (nm < 0) { free(heights); return -1; }
     } else {
         /* No filters, so every block in the range is a candidate. A filter only
-           ever narrowed which blocks to fetch; the block is what answers the
-           question either way. Bounded by (since), which is what makes this
-           usable on a chain where no peer serves filters at all. */
-        (void)spk; (void)spklen;
+           ever narrowed which blocks to fetch, and the script is still what
+           decides the answer once a block is in hand. Bounded by (since), which
+           is what makes this usable on a chain where no peer serves filters. */
 
         /* Bounded by the span, not by (since) being nonzero. A caller asking from
            height 1 is asking for the whole chain one block at a time just as much
@@ -349,7 +348,7 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
         const uint8_t *pl = NULL; size_t pn = 0;
         kw_outpoint_status st = { 0, 0, 0 };
         if (!kw_spv_get_block(p, s->h[idx].hash, &pl, &pn) ||
-            !kw_block_find_outpoint(pl, pn, txid, vout, &st)) { free(heights); return -1; }
+            !kw_block_find_outpoint(pl, pn, txid, vout, spk, spklen, &st)) { free(heights); return -1; }
         if (st.created) { created_h = (long)heights[i]; value = st.created_value; }
         if (st.spent) spent_h = (long)heights[i];
     }

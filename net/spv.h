@@ -58,10 +58,14 @@ int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
 typedef struct { int created; uint64_t created_value; int spent; } kw_outpoint_status;
 
 /* Scan a block message for (txid,vout): set st->created (with created_value) if
-   an output at that outpoint exists, and st->spent if an input consumes it.
-   Returns 1, or 0 if malformed. */
+   an output at that outpoint exists AND pays (spk), and st->spent if an input
+   consumes it. (spk) is required, because an outpoint on its own says only where
+   a payment sits and not who it pays: a payer can mine a real output of their
+   own at TXID:0 and hand that outpoint to whoever is waiting to be paid.
+   Returns 1, or 0 if malformed or (spk) is absent. */
 int kw_block_find_outpoint(const uint8_t *msg, size_t len,
-                           const uint8_t txid[32], uint32_t vout, kw_outpoint_status *st);
+                           const uint8_t txid[32], uint32_t vout,
+                           const uint8_t *spk, size_t spklen, kw_outpoint_status *st);
 
 /* Download and scan every block in the header store over (p), applying to (us).
    The store holds a contiguous chain; (base_height) is the block height of its

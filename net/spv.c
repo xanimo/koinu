@@ -125,7 +125,11 @@ int kw_block_scan(const uint8_t *msg, size_t len,
 }
 
 /* ── targeted outpoint scan ──────────────────────────────────── */
-struct fo_ctx { const uint8_t *txid; uint32_t vout; int created; uint64_t value; int spent; };
+struct fo_ctx {
+    const uint8_t *txid; uint32_t vout;
+    const uint8_t *spk; size_t spklen;
+    int created; uint64_t value; int spent;
+};
 
 static void fo_on_input(void *v, const uint8_t prev[32], uint32_t vout)
 {
@@ -135,14 +139,20 @@ static void fo_on_input(void *v, const uint8_t prev[32], uint32_t vout)
 static void fo_on_output(void *v, const uint8_t txid[32], uint32_t index,
                          uint64_t value, const uint8_t *spk, size_t spklen)
 {
-    (void)spk; (void)spklen;
     struct fo_ctx *c = (struct fo_ctx *)v;
-    if (index == c->vout && memcmp(txid, c->txid, 32) == 0) { c->created = 1; c->value = value; }
+    if (index != c->vout || memcmp(txid, c->txid, 32) != 0) return;
+    /* Who it pays decides the answer, not where it sits. Without this the payer
+       broadcasts a real transaction paying themselves, hands over TXID:0, and
+       the merchant is told their own script was funded. */
+    if (spklen != c->spklen || memcmp(spk, c->spk, spklen) != 0) return;
+    c->created = 1; c->value = value;
 }
 
 int kw_block_find_outpoint(const uint8_t *msg, size_t len,
-                           const uint8_t txid[32], uint32_t vout, kw_outpoint_status *st)
+                           const uint8_t txid[32], uint32_t vout,
+                           const uint8_t *spk, size_t spklen, kw_outpoint_status *st)
 {
+    if (!spk || !spklen) return 0;
     if (len < KW_HEADER_LEN + 1) return 0;
     /* This answer is what a merchant ships against, so the body has to be the one the
        header commits to before any output in it is reported as present. */
@@ -155,7 +165,7 @@ int kw_block_find_outpoint(const uint8_t *msg, size_t len,
     uint64_t ntx = rd_varint(msg, len, &off, &bad);
     if (bad || ntx > (uint64_t)len) return 0;
 
-    struct fo_ctx c = { txid, vout, 0, 0, 0 };
+    struct fo_ctx c = { txid, vout, spk, spklen, 0, 0, 0 };
     for (uint64_t i = 0; i < ntx; i++) {
         size_t consumed = kw_tx_scan(msg + off, len - off, NULL, fo_on_input, fo_on_output, &c);
         if (!consumed) return 0;

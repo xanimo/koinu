@@ -165,14 +165,33 @@ int main(void)
         kw_test_unhex("6e0eefe21280e22aa55fa1709a890516a06e29be89a2e505c4f303f97c10c0b3", tdisp);
         for (int i = 0; i < 32; i++) tint[i] = tdisp[31 - i];
 
+        uint8_t ospk[64];
+        int ospklen = kw_test_unhex(KW_AUXPOW_BLOCK_SPK, ospk);
+
         kw_outpoint_status st = { 0, 0, 0 };
-        if (!kw_block_find_outpoint(blk, (size_t)blen, tint, 0, &st) ||
+        if (!kw_block_find_outpoint(blk, (size_t)blen, tint, 0, ospk, (size_t)ospklen, &st) ||
             !st.created || st.created_value != KW_AUXPOW_BLOCK_VALUE || st.spent) {
             fprintf(stderr, "FAIL: find_outpoint created\n"); return 1;
         }
         kw_outpoint_status st2 = { 0, 0, 0 };            /* wrong vout: not created */
-        kw_block_find_outpoint(blk, (size_t)blen, tint, 9, &st2);
+        kw_block_find_outpoint(blk, (size_t)blen, tint, 9, ospk, (size_t)ospklen, &st2);
         if (st2.created || st2.spent) { fprintf(stderr, "FAIL: find_outpoint bogus vout\n"); return 1; }
+
+        /* The outpoint exists and is unspent, but it pays someone else. A payer
+           can mine an output of their own and hand over its outpoint, so the
+           script is what decides whether this is a payment to us. */
+        uint8_t other[64];
+        memcpy(other, ospk, (size_t)ospklen);
+        other[4] ^= 0xff;                                /* one byte of the hash160 */
+        kw_outpoint_status st3 = { 0, 0, 0 };
+        if (!kw_block_find_outpoint(blk, (size_t)blen, tint, 0, other, (size_t)ospklen, &st3) ||
+            st3.created) {
+            fprintf(stderr, "FAIL: an output paying another script was reported as ours\n"); return 1;
+        }
+        kw_outpoint_status st4 = { 0, 0, 0 };            /* no script is not a question */
+        if (kw_block_find_outpoint(blk, (size_t)blen, tint, 0, NULL, 0, &st4)) {
+            fprintf(stderr, "FAIL: find_outpoint answered without a script\n"); return 1;
+        }
         free(blk);
     }
 
@@ -214,7 +233,7 @@ int main(void)
         kw_hash256(blk + txat, tl, ftxid);
         kw_outpoint_status fst;
         memset(&fst, 0, sizeof fst);
-        if (kw_block_find_outpoint(blk, n, ftxid, 0, &fst) || fst.created)
+        if (kw_block_find_outpoint(blk, n, ftxid, 0, spk2, 25, &fst) || fst.created)
             { fprintf(stderr, "FAIL: a fabricated outpoint was reported as present\n"); return 1; }
 
         /* and with the real root in place it is accepted, so the check is about the
@@ -274,6 +293,7 @@ int main(void)
     }
 
     printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
-           "  a body its header does not commit to refused, and a repeated last node with it\n");
+           "  an output that pays another script refused, a body its header does not\n"
+           "  commit to refused, and a repeated last node with it\n");
     return 0;
 }
