@@ -114,17 +114,69 @@ size_t kw_tx_serialize(const kw_tx *tx, uint8_t *out, size_t outcap)
     return serialize_core(tx, -1, NULL, 0, out, outcap);
 }
 
+/* Consensus removes every OP_CODESEPARATOR from the scriptCode before hashing
+   it. Signing the script verbatim produced a hash no node computes, so a
+   signature over a script containing 0xab was invalid on chain while verifying
+   locally against the same wrong hash, which is what made cosign --finish's
+   refuse-before-broadcast promise untrue for those scripts. */
+static size_t strip_codeseparators(const uint8_t *in, size_t len, uint8_t *out, size_t outcap)
+{
+    if (len > outcap) return 0;
+    size_t k = 0, i = 0;
+    while (i < len) {
+        uint8_t op = in[i];
+        /* OP_CODESEPARATOR is an opcode, and 0xab inside a push is data: a hash160
+           with that byte in it is one address in thirteen, and dropping the byte
+           hands the signer a scriptCode no node computes. So walk the pushes and
+           copy them whole, and drop only a bare 0xab. */
+        size_t datalen = 0, hdr = 1;
+        if (op >= 1 && op <= 75) datalen = op;
+        else if (op == 0x4c) {                       /* OP_PUSHDATA1 */
+            if (i + 2 > len) break;
+            datalen = in[i + 1]; hdr = 2;
+        } else if (op == 0x4d) {                     /* OP_PUSHDATA2 */
+            if (i + 3 > len) break;
+            datalen = (size_t)in[i + 1] | (size_t)in[i + 2] << 8; hdr = 3;
+        } else if (op == 0x4e) {                     /* OP_PUSHDATA4 */
+            if (i + 5 > len) break;
+            datalen = (size_t)in[i + 1] | (size_t)in[i + 2] << 8 |
+                      (size_t)in[i + 3] << 16 | (size_t)in[i + 4] << 24; hdr = 5;
+        }
+        if (datalen) {
+            if (i + hdr + datalen > len) break;      /* a truncated push: copy the rest */
+            memcpy(out + k, in + i, hdr + datalen);
+            k += hdr + datalen;
+            i += hdr + datalen;
+            continue;
+        }
+        if (op != 0xab) out[k++] = op;
+        i++;
+    }
+    /* whatever a malformed tail was, it is part of the script and goes in as it is */
+    if (i < len) { memcpy(out + k, in + i, len - i); k += len - i; }
+    return k;
+}
+
 int kw_tx_sighash(const kw_tx *tx, size_t index,
                   const uint8_t *subscript, size_t subscriptlen,
                   uint32_t hashtype, uint8_t out[32])
 {
     if (index >= tx->nin || hashtype != KW_SIGHASH_ALL) return 0;
+    uint8_t code[KW_TX_SCRIPT_MAX];
+    size_t codelen = 0;
+    if (subscriptlen) {
+        codelen = strip_codeseparators(subscript, subscriptlen, code, sizeof code);
+        if (!codelen) return 0;
+        subscript = code;
+        subscriptlen = codelen;
+    }
     uint8_t buf[16384];
     size_t n = serialize_core(tx, (long)index, subscript, subscriptlen, buf, sizeof buf - 4);
     if (!n) return 0;
     buf[n++] = (uint8_t)hashtype; buf[n++] = 0; buf[n++] = 0; buf[n++] = 0;   /* hashtype LE32 */
     kw_hash256(buf, n, out);
     kw_secure_zero(buf, sizeof buf);
+    kw_secure_zero(code, sizeof code);
     return 1;
 }
 

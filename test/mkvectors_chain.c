@@ -159,11 +159,34 @@ static int usable_sig(const uint8_t *s, size_t len)
     return memcmp(be, HALF_N, 32) <= 0;
 }
 
+/* A bare OP_CODESEPARATOR, which consensus removes from the scriptCode. 0xab
+   inside a push is data and stays: filtering on the byte threw away every script
+   whose hash160 happens to contain it, which is one address in thirteen and
+   exactly the vectors that would have caught a stripper working on bytes. */
 static int has_codeseparator(const uint8_t *s, size_t len)
 {
-    for (size_t i = 0; i < len; i++) if (s[i] == 0xab) return 1;
+    size_t i = 0;
+    while (i < len) {
+        uint8_t op = s[i];
+        size_t hdr = 1, datalen = 0;
+        if (op >= 1 && op <= 75) datalen = op;
+        else if (op == 0x4c && i + 2 <= len) { datalen = s[i + 1]; hdr = 2; }
+        else if (op == 0x4d && i + 3 <= len) { datalen = (size_t)s[i+1] | (size_t)s[i+2] << 8; hdr = 3; }
+        else if (op == 0x4e && i + 5 <= len) {
+            datalen = (size_t)s[i+1] | (size_t)s[i+2] << 8 | (size_t)s[i+3] << 16 | (size_t)s[i+4] << 24;
+            hdr = 5;
+        }
+        if (datalen) {
+            if (i + hdr + datalen > len) return 0;    /* malformed: not our business */
+            i += hdr + datalen;
+            continue;
+        }
+        if (op == 0xab) return 1;
+        i++;
+    }
     return 0;
 }
+
 
 static int contains(const uint8_t *hay, size_t hl, const uint8_t *ndl, size_t nl)
 {

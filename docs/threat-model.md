@@ -107,8 +107,14 @@ Signing is deterministic (RFC 6979) and low-S, so a repeated signature is
 identical and a nonce is never reused. The signer is byte-exact against
 libdogecoin's on the p2pkh vectors.
 
+Every OP_CODESEPARATOR is removed from the scriptCode before it is hashed, as
+consensus does, so a signature over a script containing one is the signature a
+node checks rather than one that verifies only locally.
+
 `kw psbt` and `kw cosign` verify every counterparty signature against the sighash
-before assembling a spend, so a signature that would fail on chain is refused
+before assembling a spend, and a psbt is only signed against the utxo it spends,
+so a redeem script the counterparty supplies has to be the one that coin is
+locked to, so a signature that would fail on chain is refused
 locally rather than broadcast. A psbt carrying fields koinu cannot represent is
 refused rather than parsed with those fields dropped, since a combiner that
 silently discards what it does not understand loses the other party's data.

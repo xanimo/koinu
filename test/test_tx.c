@@ -148,7 +148,88 @@ int main(void)
         }
     }
 
+    /* Consensus strips every OP_CODESEPARATOR from the scriptCode before hashing
+       it. Signing the script as given produced a digest no node computes, and
+       cosign --finish then verified against that same wrong digest, so its
+       refuse-before-broadcast check passed for a signature the chain rejects. */
+    {
+        if (!kw_ec_start()) { fprintf(stderr, "FAIL: ec restart\n"); return 1; }
+        uint8_t sk[32]; memset(sk, 0x11, 32);
+        uint8_t pub[33];
+        if (!kw_ec_pubkey(sk, pub)) { fprintf(stderr, "FAIL: codesep pubkey\n"); return 1; }
+        uint8_t keys[2][33];
+        memcpy(keys[0], pub, 33);
+        memset(keys[1], 0, 33); keys[1][0] = 0x02; keys[1][1] = 0x07;
+        uint8_t other[32]; memset(other, 0x22, 32);
+        if (!kw_ec_pubkey(other, keys[1])) { fprintf(stderr, "FAIL: codesep pubkey 2\n"); return 1; }
+
+        uint8_t redeem[128];
+        size_t rl = kw_script_multisig(2, keys, 2, redeem, sizeof redeem);
+        uint8_t withsep[200];
+        withsep[0] = 0xab;                              /* OP_CODESEPARATOR */
+        memcpy(withsep + 1, redeem, rl);
+
+        kw_tx tx; kw_tx_init(&tx);
+        kw_tx_add_input(&tx, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", 0);
+        uint8_t h20[20]; memset(h20, 0x33, 20);
+        kw_tx_add_output_p2pkh(&tx, 100000000ULL, h20);
+
+        /* 0xab inside a push is data, not OP_CODESEPARATOR: one hash160 in
+           thirteen contains that byte, and dropping it hands the signer a
+           scriptCode no node computes, which is a signature that fails with
+           NULLFAIL on the way in. */
+        {
+            uint8_t h20ab[20];
+            memset(h20ab, 0x11, 20);
+            h20ab[7] = 0xab;
+            uint8_t p2pkh[25] = { 0x76, 0xa9, 0x14 };
+            memcpy(p2pkh + 3, h20ab, 20);
+            p2pkh[23] = 0x88; p2pkh[24] = 0xac;
+
+            /* the same script with that one byte deleted, which is what a
+               stripper working on bytes rather than opcodes turns it into */
+            uint8_t eaten[24];
+            memcpy(eaten, p2pkh, 3 + 7);
+            memcpy(eaten + 3 + 7, p2pkh + 3 + 8, 25 - (3 + 8));
+
+            uint8_t with[32], without[32];
+            if (!kw_tx_sighash(&tx, 0, p2pkh, 25, KW_SIGHASH_ALL, with) ||
+                !kw_tx_sighash(&tx, 0, eaten, 24, KW_SIGHASH_ALL, without)) {
+                fprintf(stderr, "FAIL: p2pkh codesep sighash\n"); return 1;
+            }
+            if (memcmp(with, without, 32) == 0) {
+                fprintf(stderr, "FAIL: 0xab inside a hash160 was dropped as an opcode\n");
+                return 1;
+            }
+            uint8_t sigab[KW_EC_SIG_DER_MAX + 1]; size_t sabl = sizeof sigab;
+            if (!kw_tx_signature(&tx, 0, sk, p2pkh, 25, KW_SIGHASH_ALL, sigab, &sabl) ||
+                !kw_ec_verify(pub, with, sigab, sabl - 1)) {
+                fprintf(stderr, "FAIL: a script with 0xab in its data did not sign cleanly\n");
+                return 1;
+            }
+        }
+
+        uint8_t hsep[32], hstripped[32];
+        if (!kw_tx_sighash(&tx, 0, withsep, rl + 1, KW_SIGHASH_ALL, hsep) ||
+            !kw_tx_sighash(&tx, 0, redeem, rl, KW_SIGHASH_ALL, hstripped)) {
+            fprintf(stderr, "FAIL: codesep sighash\n"); return 1;
+        }
+        if (memcmp(hsep, hstripped, 32) != 0) {
+            fprintf(stderr, "FAIL: a separator in the scriptCode changed the digest\n"); return 1;
+        }
+
+        uint8_t sig[KW_EC_SIG_DER_MAX + 1]; size_t siglen = sizeof sig;
+        if (!kw_tx_signature(&tx, 0, sk, withsep, rl + 1, KW_SIGHASH_ALL, sig, &siglen)) {
+            fprintf(stderr, "FAIL: codesep sign\n"); return 1;
+        }
+        if (!kw_ec_verify(pub, hstripped, sig, siglen - 1)) {
+            fprintf(stderr, "FAIL: the signature does not verify against the digest a node computes\n");
+            return 1;
+        }
+    }
+
     kw_ec_stop();
-    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips, uncompressed p2pkh verifies\n");
+    printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips,\n"
+           "  uncompressed p2pkh verifies, and a scriptCode separator is stripped as consensus does\n");
     return 0;
 }
