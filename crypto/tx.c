@@ -283,6 +283,10 @@ static void tx_walk(rd *r, int fire, const uint8_t txid[32],
 {
     rd_skip(r, 4);                            /* version */
     uint64_t nin = rd_count(r);
+    /* Core refuses these as bad-txns-vin-empty / vout-empty, and so must a
+       walker: a transaction with no inputs is what let a 64-byte blob equal to
+       two txids stand in for a leaf pair and still parse. */
+    if (!r->bad && nin == 0) { r->bad = 1; return; }
     for (uint64_t i = 0; i < nin && !r->bad; i++) {
         if (r->off + 36 > r->len) { r->bad = 1; break; }
         const uint8_t *prev = r->p + r->off;
@@ -293,6 +297,7 @@ static void tx_walk(rd *r, int fire, const uint8_t txid[32],
         rd_skip(r, 4);                        /* sequence */
     }
     uint64_t nout = rd_count(r);
+    if (!r->bad && nout == 0) { r->bad = 1; return; }
     for (uint64_t i = 0; i < nout && !r->bad; i++) {
         uint64_t value = rd_le(r, 8);
         uint64_t sl = rd_count(r);

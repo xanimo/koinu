@@ -54,6 +54,19 @@ static uint64_t rd_varint(const uint8_t *p, size_t len, size_t *off, int *bad)
    the bound is here so a claimed count cannot ask for an arbitrary allocation. */
 #define KW_BLOCK_MAX_TX (1u << 17)
 
+/* The first input of the first transaction: a coinbase spends nothing, so its
+   prevout is 32 zero bytes with vout 0xffffffff. */
+struct cb_ctx { int seen; int coinbase; };
+
+static void cb_on_input(void *v, const uint8_t prev[32], uint32_t vout)
+{
+    struct cb_ctx *c = (struct cb_ctx *)v;
+    if (c->seen) { c->coinbase = 0; return; }   /* a coinbase has exactly one */
+    c->seen = 1;
+    static const uint8_t zero[32] = { 0 };
+    c->coinbase = (vout == 0xffffffffu && memcmp(prev, zero, 32) == 0);
+}
+
 int kw_block_merkle_ok(const uint8_t *msg, size_t len)
 {
     if (len < KW_HEADER_LEN + 1) return 0;
@@ -71,8 +84,20 @@ int kw_block_merkle_ok(const uint8_t *msg, size_t len)
 
     size_t n = 0;
     for (uint64_t i = 0; i < ntx; i++) {
-        size_t consumed = kw_tx_scan(msg + off, len - off, NULL, NULL, NULL, NULL);
+        struct cb_ctx first = { 0, 0 };
+        size_t consumed = kw_tx_scan(msg + off, len - off, NULL,
+                                     i == 0 ? cb_on_input : NULL, NULL, &first);
         if (!consumed) { free(h); return 0; }
+        /* A 64-byte transaction is the one length that can be read as a pair of
+           txids, which is how a single blob stands in for two leaves under a root
+           that commits to neither. The duplicate-pair check above does not see it,
+           because the two halves are not a pair at this level. No transaction on
+           this chain is 64 bytes: the shortest legacy form is 60 and needs empty
+           scripts to get there. */
+        if (consumed == 64) { free(h); return 0; }
+        /* and the first transaction in a block is a coinbase, which a stand-in
+           would have to grind a null prevout inside a txid to satisfy */
+        if (i == 0 && !first.coinbase) { free(h); return 0; }
         kw_hash256(msg + off, consumed, h[n++]);
         off += consumed;
     }

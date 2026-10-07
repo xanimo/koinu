@@ -216,7 +216,8 @@ int main(void)
         size_t txat = n;
         kw_tx t;
         kw_tx_init(&t);
-        kw_tx_add_input(&t, "00000000000000000000000000000000000000000000000000000000000000ff", 0);
+        /* a coinbase, since a block's first transaction is one */
+        kw_tx_add_input(&t, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
         uint8_t h20[20]; memset(h20, 0x42, 20);
         kw_tx_add_output_p2pkh(&t, 500000000000ULL, h20);
         size_t tl = kw_tx_serialize(&t, blk + n, sizeof blk - n);
@@ -256,7 +257,10 @@ int main(void)
             for (int q = 0; q < 3; q++) {
                 kw_tx x;
                 kw_tx_init(&x);
-                kw_tx_add_input(&x, "00000000000000000000000000000000000000000000000000000000000000ff", (uint32_t)q);
+                if (q == 0)
+                    kw_tx_add_input(&x, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
+                else
+                    kw_tx_add_input(&x, "00000000000000000000000000000000000000000000000000000000000000ff", (uint32_t)q);
                 kw_tx_add_output_p2pkh(&x, 1000000ULL + (uint64_t)q, h20);
                 bl[q] = kw_tx_serialize(&x, body[q], sizeof body[q]);
                 if (!bl[q]) { fprintf(stderr, "FAIL: build tx %d\n", q); return 1; }
@@ -292,8 +296,78 @@ int main(void)
         kw_utxoset_free(&u2); kw_watchset_free(&w2);
     }
 
+    /* A 64-byte transaction is the one length that reads as a pair of txids, so
+       one blob can stand in for two leaves under a root that commits to neither,
+       and the duplicate-pair check never sees it because the halves are not a
+       pair at that level. This one is a well-formed coinbase of exactly 64 bytes
+       under an honest root, so every other rule accepts it and only the length
+       refuses it. */
+    {
+        static const uint8_t t64[64] = {
+            0x01,0,0,0,                                     /* version */
+            0x01,                                           /* one input */
+            0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,               /* null prevout */
+            0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+            0xff,0xff,0xff,0xff,                            /* vout: coinbase */
+            0x04, 0x01,0x02,0x03,0x04,                      /* scriptSig */
+            0xff,0xff,0xff,0xff,                            /* sequence */
+            0x01,                                           /* one output */
+            0,0,0,0,0,0,0,0,                                /* value */
+            0x00,                                           /* empty scriptPubKey */
+            0,0,0,0                                         /* locktime */
+        };
+        if (kw_tx_scan(t64, sizeof t64, NULL, NULL, NULL, NULL) != 64) {
+            fprintf(stderr, "FAIL: the 64-byte fixture is not a parseable transaction, "
+                            "so refusing it would prove nothing\n");
+            return 1;
+        }
+
+        uint8_t blk[256]; size_t n = 0;
+        memset(blk, 0, KW_HEADER_LEN);
+        blk[0] = 1;
+        n = KW_HEADER_LEN;
+        blk[n++] = 1;
+        memcpy(blk + n, t64, sizeof t64); n += sizeof t64;
+        kw_hash256(t64, sizeof t64, blk + 36);              /* the honest root */
+
+        if (kw_block_merkle_ok(blk, n)) {
+            fprintf(stderr, "FAIL: a 64-byte transaction passed the merkle check\n"); return 1;
+        }
+
+        /* a transaction with no inputs is refused outright, which is the other
+           half of what let such a blob parse */
+        uint8_t noin[32];
+        size_t ni = 0;
+        noin[ni++] = 1; noin[ni++] = 0; noin[ni++] = 0; noin[ni++] = 0;
+        noin[ni++] = 0;                                     /* no inputs */
+        noin[ni++] = 1;                                     /* one output */
+        for (int i = 0; i < 8; i++) noin[ni++] = 0;
+        noin[ni++] = 1; noin[ni++] = 0x51;
+        noin[ni++] = 0; noin[ni++] = 0; noin[ni++] = 0; noin[ni++] = 0;
+        if (kw_tx_scan(noin, ni, NULL, NULL, NULL, NULL)) {
+            fprintf(stderr, "FAIL: a transaction with no inputs parsed\n"); return 1;
+        }
+
+        /* and a block whose first transaction is not a coinbase is refused */
+        kw_tx nc; kw_tx_init(&nc);
+        kw_tx_add_input(&nc, "00000000000000000000000000000000000000000000000000000000000000ff", 0);
+        uint8_t h22[20]; memset(h22, 0x44, 20);
+        kw_tx_add_output_p2pkh(&nc, 100000000ULL, h22);
+        uint8_t body[256];
+        size_t bl = kw_tx_serialize(&nc, body, sizeof body);
+        uint8_t nb[512]; size_t nn = KW_HEADER_LEN;
+        memset(nb, 0, KW_HEADER_LEN); nb[0] = 1;
+        nb[nn++] = 1;
+        memcpy(nb + nn, body, bl); nn += bl;
+        kw_hash256(body, bl, nb + 36);
+        if (kw_block_merkle_ok(nb, nn)) {
+            fprintf(stderr, "FAIL: a block whose first transaction spends something passed\n"); return 1;
+        }
+    }
+
     printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
            "  an output that pays another script refused, a body its header does not\n"
-           "  commit to refused, and a repeated last node with it\n");
+           "  commit to refused, a 64-byte stand-in and an input-less transaction\n"
+           "  refused, and a repeated last node with it\n");
     return 0;
 }
