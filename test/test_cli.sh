@@ -216,9 +216,25 @@ fi
 # psbt: the bip174 roles over the cli, two parties signing separately. The
 # extracted transaction must equal what cosign --finish builds from the same
 # keys, since both assemble the same 2-of-2 scriptSig.
-P0=$(./kw --regtest psbt create --tx "$UNSIGNED")
+# A signer checks the redeem script against the coin it spends, so the psbt
+# carries the previous transaction. PREVTX pays 1 DOGE to p2sh(REDEEM) and
+# UNSIGNEDP spends its output 0, which is why this is not the cosign fixture
+# above: that one's prevout is invented and no transaction hashes to it.
+PREVTX=01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff0100e1f5050000000017a91463859964ea29ad5a0916500860e2c4adec0a6b278700000000
+UNSIGNEDP=01000000019d497df886db6fdaa7dcb2fd81171034944b9f5a0a0446a54ec2ddad4b21223f0000000000ffffffff01c09ee605000000001976a914111111111111111111111111111111111111111188ac00000000
+P0=$(./kw --regtest psbt create --tx "$UNSIGNEDP" --utxo "$PREVTX" --vin 0)
 case "$P0" in 70736274ff*) ;; *) echo "FAIL: psbt create magic" >&2; exit 1;; esac
-[ "$(./kw --regtest psbt tx --psbt "$P0")" = "$UNSIGNED" ] || { echo "FAIL: psbt tx accessor" >&2; exit 1; }
+[ "$(./kw --regtest psbt tx --psbt "$P0")" = "$UNSIGNEDP" ] || { echo "FAIL: psbt tx accessor" >&2; exit 1; }
+# without the utxo there is nothing to check the redeem script against
+P0BARE=$(./kw --regtest psbt create --tx "$UNSIGNEDP")
+if ./kw --regtest psbt sign --psbt "$P0BARE" --wif "@$WORK/w1" --redeem "$REDEEM" --vin 0 >/dev/null 2>&1; then
+    echo "FAIL: signed a psbt with no utxo to check against" >&2; exit 1
+fi
+# and a redeem script that is not what the utxo pays is refused
+if ./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w1" --vin 0 \
+       --redeem 76a914111111111111111111111111111111111111111188ac >/dev/null 2>&1; then
+    echo "FAIL: signed a script the utxo does not pay" >&2; exit 1
+fi
 PA=$(./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w1" --redeem "$REDEEM" --vin 0)
 PB=$(./kw --regtest psbt sign --psbt "$P0" --wif "@$WORK/w2" --redeem "$REDEEM" --vin 0)
 [ "$PA" != "$PB" ] || { echo "FAIL: both keys produced the same psbt" >&2; exit 1; }
@@ -233,7 +249,9 @@ SS=$(./kw --regtest psbt sigs --psbt "$PC" | awk '{printf "%02x%s", length($3)/2
 SS="00${SS}$(printf '%02x' $((${#REDEEM}/2)))$REDEEM"
 PF=$(./kw --regtest psbt finalize --psbt "$PC" --vin 0 --scriptsig "$SS")
 EXTRACTED=$(./kw --regtest psbt extract --psbt "$PF")
-[ "$EXTRACTED" = "$FULL" ] || { echo "FAIL: psbt and cosign disagree on the transaction" >&2; exit 1; }
+SIGAP=$(./kw --regtest cosign --tx "$UNSIGNEDP" --redeem "$REDEEM" --wif "@$WORK/w1")
+FULLP=$(./kw --regtest cosign --tx "$UNSIGNEDP" --redeem "$REDEEM" --wif "@$WORK/w2" --sig "$SIGAP" --finish)
+[ "$EXTRACTED" = "$FULLP" ] || { echo "FAIL: psbt and cosign disagree on the transaction" >&2; exit 1; }
 # extracting before every input is final must fail
 if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1

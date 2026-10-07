@@ -5,6 +5,7 @@
 #include "psbt.h"
 #include "ec.h"
 #include "mem.h"
+#include "sha2.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -69,11 +70,40 @@ int kw_psbt_set_utxo(kw_psbt *p, size_t index, const uint8_t *rawtx, size_t len)
     return 1;
 }
 
+/* The redeem script a psbt supplies has to be the one the coin being spent is
+   locked to, or it is just a script the counterparty would like signed. Without
+   this, "sign vin 1 of our 2-of-2" can name one of the signer's own p2pkh coins
+   with its scriptPubKey as the redeem script, and the signature that comes back
+   spends that coin. BIP174 requires a signer to check the utxo it is given;
+   this is that check, which is also why NON_WITNESS_UTXO is now mandatory. */
+static int redeem_matches_prevout(const kw_psbt *p, size_t index)
+{
+    const kw_psbt_in *in = &p->in[index];
+    if (!in->utxo || !in->utxolen) return 0;
+
+    kw_tx prev;
+    size_t used = kw_tx_parse(in->utxo, in->utxolen, &prev);
+    if (!used || used != in->utxolen) return 0;  /* trailing bytes are not the txid's */
+
+    uint8_t pid[32];
+    kw_hash256(in->utxo, in->utxolen, pid);
+    if (memcmp(pid, p->tx.vin[index].prevout, 32) != 0) return 0;
+
+    uint32_t n = p->tx.vin[index].vout;
+    if (n >= prev.nout) return 0;
+
+    uint8_t want[23];
+    size_t wl = kw_script_p2sh(in->redeem, in->redeemlen, want);
+    if (!wl) return 0;
+    return prev.vout[n].scriptlen == wl && memcmp(prev.vout[n].script, want, wl) == 0;
+}
+
 int kw_psbt_sign(kw_psbt *p, size_t index, const uint8_t sk[32], uint32_t hashtype)
 {
     if (index >= p->tx.nin) return 0;
     kw_psbt_in *in = &p->in[index];
     if (!in->redeemlen) return 0;                /* nothing to hash against */
+    if (!redeem_matches_prevout(p, index)) return 0;
     /* A psbt can declare the sighash it wants signed. Signing with a different
        one and then overwriting the field turns a request this signer cannot meet
        into one it appears to have met: the psbt comes back claiming it asked for

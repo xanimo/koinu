@@ -10,6 +10,7 @@
 #include "psbt.h"
 #include "ec.h"
 #include "hex.h"
+#include "sha2.h"
 
 #include "bip174_vectors.h"
 
@@ -29,22 +30,61 @@ int main(void)
     uint8_t redeem[128];
     size_t rl = kw_script_multisig(2, keys, 2, redeem, sizeof redeem);
 
+    /* The coin being spent, since a signer has to be able to tell that the redeem
+       script it is handed is the one this outpoint is locked to. Output 0 is
+       p2sh(redeem), and the spending input names its txid. */
+    uint8_t p2sh[23]; size_t p2shlen = kw_script_p2sh(redeem, rl, p2sh);
+    kw_tx prev; kw_tx_init(&prev);
+    kw_tx_add_input(&prev, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
+    kw_tx_add_output(&prev, 100000000ULL, p2sh, p2shlen);
+    uint8_t prevtx[512];
+    size_t prevlen = kw_tx_serialize(&prev, prevtx, sizeof prevtx);
+    if (!prevlen) { fprintf(stderr, "FAIL: serialize prev\n"); return 1; }
+    uint8_t pid[32], pdisp[32]; char pidhex[65];
+    kw_hash256(prevtx, prevlen, pid);
+    for (int i = 0; i < 32; i++) pdisp[i] = pid[31 - i];
+    kw_hex_encode(pdisp, 32, pidhex, sizeof pidhex);
+
     kw_tx tx; kw_tx_init(&tx);
-    kw_tx_add_input(&tx, "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff", 0);
+    kw_tx_add_input(&tx, pidhex, 0);
     uint8_t spk[25] = { 0x76, 0xa9, 0x14 }; memset(spk + 3, 0x11, 20);
     spk[23] = 0x88; spk[24] = 0xac;
-    kw_tx_add_output(&tx, 100000000ULL, spk, 25);
+    kw_tx_add_output(&tx, 99000000ULL, spk, 25);
 
     /* creator + updater */
     kw_psbt a;
     if (!kw_psbt_create(&a, &tx)) { fprintf(stderr, "FAIL: create\n"); return 1; }
     if (!kw_psbt_set_redeem(&a, 0, redeem, rl)) { fprintf(stderr, "FAIL: set redeem\n"); return 1; }
-    uint8_t prevtx[64]; memset(prevtx, 0xab, sizeof prevtx);
-    if (!kw_psbt_set_utxo(&a, 0, prevtx, sizeof prevtx)) { fprintf(stderr, "FAIL: set utxo\n"); return 1; }
+    if (!kw_psbt_set_utxo(&a, 0, prevtx, prevlen)) { fprintf(stderr, "FAIL: set utxo\n"); return 1; }
+
+    /* A signer with no utxo to check against, or one whose redeem script is not
+       what that utxo pays, must not sign. Otherwise "sign vin 1 of our 2-of-2"
+       can name one of the signer's own p2pkh coins with its scriptPubKey as the
+       redeem script, and what comes back spends that coin. */
+    {
+        kw_psbt noutxo;
+        if (!kw_psbt_create(&noutxo, &tx) || !kw_psbt_set_redeem(&noutxo, 0, redeem, rl)) {
+            fprintf(stderr, "FAIL: build no-utxo psbt\n"); return 1;
+        }
+        if (kw_psbt_sign(&noutxo, 0, skA, KW_SIGHASH_ALL) == 1) {
+            fprintf(stderr, "FAIL: signed without the utxo it spends\n"); return 1;
+        }
+        kw_psbt_free(&noutxo);
+
+        kw_psbt wrong;
+        if (!kw_psbt_create(&wrong, &tx) || !kw_psbt_set_utxo(&wrong, 0, prevtx, prevlen) ||
+            !kw_psbt_set_redeem(&wrong, 0, spk, 25)) {
+            fprintf(stderr, "FAIL: build mismatched psbt\n"); return 1;
+        }
+        if (kw_psbt_sign(&wrong, 0, skA, KW_SIGHASH_ALL) == 1) {
+            fprintf(stderr, "FAIL: signed a script the utxo does not pay\n"); return 1;
+        }
+        kw_psbt_free(&wrong);
+    }
 
     /* the unsigned tx reads back: what a signer must see before it signs */
     const kw_tx *ut = kw_psbt_unsigned_tx(&a);
-    if (!ut || ut->nin != 1 || ut->nout != 1 || ut->vout[0].value != 100000000ULL ||
+    if (!ut || ut->nin != 1 || ut->nout != 1 || ut->vout[0].value != 99000000ULL ||
         ut->vin[0].scriptlen != 0) { fprintf(stderr, "FAIL: unsigned tx accessor\n"); return 1; }
 
     /* each party signs its own copy, then the halves combine */
@@ -54,7 +94,7 @@ int main(void)
     kw_psbt b;
     if (!kw_psbt_parse(buf, n, &b)) { fprintf(stderr, "FAIL: parse\n"); return 1; }
     if (b.in[0].redeemlen != rl || memcmp(b.in[0].redeem, redeem, rl) != 0 ||
-        b.in[0].utxolen != sizeof prevtx) { fprintf(stderr, "FAIL: round trip fields\n"); return 1; }
+        b.in[0].utxolen != prevlen) { fprintf(stderr, "FAIL: round trip fields\n"); return 1; }
 
     if (kw_psbt_sign(&a, 0, skA, KW_SIGHASH_ALL) != 1 ||
         kw_psbt_sign(&b, 0, skB, KW_SIGHASH_ALL) != 1) { fprintf(stderr, "FAIL: sign\n"); return 1; }
@@ -217,7 +257,7 @@ int main(void)
 
     kw_ec_stop();
 
-    printf("psbt ok: create/update/sign/combine/finalize/extract, %d bip174 vectors parsed and round-tripped, %d refused\n",
+    printf("psbt ok: create/update/sign/combine/finalize/extract, sign bound to its utxo, %d bip174 vectors parsed and round-tripped, %d refused\n",
            parsed, refused);
     return 0;
 }

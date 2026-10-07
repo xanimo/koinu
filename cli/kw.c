@@ -73,8 +73,9 @@ static void usage(void)
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor] [--yes]\n"
-      "  psbt     create --tx HEX | tx --psbt HEX | sigs --psbt HEX [--vin N]\n"
-      "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--vin N]\n"
+      "  psbt     create --tx HEX [--utxo HEX|@FILE|- --vin N] | tx --psbt HEX\n"
+      "           sigs --psbt HEX [--vin N]\n"
+      "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--utxo HEX] [--vin N]\n"
       "           combine --psbt HEX --psbt HEX ... | extract --psbt HEX\n"
       "           finalize --psbt HEX --vin N --scriptsig HEX\n"
       "  cosign   --tx HEX|@FILE|- --redeem HEX [--wif @FILE|-] [--vin N]\n"
@@ -1837,8 +1838,9 @@ static int print_psbt(const kw_psbt *p)
 /* BIP174 roles over the command line, so a caller that shells out to kw gets
    the same psbt handling the library does. */
 static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_arg,
-                    const char *tx_arg, const char *redeem_arg, const char *wif_arg,
-                    const char *script_arg, const char *const *extra, int nextra, int vin)
+                    const char *tx_arg, const char *redeem_arg, const char *utxo_arg,
+                    const char *wif_arg, const char *script_arg,
+                    const char *const *extra, int nextra, int vin)
 {
     if (!sub) { usage(); return 2; }
     uint8_t raw[32768];
@@ -1850,6 +1852,19 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
         kw_tx tx;
         if (kw_tx_parse(raw, n, &tx) != n) { fprintf(stderr, "kw: --tx is not a transaction\n"); return 1; }
         if (!kw_psbt_create(&p, &tx)) { fprintf(stderr, "kw: --tx already carries a scriptSig\n"); return 1; }
+        /* the updater's job: the previous transaction each input spends, which is
+           what lets a signer check that the redeem script it is handed is the one
+           the coin is actually locked to */
+        if (utxo_arg) {
+            uint8_t u[16384];
+            size_t un = read_hex_arg(utxo_arg, "--utxo", u, sizeof u);
+            size_t at = vin < 0 ? 0 : (size_t)vin;
+            if (!un || !kw_psbt_set_utxo(&p, at, u, un)) {
+                fprintf(stderr, "kw: --utxo is not a transaction this psbt has an input for\n");
+                kw_psbt_free(&p);
+                return 1;
+            }
+        }
         int rc = print_psbt(&p);
         kw_psbt_free(&p);
         return rc;
@@ -1875,13 +1890,20 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
             size_t rl = read_hex_arg(redeem_arg, "--redeem", r, sizeof r);
             if (!rl || !kw_psbt_set_redeem(&p, (size_t)vin, r, rl)) goto out;
         }
+        if (utxo_arg) {
+            uint8_t u[16384];
+            size_t un = read_hex_arg(utxo_arg, "--utxo", u, sizeof u);
+            if (!un || !kw_psbt_set_utxo(&p, (size_t)vin, u, un)) goto out;
+        }
         uint8_t sk[32]; int comp = 0;
         if (!wif_decode(cp, wif_arg, sk, &comp)) goto out;
         int s = kw_psbt_sign(&p, (size_t)vin, sk, KW_SIGHASH_ALL);
         kw_secure_zero(sk, sizeof sk);
         if (s != 1) {
             fprintf(stderr, s == -1 ? "kw: input already holds the maximum signatures\n"
-                                    : "kw: sign failed (does the input have a --redeem script?)\n");
+                                    : "kw: sign failed; the input needs a --redeem script and "
+                                      "the --utxo it spends, and the script must be the one that "
+                                      "utxo pays\n");
             goto out;
         }
         rc = print_psbt(&p);
@@ -1944,7 +1966,7 @@ int main(int argc, char **argv)
     const char *maxfee_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
-    const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL;
+    const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL, *utxo_arg = NULL;
     const char *psbt_arg = NULL, *script_arg = NULL, *sub = NULL, *psbts[8];
     int npsbt = 0;
     long since = -1;
@@ -1993,6 +2015,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "--redeem"))     redeem_arg = NEXT();
+        else if (!strcmp(a, "--utxo"))       utxo_arg = NEXT();
         else if (!strcmp(a, "--psbt"))     { const char *v = NEXT();
             /* Dropping the ninth would combine eight parties and report success,
                losing a signature nobody was told about. */
@@ -2049,7 +2072,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
-    else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, wif_arg, script_arg, psbts, npsbt, vin);
+    else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }
     kw_ec_stop();
