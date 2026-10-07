@@ -343,7 +343,56 @@ int main(void)
         kw_headerstore_free(&c);
     }
 
+    /* Core's timestamp rules, which the retarget rule depends on: a header must be
+       newer than the median of the eleven before it, and at most two hours ahead
+       of now. Without them a peer claims +300s a header, DigiShield eases by its
+       maximum every block, and the target walks to powLimit. */
+    {
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        const kw_chainparams *cp = &KW_DOGE_REGTEST;
+        uint32_t base = 1296688602u + 600u;
+        uint8_t prev[32];
+        memset(prev, 0, sizeof prev);
+        for (int i = 0; i < 12; i++) {
+            kw_block_header h;
+            uint8_t raw[80];
+            memset(raw, 0, 80);
+            raw[0] = 1;
+            if (i) memcpy(raw + 4, prev, 32);     /* the store requires the link */
+            raw[36] = (uint8_t)(i + 1);
+            uint32_t when = base + (uint32_t)i * 60u;
+            raw[68] = (uint8_t)when; raw[69] = (uint8_t)(when >> 8);
+            raw[70] = (uint8_t)(when >> 16); raw[71] = (uint8_t)(when >> 24);
+            if (!kw_block_header_parse(raw, 80, &h) || !kw_headerstore_append(&s, &h)) {
+                fprintf(stderr, "FAIL: building the timestamp chain\n"); return 1;
+            }
+            memcpy(prev, h.hash, 32);
+        }
+        uint32_t height = (uint32_t)s.count + 1;
+        uint32_t median = base + 6u * 60u;        /* of the last eleven */
+        int64_t now = (int64_t)base + 100000;
+
+        if (!kw_sync_time_ok(&s, cp, height, median + 1, now)) {
+            fprintf(stderr, "FAIL: a header past the median was refused\n"); return 1;
+        }
+        if (kw_sync_time_ok(&s, cp, height, median, now)) {
+            fprintf(stderr, "FAIL: a header at the median was accepted\n"); return 1;
+        }
+        if (kw_sync_time_ok(&s, cp, height, median - 1, now)) {
+            fprintf(stderr, "FAIL: a header before the median was accepted\n"); return 1;
+        }
+        if (!kw_sync_time_ok(&s, cp, height, (uint32_t)(now + KW_SYNC_MAX_FUTURE), now)) {
+            fprintf(stderr, "FAIL: a header exactly two hours ahead was refused\n"); return 1;
+        }
+        if (kw_sync_time_ok(&s, cp, height, (uint32_t)(now + KW_SYNC_MAX_FUTURE + 1), now)) {
+            fprintf(stderr, "FAIL: a header more than two hours ahead was accepted\n"); return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
+           "  median-time-past and the two-hour future bound enforced,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
        "  a cached chain checked against the pins on load by hashing it,\n  and a locator, a work sum and a rollback to choose between chains with\n");

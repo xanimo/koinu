@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 int kw_net_verbose = 0;
 
@@ -96,6 +97,32 @@ int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
     return 1;
 }
 
+int kw_sync_time_ok(const kw_headerstore *s, const kw_chainparams *cp,
+                    uint32_t height, uint32_t htime, int64_t now)
+{
+    if (!s || !cp) return 0;
+    if (height == 0) return 1;
+    if (now > 0 && (int64_t)htime > now + KW_SYNC_MAX_FUTURE) return 0;
+
+    uint32_t t[KW_SYNC_MTP_SPAN];
+    size_t n = 0;
+    for (uint32_t h = height; h-- > 0 && n < KW_SYNC_MTP_SPAN; ) {
+        uint32_t b, tt;
+        if (!header_at(s, cp, h, &b, &tt)) break;
+        t[n++] = tt;
+        if (h == 0) break;
+    }
+    if (n == 0) return 1;                        /* nothing to compare against */
+
+    for (size_t i = 1; i < n; i++) {             /* eleven elements, so insertion */
+        uint32_t v = t[i];
+        size_t j = i;
+        while (j > 0 && t[j - 1] > v) { t[j] = t[j - 1]; j--; }
+        t[j] = v;
+    }
+    return htime > t[n / 2];
+}
+
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits)
 {
@@ -167,6 +194,7 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
 
     kw_block_header *batch = (kw_block_header *)malloc(KW_MAX_HEADERS * sizeof *batch);
     if (!batch) return -1;
+    const int64_t now = (int64_t)time(NULL);
 
     /* Anchors are the only thing that says this is the chain rather than a chain. A
        peer can link to genesis, satisfy the retarget rule and carry no work at all:
@@ -240,6 +268,15 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
             if (!kw_sync_bits_ok(s, cp, height, kw_header_bits(batch[i].raw))) {
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] %u carries the wrong difficulty\n", height);
+                free(batch);
+                return -1;
+            }
+            /* The retarget rule is derived from these timestamps, so a chain that
+               can write them freely writes its own difficulty. */
+            if (!kw_sync_time_ok(s, cp, height, kw_header_time(batch[i].raw), now)) {
+                if (kw_net_verbose)
+                    fprintf(stderr, "[headers] %u is timestamped outside what the "
+                                    "chain before it allows\n", height);
                 free(batch);
                 return -1;
             }

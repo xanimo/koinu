@@ -97,6 +97,15 @@ cfheaders rather than derived from blocks. Too few is currently none: of 48 peer
 from the dns seeds, 47 answered and none advertised bip158, so this section
 describes a backend that needs a node you run yourself.
 
+A header's timestamp has to be newer than the median of the eleven before it and
+no more than two hours ahead of local time, which is what stops a chain writing
+its own difficulty: the retarget rule is derived from those timestamps, and
+without the bounds a run of them claiming the maximum easing walks the target to
+powLimit, after which a header costs nothing. With them the cheapest fake run
+costs real work, though less than the blocks it pretends to be: about 2.7 blocks
+for six confirmations either way, which is the number to budget against rather
+than six.
+
 A peer cannot invent a confirmation above the newest anchor, since it would have to
 mine the headers and the body has to hash to the header. It can withhold one, and a
 fork it serves is weighed against what other peers serve, so withholding costs it

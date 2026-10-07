@@ -33,6 +33,12 @@
 
 /* Fill in a header on (prev) at (bits) and find a nonce whose scrypt hash is
    under the target. At these difficulties that is a handful of tries. */
+/* Regtest's genesis timestamp. A header has to be newer than the median of the
+   eleven before it, so the harness stamps time from the seed: every chain built
+   here walks its seeds upward, and a fixed timestamp on every header, which is
+   what this used to do, is a chain no node would accept. */
+#define BASE_TIME 1296688602u
+
 static int mine(uint8_t raw[80], const uint8_t prev[32], uint32_t bits, uint32_t seed)
 {
     memset(raw, 0, 80);
@@ -40,7 +46,9 @@ static int mine(uint8_t raw[80], const uint8_t prev[32], uint32_t bits, uint32_t
     memcpy(raw + 4, prev, 32);
     raw[36 + 0] = (uint8_t)seed;                   /* a merkle root, unique per header */
     raw[36 + 1] = (uint8_t)(seed >> 8);
-    raw[68] = 0x60; raw[69] = 0x9c; raw[70] = 0xc5; raw[71] = 0x36;   /* time */
+    uint32_t when = BASE_TIME + 600u + seed * 60u;
+    raw[68] = (uint8_t)when; raw[69] = (uint8_t)(when >> 8);
+    raw[70] = (uint8_t)(when >> 16); raw[71] = (uint8_t)(when >> 24);
     for (int i = 0; i < 4; i++) raw[72 + i] = (uint8_t)(bits >> (8 * i));
 
     for (uint32_t nonce = 0; nonce < 100000; nonce++) {
@@ -63,7 +71,9 @@ static int mine_bad(uint8_t raw[80], const uint8_t prev[32], uint32_t bits, uint
     memcpy(raw + 4, prev, 32);
     raw[36 + 0] = (uint8_t)seed;
     raw[36 + 1] = (uint8_t)(seed >> 8);
-    raw[68] = 0x60; raw[69] = 0x9c; raw[70] = 0xc5; raw[71] = 0x36;
+    uint32_t when = BASE_TIME + 600u + seed * 60u;
+    raw[68] = (uint8_t)when; raw[69] = (uint8_t)(when >> 8);
+    raw[70] = (uint8_t)(when >> 16); raw[71] = (uint8_t)(when >> 24);
     for (int i = 0; i < 4; i++) raw[72 + i] = (uint8_t)(bits >> (8 * i));
 
     for (uint32_t nonce = 0; nonce < 100000; nonce++) {

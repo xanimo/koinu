@@ -66,6 +66,18 @@ int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
 
    1 when it matches, and 1 as well on a chain whose rules are not implemented, which
    is every network but mainnet: pretending to check would be worse than not. */
+/* Core's two timestamp rules. A header must be strictly newer than the median of
+   the eleven before it, and no more than two hours ahead of (now); pass now <= 0
+   to skip the future bound. Without these a peer claims +300s a header, which is
+   the most DigiShield eases by, the target reaches powLimit in 67 headers, and
+   every header after that costs about 2.5e-12 of a real block: three blocks of
+   work then buys any number of confirmations above the newest anchor. */
+#define KW_SYNC_MAX_FUTURE 7200
+#define KW_SYNC_MTP_SPAN   11
+
+int kw_sync_time_ok(const kw_headerstore *s, const kw_chainparams *cp,
+                    uint32_t height, uint32_t time, int64_t now);
+
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits);
 
