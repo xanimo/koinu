@@ -131,27 +131,6 @@ typedef struct {
     uint8_t  spk[25];
 } row;
 
-/* decimal DOGE to koinu, no floating point */
-static int parse_doge(const char *str, uint64_t *out)
-{
-    uint64_t whole = 0, frac = 0; int digits = 0, seen = 0;
-    const char *q = str;
-    for (; *q && *q != '.'; q++) {
-        if (*q < '0' || *q > '9') return 0;
-        if (whole > (UINT64_MAX - 9) / 10) return 0;
-        whole = whole * 10 + (uint64_t)(*q - '0'); seen = 1;
-    }
-    if (*q == '.') {
-        for (q++; *q; q++) {
-            if (*q < '0' || *q > '9' || digits >= 8) return 0;
-            frac = frac * 10 + (uint64_t)(*q - '0'); digits++; seen = 1;
-        }
-    }
-    if (!seen) return 0;
-    while (digits++ < 8) frac *= 10;
-    *out = whole * 100000000ULL + frac;
-    return 1;
-}
 
 /* Total what the utxo set pays each row. Separate from deriving the rows because
    a refresh re-tallies and derives nothing, so it needs no seed: the addresses
@@ -525,7 +504,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     }
     if (!ask_line("amount in DOGE: ", amt, sizeof amt)) return;
     uint64_t want = 0;
-    if (!parse_doge(amt, &want) || want < 1000000ULL) {
+    if (!kw_parse_doge(amt, &want) || want < KOINU_DUST) {
         ask_line("amount is not a number, or below the 0.01 dust limit. enter to go back ", to, sizeof to);
         return;
     }
@@ -562,7 +541,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         return;
     }
     uint64_t change = in_total - want - fee;
-    int with_change = change >= 1000000ULL;
+    int with_change = change >= KOINU_DUST;
     if (!with_change) { fee += change; change = 0; }   /* dust change goes to fee */
 
     /* the ceiling kw send applies, applied here too: signing from a screen is

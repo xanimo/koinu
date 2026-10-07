@@ -274,31 +274,8 @@ static int derive_address(const kw_chainparams *cp, const uint8_t seed[64],
 }
 
 /* change below this is folded into the fee rather than made into an output */
-#define KOINU_DUST 1000000ULL   /* 0.01 DOGE */
 
 /* decimal DOGE (up to 8 places) to koinu, without floating point */
-static int parse_doge(const char *s, uint64_t *out)
-{
-    uint64_t whole = 0, frac = 0; int digits = 0, seen = 0;
-    const char *p = s;
-    for (; *p && *p != '.'; p++) {
-        if (*p < '0' || *p > '9') return 0;
-        if (whole > (UINT64_MAX - 9) / 10) return 0;
-        whole = whole * 10 + (uint64_t)(*p - '0'); seen = 1;
-    }
-    if (*p == '.') for (p++; *p; p++) {
-        if (*p < '0' || *p > '9') return 0;
-        if (digits == 8) return 0;
-        frac = frac * 10 + (uint64_t)(*p - '0'); digits++; seen = 1;
-    }
-    if (!seen) return 0;
-    while (digits++ < 8) frac *= 10;
-    if (whole > UINT64_MAX / 100000000ULL) return 0;
-    uint64_t v = whole * 100000000ULL;
-    if (v > UINT64_MAX - frac) return 0;
-    *out = v + frac;
-    return 1;
-}
 
 #define est_fee(nin, nout, rate) kw_est_fee((nin), (nout), (rate))
 
@@ -328,7 +305,7 @@ static int fee_ok(uint64_t fee, size_t nbytes, const char *maxfee_arg)
 {
     uint64_t cap;
     if (maxfee_arg) {
-        if (!parse_doge(maxfee_arg, &cap)) { fprintf(stderr, "kw: bad --maxfee\n"); return 0; }
+        if (!kw_parse_doge(maxfee_arg, &cap)) { fprintf(stderr, "kw: bad --maxfee\n"); return 0; }
     } else {
         cap = kw_fee_cap(nbytes);
     }
@@ -931,7 +908,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     char *daddr = strtok(tob, ":"), *dam = strtok(NULL, ":");
     uint64_t send_amt = 0, fee = 0;
     uint8_t dspk[25]; size_t dl = 0;
-    if (!daddr || !dam || !parse_doge(dam, &send_amt)) { fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
+    if (!daddr || !dam || !kw_parse_doge(dam, &send_amt)) { fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
     if (!addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); goto out; }
     if (send_amt < KOINU_DUST) { fprintf(stderr, "kw: --to amount is below the dust limit (0.01 DOGE)\n"); goto out; }
 
@@ -939,8 +916,8 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
        floor) times the estimated size, settled once the inputs are chosen */
     int fixed_fee = (fee_arg != NULL);
     uint64_t rate = KW_MIN_RELAY_FEE_PER_KB;
-    if (fixed_fee && !parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
-    if (feerate_arg && !parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
+    if (fixed_fee && !kw_parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+    if (feerate_arg && !kw_parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
 
     int change_scan = gap;
     if (ninputs > 0) {
@@ -965,7 +942,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 fprintf(stderr, "kw: bad --input, want TXID:VOUT:AMOUNT:INDEX\n"); goto out;
             }
             uint64_t amt;
-            if (!parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
+            if (!kw_parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
             uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
             uint32_t index = (uint32_t)strtoul(is, NULL, 10);
             /* The typed amount is what the fee, the printed total and the --maxfee
@@ -1065,9 +1042,14 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
     uint64_t change = total_in - send_amt - fee;
     if (change < KOINU_DUST && !fixed_fee) {
-        fee = est_fee(nin, 1, rate);
-        if (total_in < send_amt + fee) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
-        change = total_in - send_amt - fee;
+        uint64_t fee1 = est_fee(nin, 1, rate);
+        if (total_in < send_amt + fee1) { fprintf(stderr, "kw: inputs do not cover output plus fee\n"); goto out; }
+        uint64_t change1 = total_in - send_amt - fee1;
+        /* Only keep the one-output fee if the change is still dust at it.
+           Dropping 34 bytes of output can lift the change back over the limit,
+           and the transaction then carried a one-output fee for two outputs,
+           below the rate it was built from: 19200 koinu where 22600 relays. */
+        if (change1 < KOINU_DUST) { fee = fee1; change = change1; }
     }
     int has_change = (change >= KOINU_DUST);
 
@@ -1237,10 +1219,10 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
 
     {
         uint64_t rate = KW_MIN_RELAY_FEE_PER_KB;
-        if (feerate_arg && !parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
+        if (feerate_arg && !kw_parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
         if (!feerate_arg) rate = peer_rate(rate, p.peer_feerate);
         int have_fixed = (fee_arg != NULL); uint64_t fixed = 0;
-        if (have_fixed && !parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+        if (have_fixed && !kw_parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
 
         /* The scan is done and nothing else needs the peer, so the socket closes
            before the key comes back. Reading it again is why --wif wants a file: a
@@ -1595,8 +1577,15 @@ static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
                         "broadcast %zu bytes blind\n", rawlen);
         return 0;
     }
-    if (used != rawlen)
-        fprintf(stderr, "kw: warning, %zu bytes trail the transaction\n", rawlen - used);
+    /* Not a warning: the txid is the hash of the transaction, so bytes after it
+       mean the number this prints and reports as broadcast is not the
+       transaction's, while the node sees and relays only the transaction. */
+    if (used != rawlen) {
+        fprintf(stderr, "kw: %zu bytes trail the transaction, so this is not one "
+                        "transaction and its txid is not what it looks like\n",
+                rawlen - used);
+        return 0;
+    }
 
     printf("txid    %s\n", txidhex);
     printf("size    %zu bytes, %zu input(s), %zu output(s)\n", rawlen, tx.nin, tx.nout);

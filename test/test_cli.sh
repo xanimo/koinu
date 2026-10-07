@@ -189,6 +189,24 @@ if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
     echo "FAIL: dust change folded into the fee escaped the limit" >&2; exit 1
 fi
 
+# A change output dropped for dust takes 34 bytes off the estimate, which can
+# lift the change back over the dust limit. The transaction then carried two
+# outputs and a one-output fee, under the rate it was built from.
+OUTF=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:9.9898" 2>/dev/null)
+FEEK=$(echo "$OUTF" | awk '/^fee/{print $2}')
+SIZEB=$(echo "$OUTF" | awk '/^fee/{print $4}')
+MINF=$(( (SIZEB * 100000 + 999) / 1000 ))
+if [ "$FEEK" -lt "$MINF" ]; then
+    echo "FAIL: $FEEK koinu for $SIZEB bytes is under the relay floor of $MINF" >&2; exit 1
+fi
+
+# an amount over MAX_MONEY is refused rather than wrapped through send + fee
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+       --input "$IN" --to "$ADDR1:184467440737.09551615" >/dev/null 2>&1; then
+    echo "FAIL: signed an amount that does not fit the money supply" >&2; exit 1
+fi
+
 # --input's amount decides the fee, the printed total and the --maxfee cap, and
 # legacy sighash does not commit to input value, so a wrong one signs a valid
 # transaction that pays the difference to the miner. Where the tracked set knows
@@ -219,6 +237,13 @@ FULL=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w
 case "$FULL" in *"$SIGA"*"$REDEEM"*) ;; *) echo "FAIL: finished tx missing sig or redeem" >&2; exit 1;; esac
 FULL2=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w2" --sig "$SIGA" --finish)
 [ "$FULL" = "$FULL2" ] || { echo "FAIL: cosign not deterministic" >&2; exit 1; }
+
+# bytes after the transaction are not part of it, so the txid send would report
+# is not the transaction's
+if ./kw --regtest send --tx "${FULL}deadbeef" --node 127.0.0.1 --yes >/dev/null 2>&1; then
+    echo "FAIL: broadcast a transaction with trailing bytes" >&2; exit 1
+fi
+
 # a wrong hashtype and a duplicated key must be refused
 if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w2" \
        --sig "${SIGA%01}00" --finish >/dev/null 2>&1; then
@@ -273,4 +298,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"

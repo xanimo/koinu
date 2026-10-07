@@ -28,6 +28,21 @@
 /* How many times the recommended fee a spend may pay before it is refused. */
 #define KW_MAX_FEE_MULTIPLE 100
 
+/* Dogecoin's DEFAULT_DUST_LIMIT: an output below this is refused rather than
+   created, and change below it is folded into the fee. */
+#define KOINU_DUST 1000000ULL                   /* 0.01 DOGE */
+
+/* Dogecoin's MAX_MONEY in koinu. Nothing above this can be paid, so an amount
+   over it is a typo or an overflow attempt, and refusing it here keeps every
+   sum of amounts and fees inside a uint64 by construction. */
+#define KOINU_MAX_MONEY 1000000000000000000ULL  /* 10,000,000,000 DOGE */
+
+/* Parse a DOGE amount ("1", "0.5", "1.00000000") into koinu. Refuses anything
+   that is not digits with at most 8 decimal places, and anything over
+   KOINU_MAX_MONEY. Returns 1 on success. Shared so two front ends cannot
+   disagree about what an amount means. */
+int kw_parse_doge(const char *s, uint64_t *out);
+
 /* A signed p2pkh transaction's size: ~148 bytes an input, 34 an output, 10
    overhead. The input estimate rounds up, since a DER signature is 71 or 72
    bytes, so a fee derived from it is never short. */
