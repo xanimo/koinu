@@ -157,9 +157,12 @@ filters the same daemon fetches every block in the range instead, which was 1572
 for 46 blocks. the first number is the one to size a budget against and the last
 is the one to size a range against.
 
-kwd needs a peer that serves bip158 filters, since it builds the filter cache at
-startup and exits if it cannot. most mainnet nodes do not serve them, so this is
-the first thing to check when it will not start. the socket is created 0600 with
+kwd prefers a peer that serves bip158 filters and builds the filter cache at
+startup. where the peer serves none, which is every stock 1.14 node, it says so
+and answers from blocks instead: a request then costs every block from its
+--since to the tip rather than the blocks a filter matched, bounded by the
+unfiltered span cap, so --since is what keeps such a request cheap. a request
+carrying no since height is refused rather than read as zero. the socket is created 0600 with
 no group and no mode option, so whatever asks has to run as the user kwd runs as;
 a caller under its own account gets a permission denied on a path that otherwise
 looks right.

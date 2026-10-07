@@ -185,7 +185,12 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     }
     for (int i = 0; i < 32; i++) txint[i] = txdisp[31 - i];
     uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
-    long since = sh ? atol(sh) : 0;
+    /* No since field used to mean 0, which is "every block since genesis" on the
+       unfiltered path and the whole filter cache on the other. The only client
+       always sends it, so a request without one is a mistake rather than a
+       request for the chain. */
+    if (!sh) { write_all(fd, "1 outpoint needs a since height\n", 32); return; }
+    long since = atol(sh);
     if (since < 0) since = 0;
 
     /* keep the resident chain current, then answer from the caches */
@@ -256,7 +261,20 @@ int main(int argc, char **argv)
     const kw_chainparams *cp = chain_for(net);
     if (port < 0) port = cp->p2p_port;
 
-    signal(SIGINT, on_sig); signal(SIGTERM, on_sig); signal(SIGPIPE, SIG_IGN);
+    /* sigaction with no SA_RESTART, which is what signal() gives on glibc: with
+       the handler restarting it, accept() never returned EINTR, so a daemon
+       waiting for a connection took the signal, set (stop) and then went back to
+       waiting. test_kwd's kill left one running every time it ran. */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_sig;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
+    signal(SIGPIPE, SIG_IGN);
     kw_net_verbose = 1;
 
     dial.cp = cp; dial.port = port; dial.tor = tor; dial.nnode = nnode;
