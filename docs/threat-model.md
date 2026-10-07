@@ -113,6 +113,15 @@ the comparison unless every peer reached is in on it. For anything accepting
 payment on the strength of a confirmation, prefer a node you control, which is what
 `--node` is for, and pass it more than once.
 
+Peer choice is the weakest part of all of this. Without `--node` the mainnet
+seeds are two hostnames in one domain, so whoever controls them, or the resolver
+path to them, picks every peer the parallel sync and the three-way work
+comparison use, and the comparison's assumption that the peers are independent
+does not hold. Anchors and the work checks bound that to eclipse and censorship
+rather than forged history below an anchor, but above the newest anchor a chosen
+peer set is the whole input. Pass `--node` more than once, with nodes you chose,
+for anything that accepts payment.
+
 ## Transactions
 
 Signing is deterministic (RFC 6979) and low-S, so a repeated signature is
