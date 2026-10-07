@@ -126,10 +126,21 @@ int kw_sync_time_ok(const kw_headerstore *s, const kw_chainparams *cp,
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits)
 {
-    /* Only mainnet's rules are written. Testnet and regtest allow minimum-difficulty
-       blocks, which needs a walk this does not do, so they are not checked at all
-       rather than checked wrongly. */
-    if (!s || !cp || cp != &KW_DOGE_MAINNET) return 1;
+    if (!s || !cp) return 1;
+
+    /* No target may be easier than the network's powLimit, which is Core's
+       CheckProofOfWork and is the same rule on every network. Without it a
+       testnet or regtest peer served headers at nbits 0x2100ffff with nonce 0,
+       and testnet has no checkpoints to catch the chain afterwards. */
+    kw_u256 target, limit;
+    if (!kw_bits_target(bits, &target)) return 0;
+    if (cp->pow_limit_bits && kw_bits_target(cp->pow_limit_bits, &limit) &&
+        kw_u256_cmp(&target, &limit) > 0) return 0;
+
+    /* Past that only mainnet's retarget rule is written. Testnet and regtest
+       allow minimum-difficulty blocks, which needs a walk this does not do, so
+       the derived value is not demanded of them rather than demanded wrongly. */
+    if (cp->magic != KW_DOGE_MAINNET.magic) return 1;
     if (height == 0) return 1;
 
     uint32_t last_bits, last_time, first_time = 0, first_bits;

@@ -37,6 +37,7 @@ typedef struct {
     const char      *genesis;    /* genesis block hash, display (reversed) hex */
     uint32_t         genesis_time;  /* its timestamp and nBits, which the retarget */
     uint32_t         genesis_bits;  /* rule needs for the first period of the chain */
+    uint32_t         pow_limit_bits;   /* the easiest target this network accepts */
     const kw_checkpoint *checkpoints;  /* ascending by height, [0] is genesis; NULL if none */
     size_t           ncheckpoints;
     const char *const *dns_seeds;      /* seeder hostnames; NULL if none */

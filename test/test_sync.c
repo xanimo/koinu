@@ -391,8 +391,30 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* No network accepts a target easier than its own powLimit, which is Core's
+       CheckProofOfWork. The retarget rule is only written for mainnet, and that
+       exemption used to skip this too: a testnet peer served headers at nbits
+       0x2100ffff with nonce 0, and testnet has no checkpoints behind it. */
+    {
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        const uint32_t absurd = 0x2100ffffu;        /* a target just under 2^256 */
+        if (kw_sync_bits_ok(&s, &KW_DOGE_TESTNET, 5000, absurd) ||
+            kw_sync_bits_ok(&s, &KW_DOGE_REGTEST, 5000, absurd) ||
+            kw_sync_bits_ok(&s, &KW_DOGE_MAINNET, 5000, absurd)) {
+            fprintf(stderr, "FAIL: a target above powLimit was accepted\n"); return 1;
+        }
+        if (!kw_sync_bits_ok(&s, &KW_DOGE_REGTEST, 5000, KW_DOGE_REGTEST.pow_limit_bits)) {
+            fprintf(stderr, "FAIL: regtest refused its own powLimit\n"); return 1;
+        }
+        if (!kw_sync_bits_ok(&s, &KW_DOGE_TESTNET, 5000, 0x1e0fffffu)) {
+            fprintf(stderr, "FAIL: testnet refused a mainnet-strength target\n"); return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
-           "  median-time-past and the two-hour future bound enforced,\n"
+           "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
        "  a cached chain checked against the pins on load by hashing it,\n  and a locator, a work sum and a rollback to choose between chains with\n");
