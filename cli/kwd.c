@@ -16,6 +16,7 @@
 #include "hex.h"
 #include "peer.h"
 #include "sync.h"
+#include "mem.h"
 #include "headers.h"
 #include "cf.h"
 #include "cfstore.h"
@@ -218,6 +219,7 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
 
 int main(int argc, char **argv)
 {
+    kw_no_core_dumps();
     int net = 0, tor = 0, port = -1, nnode = 0;
     const char *node[KWD_MAX_PEERS] = { 0 };
     const char *sock = NULL, *headers_path = NULL, *filters_path = NULL;

@@ -9,7 +9,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 static int all_zero(const unsigned char *b, size_t n)
 {
@@ -140,7 +144,34 @@ int main(void)
     if (!check_nested_locks()) return 1;
     if (!check_overflow_keeps_locks()) return 1;
 
+    /* mlock keeps a secret out of swap and says nothing about a core file, and a
+       SIGQUIT at a passphrase prompt put a mnemonic the user had not read yet
+       into one. Checked by asking the process about itself, since where a core
+       lands is the host's business: on this machine the pattern pipes to apport.
+       Last, because it makes this process undumpable. */
+    {
+        unsigned char secret[] = "not through stdio";
+        int fd = open("/dev/null", O_WRONLY);
+        if (fd < 0 || !kw_write_secret(fd, secret, sizeof secret - 1)) {
+            fprintf(stderr, "FAIL: kw_write_secret\n"); return 1;
+        }
+        close(fd);
+
+        kw_no_core_dumps();
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_CORE, &rl) != 0 || rl.rlim_cur != 0) {
+            fprintf(stderr, "FAIL: RLIMIT_CORE is %llu, want 0\n",
+                    (unsigned long long)rl.rlim_cur);
+            return 1;
+        }
+#ifdef PR_GET_DUMPABLE
+        if (prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0) {
+            fprintf(stderr, "FAIL: the process is still dumpable\n"); return 1;
+        }
+#endif
+    }
+
     printf("rng ok: 64-byte draws differ, selftest passed, secure_zero, ct-compare,\n"
-           "  nested locks, and no release once the lock table overflows\n");
+           "  nested locks, no release once the lock table overflows, and core dumps off\n");
     return 0;
 }

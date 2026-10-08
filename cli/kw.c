@@ -590,7 +590,12 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
         return 1;
     }
 
-    printf("mnemonic (write this down, it is your only backup):\n  %s\n\n", mnem);
+    /* Written straight to the descriptor: printf copies it into stdio's buffer,
+       which nothing wipes and which stays live through the argon2 seal below. */
+    const char *lead = "mnemonic (write this down, it is your only backup):\n  ";
+    kw_write_secret(STDOUT_FILENO, lead, strlen(lead));
+    kw_write_secret(STDOUT_FILENO, mnem, strlen(mnem));
+    kw_write_secret(STDOUT_FILENO, "\n\n", 2);
     kw_secure_zero(mnem, sizeof mnem);
 
     int rc = seal_and_report(cp, path, pass_arg, seed);
@@ -2035,6 +2040,7 @@ out:
 
 int main(int argc, char **argv)
 {
+    kw_no_core_dumps();                        /* before anything reads a secret */
     int net = 0, words = 12, change = 0, ninputs = 0, want_spk = 0, validate_pow = 0;
     int assume_yes = 0;
     int tor = 0, use_cf = 1, gap = 100, port = -1;

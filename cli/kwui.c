@@ -714,6 +714,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
 
 int main(int argc, char **argv)
 {
+    kw_no_core_dumps();
     int net = 0, gap = 20;
     const char *ks = NULL, *utxos = NULL;
 

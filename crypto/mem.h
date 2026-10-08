@@ -42,4 +42,18 @@ int kw_munlock(void *p, size_t n);
 void kw_secure_keep(void *p, size_t n);
 void kw_secure_forget(void *p, size_t n);
 
+/* Stop this process dumping core, and ask the kernel to leave locked pages out
+   of a dump where it can. mlock keeps a secret out of swap and does nothing
+   about a core file: a SIGQUIT at a passphrase prompt wrote a mnemonic the user
+   had not read yet into one, under systemd-coredump or apport or a ci artifact
+   collector. Called from main before anything reads a secret. Best effort, like
+   the locking: a platform without it is no reason to refuse to run. */
+void kw_no_core_dumps(void);
+
+/* Write (n) bytes to (fd) without stdio in between. printf copies a secret into
+   a buffer malloc'd on first use, which nothing wipes and which outlives every
+   kw_secure_forget in the process; read_secret avoids stdio on the way in for
+   the same reason. Returns 1 when every byte was written. */
+int kw_write_secret(int fd, const void *p, size_t n);
+
 #endif /* KOINU_MEM_H */

@@ -31,6 +31,14 @@ Passphrases, mnemonics and private keys are read from a file, from stdin, or
 from a no-echo prompt. A bare value on the command line is refused, because argv
 is readable by any process on the machine.
 
+kw, kwui and kwd set RLIMIT_CORE to zero and clear PR_SET_DUMPABLE before
+anything reads a secret, because mlock keeps a secret out of swap and says
+nothing about a core file: a SIGQUIT at the passphrase prompt put a mnemonic the
+user had not seen yet into one, and systemd-coredump, apport and a ci artifact
+collector all keep what they are given. The mnemonic is written with write(2)
+rather than printf for the same reason reading one avoids stdio: a buffer malloc
+hands out once and nothing wipes outlives every forget in the process.
+
 Not defended: a compromised machine. A keylogger, a debugger attached to the
 process, or a reader of the swapped-out pages of another process defeats all of
 the above. koinu assumes the host it runs on is honest.

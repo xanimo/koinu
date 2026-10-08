@@ -10,7 +10,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 void kw_secure_zero(void *p, size_t n)
 {
@@ -80,6 +84,30 @@ void kw_secure_keep(void *p, size_t n)
         fprintf(stderr, "kw: cannot lock %zu bytes into ram (%s); secrets may reach swap\n",
                 n, strerror(err));
     }
+}
+
+void kw_no_core_dumps(void)
+{
+    struct rlimit rl;
+    rl.rlim_cur = 0;
+    rl.rlim_max = 0;
+    setrlimit(RLIMIT_CORE, &rl);
+#ifdef PR_SET_DUMPABLE
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);     /* and no ptrace from a same-uid process */
+#endif
+}
+
+int kw_write_secret(int fd, const void *p, size_t n)
+{
+    const unsigned char *b = (const unsigned char *)p;
+    while (n) {
+        ssize_t w = write(fd, b, n);
+        if (w < 0) { if (errno == EINTR) continue; return 0; }
+        if (w == 0) return 0;
+        b += w;
+        n -= (size_t)w;
+    }
+    return 1;
 }
 
 void kw_secure_forget(void *p, size_t n)
