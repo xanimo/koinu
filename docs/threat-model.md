@@ -62,7 +62,10 @@ merged-mined header is checked through its AuxPoW proof, so the parent block's w
 is what has to be there. `scan`, `outpoint`, `sweep`, `height` and `cfcheckpoints`
 sync through one function, so none of them checks less than the others.
 `--validate-pow` moves the floor to height 1 and trusts no anchor, at the cost of
-hashing the whole chain. A header that fails stops the sync rather than being
+hashing the whole chain: it ignores a header cache and syncs again, because the
+cache keeps 80-byte headers and no merged-mining proofs and the work above the
+merge-mining start lives in the parent block a proof carries. It also gives up the
+parallel fill, which writes that range without the proofs for the same reason. A header that fails stops the sync rather than being
 skipped.
 
 A block body is refused unless its transactions hash to the header's merkle root,

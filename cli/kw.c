@@ -478,9 +478,18 @@ static const char *seed_nodes(const kw_chainparams *cp, int tor)
    fill did not run or failed; a failure falls back cleanly to the sequential
    path. */
 static const char *headers_parallel_fill(const kw_chainparams *cp, const char *node, int port,
-                                         int tor, int peers, const char *path)
+                                         int tor, int peers, const char *path, int validate_pow)
 {
     if (peers < 2 || !path) return node;
+    /* The fill writes the checkpointed range straight to the cache without the
+       merged-mining blobs, so it cannot check work. The guard lived in cmd_scan
+       only, and height, outpoint and cfcheckpoints ran the fill under
+       --validate-pow and checked nothing. */
+    if (validate_pow) {
+        fprintf(stderr, "kw: --validate-pow checks every header as it arrives, which the "
+                        "parallel fill cannot; using one peer\n");
+        return node;
+    }
     const char *one[1] = { node };
     const char *const *hosts = g_nnodes ? g_nodes : one;
     size_t nhosts = g_nnodes ? (size_t)g_nnodes : 1;
@@ -566,9 +575,21 @@ static long headers_sync(kw_headerstore *s, const kw_chainparams *cp, kw_peer *p
 /* A cache is a chain some peer served an earlier run, so it gets the same anchors the
    live sync applies. Without this the sync only checks heights it downloads itself,
    and a cache is by definition the heights it will not. */
-static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char *path)
+static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char *path,
+                         int validate_pow)
 {
     kw_headerstore_init(s);
+    /* A cached chain cannot be re-checked: the cache keeps the 80-byte headers and
+       not the merged-mining blobs, and above the merge-mining start the work lives
+       in the parent block a blob carries. So --validate-pow has to download the
+       chain it is going to check, which is what the documented cost of hashing the
+       whole chain means. Without this a second run hashed only what was new while
+       the help text said no anchor was trusted. */
+    if (validate_pow && path) {
+        fprintf(stderr, "kw: --validate-pow cannot re-check a cached chain, since the "
+                        "cache holds no merged-mining proofs; syncing it again\n");
+        return;
+    }
     if (path && !kw_headerstore_load(s, path)) {
         fprintf(stderr, "kw: header cache %s is corrupt, ignoring\n", path);
         kw_headerstore_free(s);
@@ -831,12 +852,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
        the blobs, so it cannot check work. That is exactly the range the default
        trusts anchors for, so the two fit together; asking for the whole chain does
        not, and quietly checking only the tail would be worse than being slow. */
-    if (validate_pow && peers > 1) {
-        fprintf(stderr, "kw: --validate-pow checks every header as it arrives, which the "
-                        "parallel fill cannot; using one peer\n");
-        peers = 1;
-    }
-    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -849,7 +865,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
 
-    kw_headerstore s; headers_open(&s, cp, headers_path);
+    kw_headerstore s; headers_open(&s, cp, headers_path, validate_pow);
 
     nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
     if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto done; }
@@ -1383,7 +1399,7 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
     if (port <= 0) port = cp->p2p_port;
     if (spacing <= 0) spacing = 100000;
     kw_net_verbose = 1;
-    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
 
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
@@ -1395,7 +1411,7 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
     uint8_t (*fh)[32] = NULL;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
-    headers_open(&s, cp, headers_path);
+    headers_open(&s, cp, headers_path, validate_pow);
     {
         long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); goto out; }
@@ -1450,7 +1466,7 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
     kw_net_verbose = 1;
-    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -1459,7 +1475,7 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
     int rc = 1;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
-        kw_headerstore s; headers_open(&s, cp, headers_path);
+        kw_headerstore s; headers_open(&s, cp, headers_path, validate_pow);
         long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
         const kw_block_header *tip = kw_headerstore_tip(&s);
@@ -1534,7 +1550,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
 
     kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
     kw_net_verbose = 1;
-    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path);
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
@@ -1545,7 +1561,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     size_t tipheight = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
-    kw_headerstore s; headers_open(&s, cp, headers_path);
+    kw_headerstore s; headers_open(&s, cp, headers_path, validate_pow);
     /* quiet: a caller parses this command's one line of stdout, so the sync reports
        nothing there. A refusal still goes to stderr and the exit code. */
     long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 1);
