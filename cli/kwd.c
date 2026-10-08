@@ -144,6 +144,20 @@ static const kw_chainparams *chain_for(int net)
 }
 
 /* address or hex to scriptPubKey; returns length or 0 */
+/* digits only, no trailing text, inside (hi) */
+static int parse_u32(const char *v, uint32_t hi, uint32_t *out)
+{
+    if (!v || !*v) return 0;
+    unsigned long long n = 0;
+    for (const char *p = v; *p; p++) {
+        if (*p < '0' || *p > '9') return 0;
+        n = n * 10 + (unsigned long long)(*p - '0');
+        if (n > (unsigned long long)hi) return 0;
+    }
+    *out = (uint32_t)n;
+    return 1;
+}
+
 static size_t to_spk(const kw_chainparams *cp, const char *s, uint8_t out[64])
 {
     uint8_t pay[64]; size_t n = 0;
@@ -169,9 +183,12 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
 {
     char reply[256];
     char buf[512]; snprintf(buf, sizeof buf, "%s", line);
-    char *cmd = strtok(buf, " \t");
-    char *watch = strtok(NULL, " \t");
-    char *op = strtok(NULL, " \t");
+    /* every field, not just the last, is split on the line ending too: the request
+       arrives with its newline, so a trailing "\n" used to sit inside whichever
+       token came last and the numeric parsers have to see digits only */
+    char *cmd = strtok(buf, " \t\r\n");
+    char *watch = strtok(NULL, " \t\r\n");
+    char *op = strtok(NULL, " \t\r\n");
     char *sh = strtok(NULL, " \t\r\n");
     if (!cmd || strcmp(cmd, "outpoint") || !watch || !op) {
         write_all(fd, "1 bad request\n", 14); return;
@@ -185,14 +202,20 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
         write_all(fd, "1 bad outpoint\n", 15); return;
     }
     for (int i = 0; i < 32; i++) txint[i] = txdisp[31 - i];
-    uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
+    /* digits only, and inside the field: vout 4294967297, "1junk" and " +1" all
+       answered for vout 1, so one outpoint had several spellings and a backend
+       deduplicating on the string it sent would credit a payment once per
+       spelling. */
+    uint32_t vout = 0;
+    if (!parse_u32(vs, UINT32_MAX, &vout)) { write_all(fd, "1 bad outpoint\n", 15); return; }
     /* No since field used to mean 0, which is "every block since genesis" on the
        unfiltered path and the whole filter cache on the other. The only client
        always sends it, so a request without one is a mistake rather than a
        request for the chain. */
     if (!sh) { write_all(fd, "1 outpoint needs a since height\n", 32); return; }
-    long since = atol(sh);
-    if (since < 0) since = 0;
+    uint32_t su = 0;
+    if (!parse_u32(sh, INT32_MAX, &su)) { write_all(fd, "1 bad since height\n", 19); return; }
+    long since = (long)su;
 
     /* keep the resident chain current, then answer from the caches */
     long nh = kwd_sync(s, cp);

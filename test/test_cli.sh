@@ -209,6 +209,23 @@ if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
     echo "FAIL: signed an amount that does not fit the money supply" >&2; exit 1
 fi
 
+# one outpoint, one spelling: vout went through strtoul with no end pointer and no
+# range, so 4294967297, "1junk" and " +1" all answered for vout 1 and a backend
+# deduplicating on the string it sent would credit one payment several times.
+for BAD in 4294967297 1junk -1; do
+    if ./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since 1 \
+           --outpoint "0000000000000000000000000000000000000000000000000000000000000001:$BAD" \
+           2>&1 | grep -q "^kw: --outpoint vout wants"; then :; else
+        echo "FAIL: vout \"$BAD\" was not refused" >&2; exit 1
+    fi
+done
+
+# an empty passphrase seals a keystore that opens with nothing
+printf '\n' > "$WORK/emptypass"
+if ./kw --regtest new --keystore "$WORK/ksempty" --passphrase "@$WORK/emptypass" >/dev/null 2>&1; then
+    echo "FAIL: an empty passphrase sealed a keystore" >&2; exit 1
+fi
+
 # --input's amount decides the fee, the printed total and the --maxfee cap, and
 # legacy sighash does not commit to input value, so a wrong one signs a valid
 # transaction that pays the difference to the miner. Where the tracked set knows
@@ -311,4 +328,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign"

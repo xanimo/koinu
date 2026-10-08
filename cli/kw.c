@@ -132,6 +132,30 @@ static int arg_int(const char *name, const char *v, int lo, int hi, int *out)
     return 1;
 }
 
+/* The same for an unsigned field, since --index, --account, a vout and a --since
+   all went through strtoul or atol with no end pointer and no range: "abc" was 0,
+   "7x" was 7, and vout 4294967297 truncated to 1, so one outpoint answered to
+   several spellings and a backend deduplicating on the string it was handed
+   would credit one payment once per spelling. */
+static int arg_u32(const char *name, const char *v, uint32_t hi, uint32_t *out)
+{
+    if (!v || !*v) { fprintf(stderr, "kw: %s wants a number\n", name); return 0; }
+    for (const char *p = v; *p; p++)
+        if (*p < '0' || *p > '9') {
+            fprintf(stderr, "kw: %s wants digits, not \"%s\"\n", name, v);
+            return 0;
+        }
+    errno = 0;
+    char *end = NULL;
+    unsigned long long n = strtoull(v, &end, 10);
+    if (errno || end == v || *end || n > (unsigned long long)hi) {
+        fprintf(stderr, "kw: %s wants 0..%u, not \"%s\"\n", name, hi, v);
+        return 0;
+    }
+    *out = (uint32_t)n;
+    return 1;
+}
+
 static void chomp(char *s)
 {
     size_t n = strlen(s);
@@ -243,6 +267,16 @@ static char *read_secret(const char *arg, const char *prompt)
                                  "or passphrase needs\n", KW_SECRET_MAX - 1);
     if (n < 0) { secret_free(line); return NULL; }
     chomp(line);
+    /* An empty line is not a passphrase. argon2 over zero bytes seals a keystore
+       that opens with nothing, against the claim that a stolen one yields nothing
+       without its passphrase, and kwui already refuses one, so kw could make a
+       wallet kwui could not open. */
+    if (!line[0]) {
+        fprintf(stderr, "kw: that was empty; a passphrase of nothing seals a keystore "
+                        "that opens with nothing\n");
+        secret_free(line);
+        return NULL;
+    }
     return line;
 }
 
@@ -977,7 +1011,8 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             }
             uint64_t amt;
             if (!kw_parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
-            uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
+            uint32_t vout = 0;
+    if (!arg_u32("--outpoint vout", vs, UINT32_MAX, &vout)) return 1;
             uint32_t index = (uint32_t)strtoul(is, NULL, 10);
             /* The typed amount is what the fee, the printed total and the --maxfee
                cap are computed from, and legacy sighash does not commit to input
@@ -1481,7 +1516,8 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     uint8_t txdisp[32], txint[32];
     if (!kw_hex_decode(ts, 64, txdisp, 32)) { fprintf(stderr, "kw: bad txid\n"); return 1; }
     for (int i = 0; i < 32; i++) txint[i] = txdisp[31 - i];
-    uint32_t vout = (uint32_t)strtoul(vs, NULL, 10);
+    uint32_t vout = 0;
+    if (!arg_u32("--outpoint vout", vs, UINT32_MAX, &vout)) return 1;
 
     kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
     kw_net_verbose = 1;
@@ -2117,8 +2153,8 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--passphrase")) pass_arg = NEXT();
         else if (!strcmp(a, "--mnemonic"))   mnem_arg = NEXT();
         else if (!strcmp(a, "--words"))    { if (!arg_int("--words", NEXT(), 12, 24, &words)) return 2; }
-        else if (!strcmp(a, "--account"))  { const char *v = NEXT(); account = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
-        else if (!strcmp(a, "--index"))    { const char *v = NEXT(); index = v ? (uint32_t)strtoul(v,NULL,10) : 0; }
+        else if (!strcmp(a, "--account"))  { if (!arg_u32("--account", NEXT(), KW_BIP32_HARDENED - 1, &account)) return 2; }
+        else if (!strcmp(a, "--index"))    { if (!arg_u32("--index", NEXT(), KW_BIP32_HARDENED - 1, &index)) return 2; }
         else if (!strcmp(a, "--change"))     change = 1;
         else if (!strcmp(a, "--spk"))        want_spk = 1;
         else if (!strcmp(a, "--input"))    { const char *v = NEXT();
@@ -2146,7 +2182,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--outpoint"))   outpoint_arg = NEXT();
         else if (!strcmp(a, "--headers"))    headers_arg = NEXT();
         else if (!strcmp(a, "--filters"))    filters_arg = NEXT();
-        else if (!strcmp(a, "--since"))    { const char *v = NEXT(); since = v ? atol(v) : -1; }
+        else if (!strcmp(a, "--since"))    { uint32_t u = 0;
+            if (!arg_u32("--since", NEXT(), INT32_MAX, &u)) return 2;
+            since = (long)u; }
         else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "--redeem"))     redeem_arg = NEXT();
