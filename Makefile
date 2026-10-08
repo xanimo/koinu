@@ -258,7 +258,21 @@ net_handshake: test/net_handshake.o $(LIB)
 # clang for libFuzzer; `make fuzz-run CORPUS=dir` replays a corpus with any
 # compiler, so CI can check the known inputs without clang.
 FUZZ_CC ?= clang
-.PHONY: fuzz fuzz-run fuzz-asan
+.PHONY: fuzz fuzz-net fuzz-run fuzz-asan
+
+# The stateful harnesses: a fake peer on a socketpair writing a scripted byte
+# stream in fuzzer-chosen chunks, so a whole exchange is the input rather than one
+# message. These found the index-offset and feefilter-shift bugs that the
+# single-buffer targets cannot reach. Threads and sockets per input, so they are
+# libFuzzer only and out of the replay gate, like fuzz/fuzz_wire.c.
+NETFUZZ = peer sync psync pfill cfsync spvsync outpoint kwdflow
+fuzz-net: $(SECP_LIB)
+	@for t in $(NETFUZZ); do \
+	    echo "building fz_$$t"; \
+	    $(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined \
+	        -fno-sanitize-recover=undefined -fno-omit-frame-pointer -pthread \
+	        $(CPPFLAGS) -Ifuzz/net -Itest -o fz_$$t fuzz/net/fz_$$t.c $(CORE_SRC) $(SECP_LIB) || exit 1; \
+	done
 fuzz: fuzz/fuzz_parse.c fuzz/fuzz_wire.c $(SECP_LIB)
 	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined $(CPPFLAGS) \
 	    -o fuzz_parse fuzz/fuzz_parse.c $(CORE_SRC) $(SECP_LIB)
@@ -388,7 +402,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_socks5 fuzz_kwd fuzz_replay cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

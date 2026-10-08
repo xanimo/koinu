@@ -85,6 +85,13 @@ Nothing is tagged until all of these pass on the commit being tagged:
                         proxy, fuzz_kwd over the daemon's request line. At
                         least 10 minutes each; this is the one that finds
                         inputs the corpus does not have
+    make fuzz-net       eight stateful harnesses: a scripted fake peer per
+                        exchange, over the handshake and recv, single and
+                        multi-peer header sync, psync segments and the parallel
+                        fill, cf header fetch with cfstore sync, spv block
+                        sync, the outpoint range query, and kwd's request loop.
+                        These carry invariants on the store, the caches and
+                        every answer, which is what a crash-only run misses
 
 The release binary's hardening is a property of the toolchain that linked it, so
 check the artifact rather than the flags:
