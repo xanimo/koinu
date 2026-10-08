@@ -38,6 +38,8 @@ typedef struct {
     uint32_t         genesis_time;  /* its timestamp and nBits, which the retarget */
     uint32_t         genesis_bits;  /* rule needs for the first period of the chain */
     uint32_t         pow_limit_bits;   /* the easiest target this network accepts */
+    uint32_t         bip66_height;     /* base version 3 from here, DER signatures */
+    uint32_t         bip65_height;     /* base version 4 from here, CHECKLOCKTIMEVERIFY */
     const kw_checkpoint *checkpoints;  /* ascending by height, [0] is genesis; NULL if none */
     size_t           ncheckpoints;
     const char *const *dns_seeds;      /* seeder hostnames; NULL if none */

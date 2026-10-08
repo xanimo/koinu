@@ -101,6 +101,15 @@ int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
 int kw_sync_version_ok(const kw_chainparams *cp, uint32_t height, uint32_t version)
 {
     if (!cp) return 0;
+
+    /* The version floors BIP66 and BIP65 brought in, which a node enforces on the
+       header alone. The chain id and the auxpow flag sit above the base version,
+       so the comparison is against the low byte. BIP34's floor was never
+       enforced on dogecoin, and its coinbase-height rule needs the body. */
+    uint32_t base = version & 0xff;
+    if (cp->bip66_height && height >= cp->bip66_height && base < 3) return 0;
+    if (cp->bip65_height && height >= cp->bip65_height && base < 4) return 0;
+
     if (cp->magic != KW_DOGE_MAINNET.magic) return 1;
     if (height < KW_AUXPOW_START_MAINNET) return 1;
 

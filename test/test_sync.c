@@ -197,6 +197,7 @@ int main(void)
         anchored.checkpoints = far;
         anchored.ncheckpoints = 1;
         if (feed_two(&anchored) != -1) { fprintf(stderr, "FAIL: a chain ending below the last anchor was accepted\n"); return 1; }
+
     }
 
 
@@ -436,10 +437,33 @@ int main(void)
         if (!kw_sync_version_ok(t, above, 1)) {
             fprintf(stderr, "FAIL: testnet is not subject to mainnet's start height\n"); return 1;
         }
+
+        /* The BIP66 and BIP65 floors. A node has refused a base version below
+           these since 1034383 and 3464751, and nothing here did, so a chain of
+           version-2 headers was a valid chain to this wallet all the way to the
+           tip. The id is in the high bits either way, which is why the chain id
+           check above did not cover it. */
+        if (kw_sync_version_ok(m, m->bip66_height, 0x00620002u)) {
+            fprintf(stderr, "FAIL: base version 2 accepted at BIP66Height\n"); return 1;
+        }
+        if (!kw_sync_version_ok(m, m->bip66_height - 1, 0x00620002u)) {
+            fprintf(stderr, "FAIL: base version 2 refused below BIP66Height\n"); return 1;
+        }
+        if (kw_sync_version_ok(m, m->bip65_height, 0x00620003u)) {
+            fprintf(stderr, "FAIL: base version 3 accepted at BIP65Height\n"); return 1;
+        }
+        if (!kw_sync_version_ok(m, m->bip65_height, 0x00620004u) ||
+            !kw_sync_version_ok(m, m->bip65_height, 0x00620104u)) {
+            fprintf(stderr, "FAIL: base version 4 refused at BIP65Height\n"); return 1;
+        }
+        if (kw_sync_version_ok(t, t->bip65_height, 0x00620003u) ||
+            !kw_sync_version_ok(t, t->bip65_height - 1, 0x00620003u)) {
+            fprintf(stderr, "FAIL: testnet's own floor height is not used\n"); return 1;
+        }
     }
 
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
-           "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network, the chain id demanded above the merge-mining start,\n"
+           "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network, the chain id demanded above the merge-mining start, the\n  bip66 and bip65 base-version floors enforced at each network's heights,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
        "  a cached chain checked against the pins on load by hashing it,\n  and a locator, a work sum and a rollback to choose between chains with\n");

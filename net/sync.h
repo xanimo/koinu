@@ -79,10 +79,15 @@ int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
 int kw_sync_time_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t time, int64_t now);
 
-/* Dogecoin's strict chain id: at and above the merge-mining start height a
+/* The header-only version rules. Base version 3 from BIP66Height and 4 from
+   BIP65Height, per network, against version & 0xff since the chain id and the
+   auxpow flag sit above it.
+
+   Then dogecoin's strict chain id: at and above the merge-mining start height a
    header's version must carry this chain's id, and a legacy header (version 1,
-   or 2, which has no chain id) is refused up there. Mainnet only, since that is
-   the one start height pinned here. Returns 1 when the version is allowed. */
+   or 2, which has no chain id) is refused up there. That part is mainnet only,
+   since that is the one start height pinned here. Returns 1 when the version is
+   allowed. */
 int kw_sync_version_ok(const kw_chainparams *cp, uint32_t height, uint32_t version);
 
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
