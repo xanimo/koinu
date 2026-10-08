@@ -1,6 +1,128 @@
 # Changelog
 
 ## [Unreleased]
+## What's Changed
+* kwd: check the work of the chain it answers from, and weigh several peers
+  kwd answered confirmations from a chain it never checked the work of. It now
+  validates proof of work, weighs what several peers serve and refuses to answer
+  below the newest anchor.
+* test: say when the scrypt comparison was portable against itself
+* chainsel: a peer forking from genesis is not a peer to drop
+* psync: test the downloader, fsync before the rename, bound the span
+* headers: load the cache in chunks, and build records where they live
+* docs: cut the framing and the bold lead-ins
+* kwui: filter the journal address before printing it
+* build: make builds kw, kwd and kwui, which the README documents
+* docs: say who can talk to kwd's socket
+* gitignore the two new test binaries
+* kw: resolve the dns seeds for any command that needs a peer
+  Commands other than sync took --node or nothing, so the seeds the chain
+  parameters carry were only used by one path.
+* psync: give up when the fill stalls, not when it has a bad run
+* psync: a racing loser is not evidence of a stall
+* cf: say when a peer cannot serve filters, because none of them can
+* cf: answer a bounded query without filters, so kwd runs on the public network
+  Too few mainnet nodes serve BIP158 for a filter query to find one reliably, so a
+  bounded height range falls back to downloading the blocks.
+* kwd: a second signal exits, and the README carries measured latency
+* gitignore net_services
+* gitignore header caches and cfcheckpoints output
+* socks5: a domain bound address needs 255 bytes, not 16
+* psync: fill the thread array at started, not at i
+* keystore: fsync the seal, zero scratch on error paths, harden the build
+* mem: actually lock the seed, which the threat model has been claiming
+  kw_mlock had no callers anywhere in the tree while the threat model said the
+  seed was locked, so a machine with swap could write 64 bytes of seed to disk in
+  the clear.
+* kw: stop reading secrets through getline
+* kwui: the same secret handling as kw, not a second copy of the old one
+* psbt: refuse what it cannot represent instead of quietly resolving it
+* sync: bound the detour, and kwd's numeric arguments
+* fuzz: drive the merged-mining structure check
+* crypto: size by division and refuse a wrapped stream counter
+* gcs: widen a varint that truncates on i386
+* bip32: skip a rejected child rather than failing the branch
+* change: check the pubkey, and say when rotation runs out
+* utxo: tie the sscanf width to KW_SPK_MAX
+* mem: name the constant-time compare for memcmp, not equality
+* build: make tsan leave an unsanitized library behind it
+* kw: read secrets without stdio's buffer in between
+* psync: bound the segment, not just the run
+* cf: bound the unfiltered span by the span
+* psbt: refuse two signatures under one key
+* journal: make the name durable on the write that creates it
+* docs: say what is not locked, and which finalize checks
+* kw: filter a peer's reject reason before printing it
+* cfstore: range-check the index offset before it narrows
+* tx: say kw_tx_parse's limits are the wallet's, not consensus
+* keystore: wipe the derived key when the kdf fails
+* mem: count the page locks so one secret cannot unlock another
+* bip39: seed from the words, not from the spacing
+* base58: wipe the decoded digits on every return
+* bip32: refuse the extended keys BIP32 calls invalid
+* bip32: skip to the next index when a public child is invalid
+* spv: an outpoint is not a payment unless it pays the watched script
+  Breaking for callers of kw_block_find_outpoint, which now takes the
+  scriptPubKey being waited on: an outpoint alone says where a payment sits and
+  not who it pays, so a payer could mine an output of their own at TXID:0 and
+  hand that outpoint to whoever was waiting to be paid.
+* psbt: sign only what the coin being spent is locked to
+  Breaking for psbt sign and cosign, which now need --utxo: the signature was
+  computed over the script the psbt carried rather than the one the coin being
+  spent is locked to.
+* psbt: verify a counterparty's signature before combining it
+* kw: check an --input amount against the tracked set
+* kwui: count every address the scan watched, not kwui's own gap
+* kw: bound an amount, and pay for the outputs the transaction has
+* utxo: write the set privately and whole, or not at all
+* spv: refuse the shapes a merkle root cannot tell apart
+* net: bound every wait for a message, not just the headers one
+* cfstore: follow the chain when it moves under the cache
+* tx: strip OP_CODESEPARATOR from the scriptCode, as consensus does
+  A signature over a scriptCode holding one was computed over bytes the network
+  does not hash, so the spend was rejected with NULLFAIL. Nothing in the wallet
+  produces such a script, and a counterparty's can.
+* bip32: loop over indices, and bound the one a path can name
+* kw: lock the keys the seed turns into, not only the seed
+* chainsel: a failed single-peer sync leaves nothing in the store
+* sync: a header's timestamp has to sit where the chain allows
+* sync: no network accepts a target easier than its powLimit
+* sync: read the header's own version, and refuse a parent with an auxpow
+* headers: check the cached tip's hash, and let kwd check its anchors
+* chainsel: bound the comparison by what the peers will serve
+* build: make the hardening reach the link, and the ubsan gate fail
+* kwd: exit on the first signal, refuse a request with no since height
+* docs: say that peer choice is the weakest link, and pin the checkout action
+* fuzz: cover the version, block, filter, cache and keystore parsers
+* cfstore: bound every offset the index hands back, and the feefilter shift
+* peer: bound one exchange, since a feefilter never reaches a caller
+* kw: cosign only a script that names the signing key
+* sync: follow a reorg on one peer instead of wedging the cache
+* mem: no core dumps, and write the mnemonic without stdio
+* scan: an address that was paid stays used, even once it is spent
+* kw: ask the node whether it holds the transaction, rather than reading silence
+  A node has no acknowledgement for a transaction it accepted, so send asks for
+  it back after broadcasting and exits 4 when the node does not hold it.
+* socks5: a fresh credential pair per connection, so tor isolates the streams
+  Without credentials every connection could share one circuit and one exit,
+  which is the comparison the threat model relies on above the newest anchor.
+* kw: one spelling per outpoint, and no empty passphrase
+* utxo: track a coinbase, and refuse to call an immature one spendable
+  A coinbase output under 60 confirmations is no longer selected, and send exits
+  5 when that is the only thing left to spend.
+* kw: --validate-pow syncs the chain it checks, on every command
+  The flag checked whatever headers happened to be cached.
+* docs: say what the tree does, and derive the user agent from the version
+* fuzz: eight stateful harnesses over the network flows
+* cfstore: fsync the filters before the sidecar vouches for them
+* test: count tor's circuits instead of trusting the credentials
+* sync: demand the base version BIP66 and BIP65 made mandatory
+  A chain of base version 2 headers was a valid chain to this wallet all the way
+  to the tip. The activation heights come from dogecoin's chainparams.cpp.
+* sync: rehash every cached record above the newest anchor
+  A KWH2 cache stores each header's hash beside it and the load trusted it, so
+  edited raw bytes with consistent stored hashes survived: above the newest
+  anchor that is what the timestamp, retarget and work rules read.
 
 ## [0.2.5] - 2026-09-15
 ## What's Changed
