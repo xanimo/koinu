@@ -22,9 +22,10 @@ extern int kw_net_verbose;
    from the store tip, or from (cp)'s genesis when the store is empty, append
    what comes back, and repeat until the peer has no more. When seeding from an
    empty store, the first header must link to genesis or the sync is refused.
-   Answers pings; ignores other messages. Returns the number of headers
-   appended, or -1 on a socket error, an AuxPoW header, or one that does not
-   link. */
+   Answers pings; ignores other messages. An AuxPoW header is accepted, with its
+   merged-mining blob skipped rather than validated; kw_sync_headers_checked is
+   what checks work. Returns the number of headers appended, or -1 on a socket
+   error or a header that does not link. */
 long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp);
 
 /* The same, handing every header at (from_height) or above to (q) as it arrives, so

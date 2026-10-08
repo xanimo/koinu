@@ -21,6 +21,7 @@
 #include "hex.h"
 #include "ec.h"
 #include "mem.h"
+#include "kw_version.h"
 #include "peer.h"
 #include "sync.h"
 #include "psync.h"
@@ -47,7 +48,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define KW_VERSION "0.2.5"
 
 static void usage(void)
 {
@@ -298,7 +298,7 @@ static int derive_address(const kw_chainparams *cp, const uint8_t seed[64],
     int ok = kw_bip44_derive(&master, cp->bip44_coin, account, change, index, &key);
     if (ok) {
         uint8_t pub[33], h160[20];
-        kw_bip32_pubkey(&key, pub);
+        if (!kw_bip32_pubkey(&key, pub)) return 0;
         kw_hash160(pub, 33, h160);
         ok = kw_address_p2pkh(pub, cp->p2pkh, addr, addrcap) != 0;
     }
@@ -1060,7 +1060,11 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 fprintf(stderr, "kw: cannot derive input %d\n", i); goto out;
             }
             uint8_t pub[33], h[20];
-            kw_bip32_pubkey(&inkeys[nin], pub); kw_hash160(pub, 33, h);
+            if (!kw_bip32_pubkey(&inkeys[nin], pub)) {
+                fprintf(stderr, "kw: cannot derive the public key for input %d\n", i);
+                goto out;
+            }
+            kw_hash160(pub, 33, h);
             h160_to_spk(h, prevspk[nin]);
             if (!kw_tx_add_input(&tx, txid, vout)) { fprintf(stderr, "kw: too many inputs\n"); goto out; }
             total_in += amt; nin++;
@@ -1093,7 +1097,8 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             for (int i = 0; i < derive_n; i++) {
                 if (!kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &keymap[m])) continue;
                 uint8_t pub[33];
-                kw_bip32_pubkey(&keymap[m], pub); kw_hash160(pub, 33, h160map[m]);
+                if (!kw_bip32_pubkey(&keymap[m], pub)) continue;
+                kw_hash160(pub, 33, h160map[m]);
                 m++;
             }
 
@@ -1168,7 +1173,11 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             kw_bip32_key ck;
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, ci, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
             uint8_t cpub[33], ch[20];
-            kw_bip32_pubkey(&ck, cpub); kw_hash160(cpub, 33, ch);
+            if (!kw_bip32_pubkey(&ck, cpub)) {
+                fprintf(stderr, "kw: cannot derive the change public key\n");
+                goto out;
+            }
+            kw_hash160(cpub, 33, ch);
             h160_to_spk(ch, cspk); cl = 25;
             kw_address_p2pkh(cpub, cp->p2pkh, caddr, sizeof caddr);
             kw_secure_zero(&ck, sizeof ck);
@@ -1244,7 +1253,9 @@ out:
 
 /* Sweep an external key: decode its WIF, scan the chain for its one address,
    and spend every output it holds to --to, signed with that key. The key is not
-   added to the wallet; only the funds move. Compressed WIF only. */
+   added to the wallet; only the funds move. A compressed or an uncompressed WIF:
+   the signer emits whichever form the key's address was built from, since the
+   hash160 differs between the two. */
 /* Decode a network-checked WIF into (sk), setting (*compressed) from its
    trailing flag. Returns 1, or 0 with the reason printed. */
 static int wif_decode(const kw_chainparams *cp, const char *wif_arg, uint8_t sk[32], int *compressed)

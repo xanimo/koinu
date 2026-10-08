@@ -2,10 +2,11 @@
 
 ## Versioning
 
-`KW_VERSION` in `cli/kw.c` is the only place the version is written down:
+`KW_VERSION` in `include/kw_version.h` is the only place the version is written
+down. `kw --version` prints it and the p2p user agent is built from it:
 
 ```c
-#define KW_VERSION "0.2.3"
+#define KW_VERSION "0.2.5"
 ```
 
 `kw --version` prints it. A tag must name the same version the binary reports,
@@ -95,10 +96,12 @@ check the artifact rather than the flags:
 The Makefile probes each flag against the compiler and drops what it cannot
 take, so a toolchain without one builds quietly without it.
 
-CI runs check, asan and fuzz-asan on every push, on x86_64 gcc and clang, i386, and
-arm64. `make tsan` and `make fuzz` are not in CI and are run here. A release also wants a live check against a
-real node, since the offline suite has never caught a serialization bug on its
-own: sync headers, scan a funded address, and confirm an outpoint.
+CI runs `make check` across a matrix of x86_64 gcc, x86_64 clang, i386 and macos
+arm64, and `make asan` with `make fuzz-asan` in one ubuntu job with the default
+compiler. `make tsan` and `make fuzz` are not in CI and are run here. A release
+also wants a live check against a real node, since the offline suite has never
+caught a serialization bug on its own: sync headers, scan a funded address, and
+confirm an outpoint.
 
 ## Tagging
 

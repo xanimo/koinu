@@ -272,7 +272,9 @@ int kw_scrypt(const uint8_t *pass, size_t passlen,
               uint8_t *out, size_t outlen)
 {
     if (n < 2 || (n & (n - 1)) || r == 0 || p == 0 || !out || outlen == 0) return 0;
-    /* 128*r*n must not overflow, and neither must 128*r*p */
+    /* 128*r*n must not overflow, and neither must 128*r*p: r and p are bounded
+       below because on a 32-bit size_t both products wrap at r = p = 2^20, which
+       the only caller never asks for but a future one could */
     if (r > (1u << 20) || p > (1u << 20)) return 0;
     if (n > (uint64_t)SIZE_MAX / (128 * (uint64_t)r)) return 0;
 

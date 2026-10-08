@@ -87,6 +87,23 @@ auditable from this tree.
                                    test/test_keystore.c for round trip, wrong
                                    passphrase, and tamper rejection
 
+    crypto/siphash.c/.h            siphash-2-4 clean-room from the aumasson and
+                                   bernstein paper, which bip158 keys its
+                                   golomb-rice set on. checked in
+                                   test/test_siphash.c against the reference
+                                   vectors
+
+    crypto/sha2_hw.c               the sha-ni (x86) and armv8 crypto-extension
+                                   cores for sha-256, written here against the
+                                   intel sdm and the arm arm. gated on runtime
+                                   detection and a known-answer self-test before
+                                   either is used; both match the portable core
+                                   on every length test/test_sha2.c runs
+
+    crypto/psbt.c  crypto/psbt.h   bip174, the legacy field set, written here.
+                                   checked in test/test_psbt.c against all 43
+                                   psbts in the bip's own vector section
+
 ## vendored
 
     crypto/wordlist_en.h   the official bip39 english wordlist, 2048 words. the

@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
- * A thin, opinionated wrapper: compressed pubkeys only, deterministic (RFC 6979)
+ * A thin, opinionated wrapper: compressed pubkeys everywhere except the one
+ * uncompressed form a swept paper key needs, deterministic (RFC 6979)
  * low-S signatures, and the two tweak-adds BIP32 child derivation needs. The
  * heavy lifting is secp256k1's; this fixes the encodings and the failure mode. */
 

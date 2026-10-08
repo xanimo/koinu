@@ -220,7 +220,7 @@ int kw_peer_handshake(kw_peer *p, int32_t start_height)
     uint8_t nb[8];
     if (!kw_random_bytes(nb, sizeof nb)) return 0;
     for (int i = 0; i < 8; i++) v.nonce |= (uint64_t)nb[i] << (8 * i);
-    v.user_agent = "/koinu:0.1/";
+    v.user_agent = KW_USER_AGENT;
     v.start_height = start_height;
     v.relay = p->relay ? 1 : 0;        /* no tx relay unless the caller asked:
                                           a light client filters, and a broadcast

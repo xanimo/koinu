@@ -171,7 +171,7 @@ static int build_rows(const kw_chainparams *cp, const uint8_t seed[64], int gap,
             kw_bip32_key key;
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, change, (uint32_t)i, &key)) continue;
             uint8_t pub[33], h160[20], spk[25];
-            kw_bip32_pubkey(&key, pub);
+            if (!kw_bip32_pubkey(&key, pub)) { kw_secure_zero(&key, sizeof key); continue; }
             kw_hash160(pub, 33, h160);
             h160_to_spk(h160, spk);
             kw_secure_zero(&key, sizeof key);

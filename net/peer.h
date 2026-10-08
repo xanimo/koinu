@@ -13,6 +13,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "kw_version.h"
+
 #include "chainparams.h"
 
 typedef struct {
@@ -53,6 +55,10 @@ int  kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *ple
    the exchange is abandoned. A socket timeout only bounds one read, so a peer
    pinging faster than that holds a loop forever, and kwd serves one request at a
    time. net/sync.c had this bound and the other drivers did not. */
+/* What this wallet calls itself on the wire, built from the one place the version
+   is written down: the agent string said 0.1 for every release up to 0.2.5. */
+#define KW_USER_AGENT "/koinu:" KW_VERSION "/"
+
 #define KW_PEER_MAX_SKIP 256
 
 /* The longest one exchange may take, whatever arrives during it. SO_RCVTIMEO

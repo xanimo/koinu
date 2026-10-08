@@ -2,12 +2,14 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr
  *
- * The size estimate, the two rates, and the ceiling on a fee. Shared because
- * every front end that can sign has to apply the same ceiling: an over-large fee
- * is unrecoverable once the transaction confirms, so a path that skips the check
- * is a way to lose money that the other paths refuse. How a front end reports the
- * refusal is its own business, which is why this returns numbers and prints
- * nothing. */
+ * The size estimate, the two rates, and the ceiling on a fee. Shared because a
+ * front end that builds a whole transaction has to apply the same ceiling: an
+ * over-large fee is unrecoverable once the transaction confirms, so a path that
+ * skips the check is a way to lose money that the other paths refuse. kw sign,
+ * kw sweep and kwui's send all apply it; cosign and psbt sign cannot, since they
+ * produce one signature for a transaction somebody else built and never see what
+ * its inputs are worth. How a front end reports the refusal is its own business,
+ * which is why this returns numbers and prints nothing. */
 
 #ifndef KOINU_FEE_H
 #define KOINU_FEE_H

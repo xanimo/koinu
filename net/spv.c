@@ -59,8 +59,10 @@ static uint64_t rd_varint(const uint8_t *p, size_t len, size_t *off, int *bad)
     return v;
 }
 
-/* A block cannot hold more transactions than this and stay inside the frame limit;
-   the bound is here so a claimed count cannot ask for an arbitrary allocation. */
+/* An upper bound on the transaction count a block message may claim, so a claimed
+   count cannot ask for an arbitrary allocation before a single transaction has
+   been parsed. It is this wallet's bound rather than a consensus one: the frame
+   limit allows more, and a block holding more than this is refused here. */
 #define KW_BLOCK_MAX_TX (1u << 17)
 
 /* The first input of the first transaction: a coinbase spends nothing, so its
