@@ -54,6 +54,18 @@ static size_t mk_cfilter(uint8_t *out, const uint8_t bh[32], const uint8_t *f, s
 }
 
 /* the <path>.fh sidecar, written by hand: the tests need to damage it */
+/* match_range builds or extends the index as a side effect, which is the only
+   way a test reaches it: ensure_index is internal. */
+static int ensure_index_via_count(const char *path)
+{
+    kw_gcs_item it = { (const uint8_t *)"x", 1 };
+    uint32_t hts[4];
+    /* from height 2 on a one-record cache: the range walk builds the index first
+       and then finds the range past the tip, which is the cheapest way in */
+    long r = kw_cfstore_match_range(path, NULL, 1, 2, &it, 1, hts, 4);
+    return r >= 0;
+}
+
 static long file_size(const char *path)
 {
     struct stat st;
@@ -421,6 +433,45 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched,\n  an index offset past the end and a torn record refused, filter-header anchor enforced\n");
+    /* The sidecar vouches for a number of records, so the filters have to be on
+       disk before it says so: a crash between the two left a cache short of what
+       the sidecar promised, and the next sync appended after the torn bytes. And
+       the index is derived, so a refusal drops it rather than leaving a stale one
+       over whatever gets synced next. */
+    {
+        const char *sp = "test_cfstore_durable.tmp";
+        char idx[80], fh[80];
+        snprintf(idx, sizeof idx, "%s.idx", sp);
+        snprintf(fh, sizeof fh, "%s.fh", sp);
+        remove(sp); remove(idx); remove(fh);
+
+        uint8_t h1[32];
+        memset(h1, 0x55, 32);
+        uint8_t f1[2] = { 1, 0 };
+        if (!kw_cfstore_append(sp, h1, f1, sizeof f1)) {
+            fprintf(stderr, "FAIL: append\n"); return 1;
+        }
+        /* an index exists, the sidecar does not: the sync must refuse and take the
+           index with it */
+        if (!ensure_index_via_count(sp)) { fprintf(stderr, "FAIL: index\n"); return 1; }
+        if (file_size(idx) <= 0) { fprintf(stderr, "FAIL: no index built\n"); return 1; }
+
+        kw_headerstore ds; kw_headerstore_init(&ds);
+        uint8_t raw[80];
+        memset(raw, 0, 80); raw[0] = 1; raw[36] = 1;
+        kw_block_header dh;
+        kw_block_header_parse(raw, 80, &dh);
+        kw_headerstore_append(&ds, &dh);
+        if (kw_cfstore_sync(NULL, &ds, sp, 1) >= 0) {
+            fprintf(stderr, "FAIL: a cache with no sidecar was synced\n"); return 1;
+        }
+        kw_headerstore_free(&ds);
+        if (file_size(idx) >= 0) {
+            fprintf(stderr, "FAIL: the stale index was left behind\n"); return 1;
+        }
+        remove(sp); remove(idx); remove(fh);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar and a stale index dropped with it,\n  filter-header anchor enforced\n");
     return 0;
 }

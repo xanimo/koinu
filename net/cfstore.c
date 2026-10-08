@@ -7,6 +7,7 @@
 #include "sync.h"
 #include "sha2.h"
 
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -138,6 +139,19 @@ long kw_cfstore_count(const char *path)
     return n;
 }
 
+/* Push the cache to disk. The sidecar says "these many records are verified", so
+   it must not reach the disk describing records that have not: a crash between
+   the two leaves a cache whose tail is short of what the sidecar promises, and
+   the next sync then appends after torn bytes. */
+static int cache_sync_to_disk(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    int ok = fsync(fd) == 0;
+    close(fd);
+    return ok;
+}
+
 /* The size of the cache file, or -1. Every offset the index hands back is
    checked against it: the index is a file like any other, and an entry claiming
    an offset past the end used to be passed to truncate(), which grows a file
@@ -243,9 +257,16 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
     long fhc = 0;
     if (have > 0) {
         if (!fh_load(path, &fhc, chain, cbase, &have_base) || fhc < 0 || fhc > have) {
+            /* The index is derived, so it goes here rather than being left for the
+               user to trip over: deleting the cache and .fh on this advice while
+               keeping .idx left a stale index over new content. */
+            char ip[4200];
+            snprintf(ip, sizeof ip, "%s.idx", path);
+            remove(ip);
             fprintf(stderr, "kw: %s.fh is missing or does not match %s, so those filters "
-                            "cannot be tied to a verified chain; delete both and sync again\n",
-                    path, path);
+                            "cannot be tied to a verified chain; delete %s and %s.fh and "
+                            "sync again (the .idx index is rebuilt, and has been removed)\n",
+                    path, path, path, path);
             return -1;
         }
         if (fhc < have) {
@@ -295,6 +316,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                 uint8_t newtip[32];
                 if (!cache_truncate(path, agree) ||
                     !chain_over(path, agree, cbase, newtip) ||
+                    !cache_sync_to_disk(path) ||
                     !fh_save(path, (long)agree, newtip, cbase)) {
                     fprintf(stderr, "kw: cannot roll %s back to height %u\n",
                             path, base_height + (uint32_t)agree);
@@ -364,7 +386,10 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
 
             if (!kw_cfstore_append(path, bh, filt, flen)) { free(fh); return -1; }
         }
-        if (!fh_save(path, (long)s1, chain, cbase)) { free(fh); return -1; }
+        /* the filters first, then the sidecar that vouches for them */
+        if (!cache_sync_to_disk(path) || !fh_save(path, (long)s1, chain, cbase)) {
+            free(fh); return -1;
+        }
         if (kw_net_verbose) fprintf(stderr, "[cf] cached %zu/%zu filters\n", s1, s->count);
     }
     free(fh);
