@@ -178,6 +178,7 @@ int kw_sync_anchors_ok(const kw_headerstore *s, const kw_chainparams *cp,
                        uint32_t *bad_height)
 {
     if (!s || !cp) return 0;
+    uint32_t newest = 0;
     for (size_t i = 0; i < cp->ncheckpoints; i++) {
         uint32_t h = cp->checkpoints[i].height;
         if (h == 0 || h > s->count) continue;          /* genesis is not stored */
@@ -191,6 +192,30 @@ int kw_sync_anchors_ok(const kw_headerstore *s, const kw_chainparams *cp,
         if (!unhex_rev(cp->checkpoints[i].hash, want) ||
             memcmp(want, got, 32) != 0) {
             if (bad_height) *bad_height = h;
+            return 0;
+        }
+        if (h > newest) newest = h;
+    }
+
+    /* Above the newest anchor every record's hash is checked against its own
+       header. The link check on load only ties each stored hash to the next
+       record's prev, so a cache whose raw bytes were edited and whose stored
+       hashes were left consistent passes it, and up here the raw is what the
+       timestamp, retarget and work rules read: an edited nBits inflates the
+       cached chain's work and wins the comparison against a peer serving the
+       real one. Below the anchors nothing reads a raw header except this loop,
+       since every other use asks a peer for the block at a hash and a forged
+       hash has no block behind it.
+
+       The span is bounded by the anchor spacing, so this is the part of the
+       store where hashing is affordable: 60k records is 80ms without sha-ni,
+       against seven seconds for all 6.36M, which is what the stored hash
+       exists to avoid. */
+    for (size_t h = newest + 1; h <= s->count; h++) {
+        uint8_t got[32];
+        kw_hash256(s->h[h - 1].raw, KW_HEADER_LEN, got);
+        if (memcmp(got, s->h[h - 1].hash, 32) != 0) {
+            if (bad_height) *bad_height = (uint32_t)h;
             return 0;
         }
     }

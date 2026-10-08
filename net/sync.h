@@ -93,8 +93,11 @@ int kw_sync_version_ok(const kw_chainparams *cp, uint32_t height, uint32_t versi
 int kw_sync_bits_ok(const kw_headerstore *s, const kw_chainparams *cp,
                     uint32_t height, uint32_t bits);
 
-/* Every anchor at or below the store's tip must name the block the store holds.
-   Returns 1, or 0 with *bad_height set to the first anchor that does not match.
+/* Every anchor at or below the store's tip must name the block the store holds,
+   and every record above the newest anchor must hash to the hash stored beside
+   it. Returns 1, or 0 with *bad_height set to the height that does not match.
+   On a network that ships no anchors that is the whole store, which is its
+   length in hashes: there is nothing else to bind the cache to.
 
    For a cache read off disk this is the whole of the check. The sync verifies an
    anchor as the header passes, which does nothing for heights already present when it

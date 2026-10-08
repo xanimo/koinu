@@ -288,9 +288,11 @@ int kw_headerstore_load(kw_headerstore *s, const char *path)
     /* KWH2 stores each hash so a load does not rehash 6.36M headers, and the
        link check above only proves each record agrees with the next record's
        claim. The tip has no next record, and it is what every later locator,
-       delta sync and query is built from, so that one is hashed. An anchor check
-       by the caller hashes the raw at every pinned height; between them a record
-       whose stored hash is not its header's is caught where it matters. */
+       delta sync and query is built from, so that one is hashed. The caller's
+       anchor check hashes the raw at every pinned height and every record above
+       the newest anchor, which is where the timestamp, retarget and work rules
+       read raw bytes; below that a record is only ever used to ask a peer for a
+       block, and a forged hash has no block behind it. */
     if (ok && s->count) {
         kw_block_header *tip = &s->h[s->count - 1];
         uint8_t h[32];

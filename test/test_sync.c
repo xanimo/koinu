@@ -198,6 +198,35 @@ int main(void)
         anchored.ncheckpoints = 1;
         if (feed_two(&anchored) != -1) { fprintf(stderr, "FAIL: a chain ending below the last anchor was accepted\n"); return 1; }
 
+        /* A KWH2 cache carries each hash beside its header and the load trusts it,
+           so a record whose raw bytes were edited and whose stored hash was left
+           alone used to survive: the link check ties stored hashes to each other
+           and the anchors only cover their own heights. Above the newest anchor
+           the raw is what the retarget and work rules read. */
+        anchors[0].hash = b1disp;
+        anchored.checkpoints = anchors;
+        anchored.ncheckpoints = 1;                   /* anchor at height 1 only */
+
+        kw_headerstore t;
+        if (!kw_headerstore_init(&t)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+        uint8_t b2raw[80];
+        kw_test_unhex(B2_HDR, b2raw);
+        kw_block_header p1, p2;
+        kw_block_header_parse(b1, 80, &p1);
+        kw_block_header_parse(b2raw, 80, &p2);
+        if (!kw_headerstore_append(&t, &p1) || !kw_headerstore_append(&t, &p2)) {
+            fprintf(stderr, "FAIL: seeding the tamper store\n"); return 1;
+        }
+        uint32_t bad = 0;
+        if (!kw_sync_anchors_ok(&t, &anchored, &bad)) {
+            fprintf(stderr, "FAIL: the real chain was refused at %u\n", bad); return 1;
+        }
+        t.h[1].raw[72] ^= 0x01;                      /* its nBits, hash left alone */
+        if (kw_sync_anchors_ok(&t, &anchored, &bad) || bad != 2) {
+            fprintf(stderr, "FAIL: an edited header above the newest anchor passed (bad=%u)\n", bad);
+            return 1;
+        }
+        kw_headerstore_free(&t);
     }
 
 
@@ -466,6 +495,6 @@ int main(void)
            "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network, the chain id demanded above the merge-mining start, the\n  bip66 and bip65 base-version floors enforced at each network's heights,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
-       "  a cached chain checked against the pins on load by hashing it,\n  and a locator, a work sum and a rollback to choose between chains with\n");
+       "  a cached chain checked against the pins on load by hashing it and every\n  record above the newest anchor rehashed,\n  and a locator, a work sum and a rollback to choose between chains with\n");
     return 0;
 }
