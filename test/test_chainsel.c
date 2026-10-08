@@ -313,6 +313,47 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* One peer, and the chain it serves replaces the cached tip. The locator used
+       to carry only that tip, so after a reorg the peer answered from genesis,
+       the first header linked to nothing held, and the sync failed: with one
+       --node and --headers, every command stayed broken until the cache was
+       deleted by hand, and kwd failed every request and again at restart. */
+    {
+        uint8_t mine[2][80], theirs[3][80];
+        if (!build_chain(mine, 2, base.hash, EASY, 1100) ||
+            !build_chain(theirs, 3, base.hash, EASY, 1200))
+            { fprintf(stderr, "FAIL: could not mine the reorg forks\n"); return 1; }
+
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        kw_headerstore_append(&s, &base);
+        for (int i = 0; i < 2; i++) {
+            kw_block_header h;
+            kw_block_header_parse(mine[i], 80, &h);
+            kw_headerstore_append(&s, &h);
+        }
+        if (s.count != 3) { fprintf(stderr, "FAIL: cache setup\n"); return 1; }
+
+        kw_peer a;
+        if (!fake_peer(&a, &cp, theirs, 3, 1)) { fprintf(stderr, "FAIL: peer\n"); return 1; }
+        kw_peer *const one[1] = { &a };
+        kw_chainsel_result r;
+        long n = kw_sync_headers_best(one, 1, &s, &cp, 1, &r);
+        kw_peer_close(&a);
+
+        if (n < 0) { fprintf(stderr, "FAIL: a one-peer reorg failed the sync\n"); return 1; }
+        if (s.count != 4) {
+            fprintf(stderr, "FAIL: store holds %zu after the reorg, want 4\n", s.count);
+            return 1;
+        }
+        kw_block_header want;
+        kw_block_header_parse(theirs[2], 80, &want);
+        if (memcmp(s.h[s.count - 1].hash, want.hash, 32) != 0) {
+            fprintf(stderr, "FAIL: the tip is not the peer's\n"); return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
     /* An empty store, which is what every first run has: no cache, or a command
        like sweep that never keeps one. The peer's first header builds on genesis,
        and genesis is not a header the store ever holds, so resolving its parent
@@ -352,7 +393,7 @@ int main(void)
     }
 
     printf("chainsel ok: the heavier of two forks wins over the longer one, the cached\n"
-           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind, a span past the bound falls back\n  to one peer,\n"
+           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind, a span past the bound falls back\n  to one peer, a one-peer reorg is followed rather than wedging the cache,\n"
            "  and a first run with no cache syncs from genesis\n");
     return 0;
 }

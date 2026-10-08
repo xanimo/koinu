@@ -207,6 +207,52 @@ long kw_sync_headers(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp)
     return kw_sync_headers_checked(p, s, cp, NULL, 0);
 }
 
+/* The first header's prev hash, straight out of a headers payload: the count
+   varint, then an 80-byte header whose prev sits at offset 4. Read without
+   parsing the message, because the fork point has to be known before a single
+   header reaches the validator pool: the pool is fed during the parse, with the
+   heights the headers are about to take, and those heights change if the store
+   is rolled back afterwards. */
+static int peek_first_prev(const uint8_t *pl, size_t pn, uint8_t out[32])
+{
+    if (pn < 1) return 0;
+    size_t off = 0;
+    uint8_t t = pl[off++];
+    if (t >= 0xfd) {
+        int k = t == 0xfd ? 2 : t == 0xfe ? 4 : 8;
+        if (off + (size_t)k > pn) return 0;
+        off += (size_t)k;
+    }
+    if (off + 36 > pn) return 0;
+    memcpy(out, pl + off + 4, 32);
+    return 1;
+}
+
+/* The newest anchor at or below the store's tip. A fork below one is not a fork
+   this release will follow. */
+static uint32_t anchor_floor(const kw_headerstore *s, const kw_chainparams *cp)
+{
+    uint32_t floor = 0;
+    for (size_t i = 0; i < cp->ncheckpoints; i++) {
+        uint32_t h = cp->checkpoints[i].height;
+        if (h && h <= s->count && h > floor) floor = h;
+    }
+    return floor;
+}
+
+/* The height (prev) sits at in the store, 0 for genesis, or -1 when it is not a
+   block this store holds at or above (floor). */
+static long link_height(const kw_headerstore *s, const uint8_t prev[32],
+                        const uint8_t genesis[32], uint32_t floor)
+{
+    if (memcmp(prev, genesis, 32) == 0) return 0;
+    for (size_t h = s->count; h > 0; h--) {
+        if (memcmp(s->h[h - 1].hash, prev, 32) == 0) return (long)h;
+        if (h - 1 <= (size_t)floor) break;
+    }
+    return -1;
+}
+
 long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams *cp,
                              kw_powq *q, uint32_t from_height)
 {
@@ -219,6 +265,14 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
     if (!batch) return -1;
     const int64_t now = (int64_t)time(NULL);
 
+    /* set once the peer's chain forks below our tip: what we dropped, so it can
+       go back when the replacement does not outweigh it */
+    long fork_at = -1;
+    kw_block_header *dropped = NULL;
+    size_t ndropped = 0;
+    kw_u256 dropped_work;
+    kw_u256_zero(&dropped_work);
+
     /* Anchors are the only thing that says this is the chain rather than a chain. A
        peer can link to genesis, satisfy the retarget rule and carry no work at all:
        the early heights inherit genesis nBits, so three headers with a zero nonce
@@ -228,16 +282,23 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
 
     long total = 0;
     for (;;) {
-        const kw_block_header *tip = kw_headerstore_tip(s);
-        uint8_t loc[32];
-        if (tip) memcpy(loc, tip->hash, 32);
-        else     memcpy(loc, genesis, 32);
+        /* The full locator, not just the tip. After a reorg the peer does not
+           have our tip on its chain, and a one-hash locator makes it answer from
+           genesis: the first header then links to nothing we hold, the append
+           refuses, and a single-peer cache stays wedged until it is deleted by
+           hand. The back-off gives the peer a hash it still recognises. */
+        uint8_t loc[KW_SYNC_LOCATOR_MAX][32];
+        size_t nloc = kw_sync_locator(s, cp, loc, KW_SYNC_LOCATOR_MAX);
+        if (!nloc) {
+            memcpy(loc[0], genesis, 32);
+            nloc = 1;
+        }
 
-        uint8_t body[128];
+        uint8_t body[16 + KW_SYNC_LOCATOR_MAX * 32 + 32];
         size_t bn = kw_msg_getheaders_build(KW_PROTOCOL_VERSION,
-                                            (const uint8_t (*)[32])loc, 1, NULL,
+                                            (const uint8_t (*)[32])loc, nloc, NULL,
                                             body, sizeof body);
-        if (!bn || !kw_peer_send(p, "getheaders", body, bn)) { free(batch); return -1; }
+        if (!bn || !kw_peer_send(p, "getheaders", body, bn)) { goto fail; }
 
         /* Read past anything that is not a headers message, answering pings. The
            socket timeout stops a silent peer, but a peer that sends one
@@ -255,20 +316,47 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                 break;
             }
         }
-        if (!got) { free(batch); return -1; }
+        if (!got) { goto fail; }
+
+        /* Where this batch attaches. A peer answering a locator can legitimately
+           start below our tip, which is what a reorganisation looks like: drop
+           what we hold above that point rather than refusing the batch. */
+        uint8_t first_prev[32];
+        /* An empty message means the peer has nothing after our tip and carries
+           no header to attach, so the parse below ends the loop instead. */
+        long at = peek_first_prev(pl, pn, first_prev)
+                      ? link_height(s, first_prev, genesis, anchor_floor(s, cp))
+                      : (long)s->count;
+        if (at < 0) { goto fail; }      /* builds on nothing we hold */
+        if ((size_t)at < s->count) {
+            /* A reorganisation is only one if what replaces the tail is heavier.
+               Dropping first and appending after would let a single peer shorten
+               the chain for free, which is what the work comparison exists to
+               stop, so the tail is kept until the replacement has earned it. */
+            if (fork_at < 0) {
+                ndropped = s->count - (size_t)at;
+                dropped = (kw_block_header *)malloc(ndropped * sizeof *dropped);
+                if (!dropped) { goto fail; }
+                memcpy(dropped, s->h + at, ndropped * sizeof *dropped);
+                kw_u256_zero(&dropped_work);
+                fork_at = at;                     /* so the exit path restores it */
+                if (!kw_sync_chainwork(s, (uint32_t)at, (uint32_t)s->count, &dropped_work)) goto fail;
+            }
+            if (kw_net_verbose)
+                fprintf(stderr, "[headers] a fork at %ld, %zu header(s) of ours above it\n",
+                        at, s->count - (size_t)at);
+            kw_headerstore_truncate(s, (uint32_t)at);
+            cpi = cp_from(cp, (uint32_t)s->count + 1);
+        }
 
         size_t nout = 0;
         /* the height the first header of this message will take, so the callback can
            tell what is above the anchor and what is already pinned by one */
         struct feed f = { q, from_height, (uint32_t)s->count + 1, 0 };
         if (kw_msg_headers_parse_cb(pl, pn, batch, KW_MAX_HEADERS, &nout,
-                                    q ? on_header : NULL, &f) != 1) { free(batch); return -1; }
-        if (f.stopped) { free(batch); return -1; }
+                                    q ? on_header : NULL, &f) != 1) { goto fail; }
+        if (f.stopped) { goto fail; }
         if (nout == 0) break;                    /* peer has nothing after our tip */
-
-        /* seeding from empty: the first header must build on genesis */
-        if (!kw_headerstore_tip(s) &&
-            memcmp(kw_block_header_prev(&batch[0]), genesis, 32) != 0) { free(batch); return -1; }
 
         for (size_t i = 0; i < nout; i++) {
             /* The difficulty a header claims has to be the one the chain demands of
@@ -283,22 +371,19 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                     if (kw_net_verbose)
                         fprintf(stderr, "[headers] %u is not the block this release "
                                         "pins at that height\n", height);
-                    free(batch);
-                    return -1;
+                    goto fail;
                 }
                 cpi++;
             }
             if (!kw_sync_bits_ok(s, cp, height, kw_header_bits(batch[i].raw))) {
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] %u carries the wrong difficulty\n", height);
-                free(batch);
-                return -1;
+                goto fail;
             }
             if (!kw_sync_version_ok(cp, height, kw_header_version(batch[i].raw))) {
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] %u does not say it belongs to this chain\n", height);
-                free(batch);
-                return -1;
+                goto fail;
             }
             /* The retarget rule is derived from these timestamps, so a chain that
                can write them freely writes its own difficulty. */
@@ -306,16 +391,13 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] %u is timestamped outside what the "
                                     "chain before it allows\n", height);
-                free(batch);
-                return -1;
+                goto fail;
             }
-            if (!kw_headerstore_append(s, &batch[i])) { free(batch); return -1; }
+            if (!kw_headerstore_append(s, &batch[i])) { goto fail; }
             total++;
         }
         if (kw_net_verbose) fprintf(stderr, "[headers] %ld synced\n", total);
     }
-
-    free(batch);
 
     /* A chain that stops below the newest anchor is not this chain. Without this a
        short fabricated one never reaches a checkpoint to be caught by, which is
@@ -326,8 +408,37 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
             if (kw_net_verbose)
                 fprintf(stderr, "[headers] the peer's chain ends at %zu, below the %u "
                                 "this release pins\n", s->count, last);
-            return -1;
+            goto fail;
         }
     }
+    if (fork_at >= 0) {
+        kw_u256 gained;
+        kw_u256_zero(&gained);
+        int heavier = kw_sync_chainwork(s, (uint32_t)fork_at, (uint32_t)s->count, &gained) &&
+                      kw_u256_cmp(&gained, &dropped_work) > 0;
+        if (!heavier) {
+            if (kw_net_verbose)
+                fprintf(stderr, "[headers] the fork at %ld carries no more work than the "
+                                "%zu header(s) it would replace; keeping ours\n",
+                        fork_at, ndropped);
+            goto fail;
+        }
+        free(dropped);
+        dropped = NULL;
+        fork_at = -1;
+    }
+    free(batch);
     return total;
+
+fail:
+    /* one exit: whatever went wrong, a tail dropped for a fork that never proved
+       itself goes back, since the caller's store is not this function's to shorten */
+    if (fork_at >= 0) {
+        kw_headerstore_truncate(s, (uint32_t)fork_at);
+        for (size_t i = 0; i < ndropped; i++)
+            if (!kw_headerstore_append(s, &dropped[i])) break;
+        free(dropped);
+    }
+    free(batch);
+    return -1;
 }
