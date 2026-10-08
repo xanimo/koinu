@@ -42,6 +42,12 @@ selects inputs from that set and builds the transaction. send broadcasts it.
     kw sign --keystore w.ks --to DEST:100
     kw send --tx @tx.hex --node NODE          decodes it and asks first
 
+send asks the node for its mempool afterwards and looks for the transaction in
+what comes back, since a node acknowledges nothing it accepts: exit 0 and
+"broadcast" mean the node listed it, exit 4 and "unknown" mean no reject arrived
+and it did not list it, which is what an orphan or a repeat of something already
+rejected looks like, and exit 1 means a reject with the node's reason.
+
 the fee defaults to the peer's advertised relay floor, captured during scan;
 --feerate sets a rate and --fee an exact amount. change below the dust limit
 goes to the fee instead of an output.

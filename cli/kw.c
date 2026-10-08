@@ -1712,15 +1712,63 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
     if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); return 1; }
 
     int rc = 1;
+    /* ask for relay, or the node will not serve the transaction back and there is
+       no acknowledgement to be had */
+    p.relay = 1;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     if (!kw_peer_send(&p, "tx", raw, rawlen)) { fprintf(stderr, "kw: send failed\n"); goto out; }
 
-    /* p2p has no positive accept ack: a node never echoes a tx back to its
-       sender. watch for a reject; going quiet means it was relayed. */
+    /* p2p has no positive accept ack, and silence is not acceptance: core sends no
+       reject for an orphan, nor for a transaction already in recentRejects, so
+       both looked like a broadcast. BIP35 is the probe that works: a node serves a
+       mempool transaction only to a peer that asked for the mempool, and answers
+       with an inv of what it holds. Our txid in that inv is the acknowledgement
+       the protocol otherwise lacks; nothing matching is reported as unknown. */
+    uint8_t txint[32];
+    for (int i = 0; i < 32; i++) txint[i] = txid[i];
+    if (!kw_peer_send(&p, "mempool", NULL, 0)) {
+        fprintf(stderr, "kw: could not ask the node what it holds\n");
+        goto out;
+    }
+
     for (;;) {
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
         int r = kw_peer_recv(&p, cmd, &pl, &pn);
-        if (r != 1) { printf("broadcast: %s (no reject; confirm with kw outpoint)\n", txidhex); rc = 0; break; }
+        if (r != 1) {
+            printf("unknown: %s (no reject, and the node does not list it in its "
+                   "mempool; an orphan or a repeat looks like this)\n", txidhex);
+            rc = 4;
+            break;
+        }
+        if (!strcmp(cmd, "ping")) { kw_peer_send(&p, "pong", pl, pn); continue; }
+        if (!strcmp(cmd, "inv")) {
+            /* count, then (4-byte type, 32-byte hash) each */
+            size_t o = 0;
+            uint64_t n = 0;
+            if (o < pn) {
+                uint8_t t = pl[o++];
+                if (t < 0xfd) n = t;
+                else {
+                    int w = t == 0xfd ? 2 : t == 0xfe ? 4 : 8;
+                    if (o + (size_t)w <= pn) {
+                        for (int i = 0; i < w; i++) n |= (uint64_t)pl[o + i] << (8 * i);
+                        o += (size_t)w;
+                    }
+                }
+            }
+            int found = 0;
+            for (uint64_t i = 0; i < n && o + 36 <= pn && !found; i++, o += 36) {
+                uint32_t type = (uint32_t)pl[o] | (uint32_t)pl[o + 1] << 8 |
+                                (uint32_t)pl[o + 2] << 16 | (uint32_t)pl[o + 3] << 24;
+                if (type == KW_INV_MSG_TX && memcmp(pl + o + 4, txint, 32) == 0) found = 1;
+            }
+            if (found) {
+                printf("broadcast: %s (the node lists it in its mempool)\n", txidhex);
+                rc = 0;
+                break;
+            }
+            continue;
+        }
         if (!strcmp(cmd, "ping")) { kw_peer_send(&p, "pong", pl, pn); continue; }
         if (!strcmp(cmd, "reject")) {
             char reason[128] = "";

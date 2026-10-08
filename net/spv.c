@@ -33,6 +33,15 @@ size_t kw_msg_getdata_blocks_build(const uint8_t (*hashes)[32], size_t n,
     return w.ok ? w.len : 0;
 }
 
+size_t kw_msg_getdata_txs_build(const uint8_t (*hashes)[32], size_t n,
+                                uint8_t *out, size_t outcap)
+{
+    W w = { out, outcap, 0, 1 };
+    w_varint(&w, n);
+    for (size_t i = 0; i < n; i++) { w_le32(&w, KW_INV_MSG_TX); w_bytes(&w, hashes[i], 32); }
+    return w.ok ? w.len : 0;
+}
+
 /* ── block scan ──────────────────────────────────────────────── */
 static uint64_t rd_varint(const uint8_t *p, size_t len, size_t *off, int *bad)
 {

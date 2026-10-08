@@ -17,12 +17,20 @@
 #include "headers.h"
 #include "utxo.h"
 
+#define KW_INV_MSG_TX    1
 #define KW_INV_MSG_BLOCK 2
 
 /* Build a getdata requesting full blocks: an inv count, then a (type, hash) each
    with type MSG_BLOCK. Hashes are internal byte order. Returns length or 0. */
 size_t kw_msg_getdata_blocks_build(const uint8_t (*hashes)[32], size_t n,
                                    uint8_t *out, size_t outcap);
+
+/* The same, for transactions. A node has no positive acknowledgement for a tx it
+   accepted, but it will serve one it holds: asking for it back is the only way to
+   tell a relayed transaction from one that was dropped without a reject, which is
+   what an orphan and a repeat of something already rejected both look like. */
+size_t kw_msg_getdata_txs_build(const uint8_t (*hashes)[32], size_t n,
+                                uint8_t *out, size_t outcap);
 
 /* Scan a block message (80-byte header, tx count, then the transactions) into
    (us), applying every transaction at (height). Returns 1, or 0 if malformed. */

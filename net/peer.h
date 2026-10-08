@@ -25,6 +25,7 @@ typedef struct {
     uint64_t peer_services;              /* BIP159 service bits from its version */
     int64_t  peer_feerate;               /* last BIP133 feefilter, koinu/kB, 0 if none */
     const kw_chainparams *cp;            /* the network connected to; NULL from kw_peer_from_fd */
+    int      relay;                      /* advertise tx relay in the version */
 } kw_peer;
 
 /* Wrap an already-connected fd (used by tests over a socketpair). Returns 1. */
@@ -64,6 +65,10 @@ int  kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *ple
    KW_PEER_MAX_SKIP others. Returns 1 with (payload)/(plen) set, 0 otherwise. */
 int  kw_peer_wait(kw_peer *p, const char *want, const uint8_t **payload, size_t *plen);
 
+/* Set (relay) before the handshake to advertise tx relay. A light client asks for
+   none, which is what stops a node flooding it with tx invs, and a node then
+   refuses to serve a transaction back even from its own mempool: a broadcast
+   that wants an acknowledgement has to ask for relay first. */
 /* Send version, exchange verack (answering any ping), recording the peer's
    version and advertised height. Returns 1 once verack is received. */
 int  kw_peer_handshake(kw_peer *p, int32_t start_height);

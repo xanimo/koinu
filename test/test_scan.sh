@@ -156,6 +156,33 @@ grep -q "$SPK4" "$D/v2" || {
     echo "FAIL: the payment to index 4 was missed with a spent index 2" >&2
     cat "$D/v2" >&2; exit 1; }
 
+# kw send: a node has no positive ack for a transaction, and silence is not one.
+# A good transaction is served back, so the send reports it; an orphan is not held
+# by the node, gets no reject either, and used to report as broadcast.
+./kw --regtest sign $K2 --utxos "$D/v2" --to "$($C getnewaddress):1" 2>/dev/null \
+    | awk '/^raw/{print $2}' > "$D/good.hex"
+if [ -s "$D/good.hex" ]; then
+    SRC=0
+    ./kw --regtest send --tx "@$D/good.hex" --node "127.0.0.1:$P2P" --yes > "$D/send.out" 2>&1 || SRC=$?
+    grep -q "^broadcast:" "$D/send.out" || {
+        echo "FAIL: a relayed transaction was not reported as broadcast" >&2
+        cat "$D/send.out" >&2; exit 1; }
+    [ "$SRC" -eq 0 ] || { echo "FAIL: send exit $SRC for a relayed transaction" >&2; exit 1; }
+    $C generatetoaddress 1 "$MINE" >/dev/null
+fi
+
+# an orphan: an input no node has ever seen
+ORPHAN=01000000019999999999999999999999999999999999999999999999999999999999999999000000006a47304402200000000000000000000000000000000000000000000000000000000000000001022000000000000000000000000000000000000000000000000000000000000000010121027e624356fe4dcd39c6d47f00002e5e1da5986c10a3f0401bb2acce19ed50f8ccffffffff0100e1f505000000001976a914000000000000000000000000000000000000000088ac00000000
+printf '%s\n' "$ORPHAN" > "$D/orphan.hex"
+ORC=0
+./kw --regtest send --tx "@$D/orphan.hex" --node "127.0.0.1:$P2P" --yes > "$D/orph.out" 2>&1 || ORC=$?
+grep -q "^unknown:" "$D/orph.out" || {
+    echo "FAIL: an orphan was not reported as unknown" >&2
+    cat "$D/orph.out" >&2; exit 1; }
+[ "$ORC" -ne 0 ] || { echo "FAIL: send exited 0 for a transaction the node does not hold" >&2; exit 1; }
+
 echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
 echo "  journaled with heights, a rescan adds nothing, a later payment appends, and"
-echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable"
+echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable,"
+echo "  a spent address still counts as used, and send tells a relayed transaction"
+echo "  from one the node does not hold"

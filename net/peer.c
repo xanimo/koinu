@@ -222,7 +222,9 @@ int kw_peer_handshake(kw_peer *p, int32_t start_height)
     for (int i = 0; i < 8; i++) v.nonce |= (uint64_t)nb[i] << (8 * i);
     v.user_agent = "/koinu:0.1/";
     v.start_height = start_height;
-    v.relay = 0;                       /* no tx relay: a light client filters */
+    v.relay = p->relay ? 1 : 0;        /* no tx relay unless the caller asked:
+                                          a light client filters, and a broadcast
+                                          needs the node willing to serve it back */
 
     uint8_t body[256];
     size_t bl = kw_msg_version_build(&v, body, sizeof body);
