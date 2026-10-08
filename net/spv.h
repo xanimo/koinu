@@ -27,7 +27,7 @@ size_t kw_msg_getdata_blocks_build(const uint8_t (*hashes)[32], size_t n,
 /* Scan a block message (80-byte header, tx count, then the transactions) into
    (us), applying every transaction at (height). Returns 1, or 0 if malformed. */
 int kw_block_scan(const uint8_t *msg, size_t len,
-                  kw_utxoset *us, const kw_watchset *ws, uint32_t height);
+                  kw_utxoset *us, kw_watchset *ws, uint32_t height);
 
 /* 1 if the transactions in (msg) hash to the merkle root its own header carries.
    Without this a peer serves a genuine header, which is bound to the checked chain by
@@ -52,7 +52,7 @@ int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
 /* Download one block by hash over (p), verify it matches, and scan it into (us)
    at (height). Returns 1 on success, 0 on error. Shared by both backends. */
 int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
-                       kw_utxoset *us, const kw_watchset *ws, uint32_t height);
+                       kw_utxoset *us, kw_watchset *ws, uint32_t height);
 
 /* Whether a block creates or spends one specific outpoint (txid,vout). */
 typedef struct { int created; uint64_t created_value; int spent; } kw_outpoint_status;
@@ -73,6 +73,6 @@ int kw_block_find_outpoint(const uint8_t *msg, size_t len,
    tag each UTXO. Verifies each returned block matches the requested hash.
    Returns the number of blocks scanned, or -1 on error. */
 long kw_spv_sync_blocks(kw_peer *p, const kw_headerstore *s,
-                        kw_utxoset *us, const kw_watchset *ws, uint32_t base_height);
+                        kw_utxoset *us, kw_watchset *ws, uint32_t base_height);
 
 #endif /* KOINU_SPV_H */

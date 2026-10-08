@@ -157,7 +157,7 @@ static void warn_no_filters(const kw_peer *p)
 }
 
 long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
-                kw_utxoset *us, const kw_watchset *ws, uint32_t base_height)
+                kw_utxoset *us, kw_watchset *ws, uint32_t base_height)
 {
     if (s->count == 0) return 0;
     warn_no_filters(p);
@@ -259,7 +259,7 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
 }
 
 long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
-                       kw_utxoset *us, const kw_watchset *ws, uint32_t base_height,
+                       kw_utxoset *us, kw_watchset *ws, uint32_t base_height,
                        const char *filters_path)
 {
     if (kw_cfstore_sync(p, s, filters_path, base_height) < 0) return -1;

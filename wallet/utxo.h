@@ -15,13 +15,21 @@
 #define KW_SPK_MAX 64        /* p2pkh is 25, p2sh 23; a watched script fits here */
 
 /* ── watch set ───────────────────────────────────────────────── */
-typedef struct { uint8_t spk[KW_SPK_MAX]; size_t len; } kw_watch;
+/* (seen) is set the first time an output pays this script. bip44 counts an
+   address as used once it has ever appeared on chain, and the unspent set
+   cannot answer that: an address paid and then spent from is absent from it and
+   reads as fresh, which stopped the gap walk early and under-reported a
+   balance. */
+typedef struct { uint8_t spk[KW_SPK_MAX]; size_t len; int seen; } kw_watch;
 typedef struct { kw_watch *w; size_t count, cap; } kw_watchset;
 
 int  kw_watchset_init(kw_watchset *ws);
 /* Add a scriptPubKey to watch. Returns 1, or 0 if too long or out of memory. */
 int  kw_watchset_add(kw_watchset *ws, const uint8_t *spk, size_t len);
 int  kw_watchset_has(const kw_watchset *ws, const uint8_t *spk, size_t len);
+
+/* The index of (spk) in the set, or -1. Used by the scan to mark it seen. */
+long kw_watchset_find(const kw_watchset *ws, const uint8_t *spk, size_t len);
 void kw_watchset_free(kw_watchset *ws);
 
 /* ── UTXO set ────────────────────────────────────────────────── */
@@ -67,7 +75,7 @@ void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent);
 
 /* Apply one transaction at (height): remove UTXOs it spends, add outputs paying
    a watched script. Returns 1, or 0 if the transaction is malformed. */
-int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,
+int kw_utxoset_apply_tx(kw_utxoset *us, kw_watchset *ws,
                         const uint8_t *rawtx, size_t len, uint32_t height);
 
 #endif /* KOINU_UTXO_H */

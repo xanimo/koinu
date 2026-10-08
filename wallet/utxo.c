@@ -37,6 +37,14 @@ int kw_watchset_add(kw_watchset *ws, const uint8_t *spk, size_t len)
     return 1;
 }
 
+long kw_watchset_find(const kw_watchset *ws, const uint8_t *spk, size_t len)
+{
+    if (!ws || !spk) return -1;
+    for (size_t i = 0; i < ws->count; i++)
+        if (ws->w[i].len == len && memcmp(ws->w[i].spk, spk, len) == 0) return (long)i;
+    return -1;
+}
+
 int kw_watchset_has(const kw_watchset *ws, const uint8_t *spk, size_t len)
 {
     for (size_t i = 0; i < ws->count; i++)
@@ -125,11 +133,16 @@ static void on_output(void *vc, const uint8_t txid[32], uint32_t index,
                       uint64_t value, const uint8_t *spk, size_t spklen)
 {
     struct apply_ctx *c = (struct apply_ctx *)vc;
-    if (spklen <= KW_SPK_MAX && kw_watchset_has(c->ws, spk, spklen))
-        if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen)) c->ok = 0;
+    if (spklen > KW_SPK_MAX) return;
+    long at = kw_watchset_find(c->ws, spk, spklen);
+    if (at < 0) return;
+    /* marked before the add, and never cleared by a later spend: this is what
+       "used" means to the gap rule */
+    c->ws->w[at].seen = 1;
+    if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen)) c->ok = 0;
 }
 
-int kw_utxoset_apply_tx(kw_utxoset *us, const kw_watchset *ws,
+int kw_utxoset_apply_tx(kw_utxoset *us, kw_watchset *ws,
                         const uint8_t *rawtx, size_t len, uint32_t height)
 {
     struct apply_ctx c = { us, ws, height, 1 };

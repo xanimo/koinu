@@ -836,25 +836,28 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
                 kw_watchset_add(&ws, a->spk, 25);
                 memcpy(h160map[m], a->h160, 20); idxmap[m] = i; m++;
             }
+        /* the watchset's order is the order they went in, so a seen flag maps
+           back to the index that produced it */
 
         if (have_us) kw_utxoset_free(&us);
         kw_utxoset_init(&us); have_us = 1;
         long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
                 : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
                 : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
-        kw_watchset_free(&ws);
-        if (nb < 0) { free(h160map); free(idxmap);
-            fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
-            kw_headerstore_free(&s); goto done; }
-
+        /* The highest index ever paid, not the highest still holding a coin. An
+           address paid and then spent from is absent from the unspent set and
+           read as fresh, so the gap walk stopped short of coins handed out past
+           it: bip44 counts an address as used once it has appeared on chain.
+           Read before the watchset goes, since the flags live in it. */
         int maxidx = -1;
-        for (size_t u = 0; u < us.count; u++) {
-            const kw_utxo *e = &us.u[u];
-            if (e->spklen != 25) continue;
-            for (int t = 0; t < m; t++)
-                if (memcmp(h160map[t], e->spk + 3, 20) == 0) { if (idxmap[t] > maxidx) maxidx = idxmap[t]; break; }
-        }
+        for (size_t t = 0; t < ws.count && (int)t < m; t++)
+            if (ws.w[t].seen && idxmap[t] > maxidx) maxidx = idxmap[t];
+        kw_watchset_free(&ws);
         free(h160map); free(idxmap);
+        if (nb < 0) {
+            fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
+            kw_headerstore_free(&s); goto done;
+        }
 
         if (watched >= maxidx + gap) break;         /* gap unused addresses trail the last used */
         if (maxidx + gap > watch_cap) {

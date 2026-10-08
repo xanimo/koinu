@@ -78,13 +78,13 @@ int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_heigh
    is the block height of store index 0. Returns the number of blocks scanned,
    or -1 on error. */
 long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
-                kw_utxoset *us, const kw_watchset *ws, uint32_t base_height);
+                kw_utxoset *us, kw_watchset *ws, uint32_t base_height);
 
 /* Same, but backed by the on-disk filter cache at (filters_path): fetch only the
    filters not yet cached, match locally, then download and scan the matching
    blocks. Returns blocks scanned, or -1. */
 long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
-                       kw_utxoset *us, const kw_watchset *ws, uint32_t base_height,
+                       kw_utxoset *us, kw_watchset *ws, uint32_t base_height,
                        const char *filters_path);
 
 /* The status of an outpoint over [since, tip], from the filter cache. status:

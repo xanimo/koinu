@@ -126,7 +126,7 @@ int kw_block_merkle_ok(const uint8_t *msg, size_t len)
 }
 
 int kw_block_scan(const uint8_t *msg, size_t len,
-                  kw_utxoset *us, const kw_watchset *ws, uint32_t height)
+                  kw_utxoset *us, kw_watchset *ws, uint32_t height)
 {
     if (len < KW_HEADER_LEN + 1) return 0;
     if (!kw_block_merkle_ok(msg, len)) return 0;   /* the body its header commits to */
@@ -221,7 +221,7 @@ int kw_spv_get_block(kw_peer *p, const uint8_t hash[32],
 }
 
 int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
-                       kw_utxoset *us, const kw_watchset *ws, uint32_t height)
+                       kw_utxoset *us, kw_watchset *ws, uint32_t height)
 {
     const uint8_t *pl = NULL; size_t pn = 0;
     if (!kw_spv_get_block(p, hash, &pl, &pn)) return 0;
@@ -229,7 +229,7 @@ int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
 }
 
 long kw_spv_sync_blocks(kw_peer *p, const kw_headerstore *s,
-                        kw_utxoset *us, const kw_watchset *ws, uint32_t base_height)
+                        kw_utxoset *us, kw_watchset *ws, uint32_t base_height)
 {
     long scanned = 0;
     for (size_t h = 0; h < s->count; h++) {

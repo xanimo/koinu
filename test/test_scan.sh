@@ -130,6 +130,32 @@ CHK=$(awk '/checked the work of/{print $6}' "$D/operr")
 echo "$OPOUT" | grep -q "checked the work" && {
     echo "FAIL: the work report landed on stdout, which callers parse" >&2; exit 1; }
 
+# bip44 counts an address as used once it has appeared on chain. A fresh wallet,
+# index 2 paid and then spent empty, then index 4 paid: with "used" taken from
+# the unspent set the walk sees nothing used, stops at gap 3, and misses it.
+K2="--keystore $D/ks2 --passphrase @$D/pass"
+./kw --regtest new $K2 --words 12 >/dev/null
+B2=$(./kw --regtest address $K2 --index 2)
+B4=$(./kw --regtest address $K2 --index 4)
+$C sendtoaddress "$B2" 7 >/dev/null
+$C generatetoaddress 1 "$MINE" >/dev/null
+./kw --regtest scan $K2 --node "127.0.0.1:$P2P" --spv --gap 6 --utxos "$D/v1" >/dev/null 2>&1
+
+SWEPT=$($C getnewaddress)
+./kw --regtest sign $K2 --utxos "$D/v1" --to "$SWEPT:6.5" 2>/dev/null \
+    | awk '/^raw/{print $2}' > "$D/spend.hex"
+[ -s "$D/spend.hex" ] || { echo "FAIL: could not build the spend of index 2" >&2; exit 1; }
+$C sendrawtransaction "$(cat "$D/spend.hex")" >/dev/null
+$C generatetoaddress 1 "$MINE" >/dev/null
+
+$C sendtoaddress "$B4" 5 >/dev/null
+$C generatetoaddress 1 "$MINE" >/dev/null
+./kw --regtest scan $K2 --node "127.0.0.1:$P2P" --spv --gap 3 --utxos "$D/v2" >/dev/null 2>&1
+SPK4=$(./kw --regtest address $K2 --index 4 --spk)
+grep -q "$SPK4" "$D/v2" || {
+    echo "FAIL: the payment to index 4 was missed with a spent index 2" >&2
+    cat "$D/v2" >&2; exit 1; }
+
 echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
 echo "  journaled with heights, a rescan adds nothing, a later payment appends, and"
 echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable"
