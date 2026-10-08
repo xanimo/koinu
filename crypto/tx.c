@@ -381,6 +381,14 @@ size_t kw_tx_scan(const uint8_t *raw, size_t len, uint8_t txid[32],
     return consumed;
 }
 
+int kw_script_names_key(const uint8_t *script, size_t scriptlen, const uint8_t pub[33])
+{
+    if (!script || !pub) return 0;
+    for (size_t i = 0; i + 34 <= scriptlen; i++)
+        if (script[i] == 0x21 && memcmp(script + i + 1, pub, 33) == 0) return 1;
+    return 0;
+}
+
 int kw_script_multisig_parse(const uint8_t *script, size_t scriptlen,
                              int *m, uint8_t (*pubkeys)[33], int *n)
 {

@@ -78,7 +78,7 @@ static void usage(void)
       "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--utxo HEX] [--vin N]\n"
       "           combine --psbt HEX --psbt HEX ... | extract --psbt HEX\n"
       "           finalize --psbt HEX --vin N --scriptsig HEX\n"
-      "  cosign   --tx HEX|@FILE|- --redeem HEX [--wif @FILE|-] [--vin N]\n"
+      "  cosign   --tx HEX|@FILE|- --redeem HEX [--wif @FILE|-] [--utxo HEX] [--vin N]\n"
       "           [--sig HEX ...] [--finish]\n"
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
@@ -1595,8 +1595,11 @@ static int spk_to_addr(const kw_chainparams *cp, const uint8_t *spk, size_t len,
    way left to lose money by typing is to broadcast the wrong one, so this decodes it
    and names every destination before anything goes on the wire. Returns 0 if the
    bytes are not a transaction at all, which is itself worth refusing. */
-static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
-                   const char *txidhex)
+/* What a transaction pays, to (out). cosign writes it to stderr so a caller
+   still reads one signature on stdout, and (txidhex) may be NULL where the
+   caller has not computed one. */
+static int show_tx_to(FILE *out, const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
+                      const char *txidhex)
 {
     kw_tx tx;
     size_t used = kw_tx_parse(raw, rawlen, &tx);
@@ -1615,15 +1618,15 @@ static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
         return 0;
     }
 
-    printf("txid    %s\n", txidhex);
-    printf("size    %zu bytes, %zu input(s), %zu output(s)\n", rawlen, tx.nin, tx.nout);
+    if (txidhex) fprintf(out, "txid    %s\n", txidhex);
+    fprintf(out, "size    %zu bytes, %zu input(s), %zu output(s)\n", rawlen, tx.nin, tx.nout);
 
     for (size_t i = 0; i < tx.nin; i++) {
         uint8_t d[32];
         char h[65];
         for (int k = 0; k < 32; k++) d[k] = tx.vin[i].prevout[31 - k];
         kw_hex_encode(d, 32, h, sizeof h);
-        printf("spends  %s:%u\n", h, tx.vin[i].vout);
+        fprintf(out, "spends  %s:%u\n", h, tx.vin[i].vout);
     }
 
     uint64_t total = 0;
@@ -1633,18 +1636,24 @@ static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
         total += tx.vout[i].value;
         fmt_doge(tx.vout[i].value, amt, sizeof amt);
         if (spk_to_addr(cp, tx.vout[i].script, tx.vout[i].scriptlen, addr, sizeof addr))
-            printf("pays    %s DOGE to %s\n", amt, addr);
+            fprintf(out, "pays    %s DOGE to %s\n", amt, addr);
         else {
             char hex[2 * KW_TX_SCRIPT_MAX + 1];
             kw_hex_encode(tx.vout[i].script, tx.vout[i].scriptlen, hex, sizeof hex);
-            printf("pays    %s DOGE to an unrecognised script: %s\n", amt, hex);
+            fprintf(out, "pays    %s DOGE to an unrecognised script: %s\n", amt, hex);
         }
     }
     char t[32];
     fmt_doge(total, t, sizeof t);
-    printf("total   %s DOGE out; the fee is the inputs less this, which the "
+    fprintf(out, "total   %s DOGE out; the fee is the inputs less this, which the "
            "transaction does not carry\n", t);
     return 1;
+}
+
+static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
+                   const char *txidhex)
+{
+    return show_tx_to(stdout, cp, raw, rawlen, txidhex);
 }
 
 static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node,
@@ -1735,9 +1744,22 @@ out:
 /* Co-sign one input of a P2SH multisig spend. Prints this key's signature for
    the counterparty to assemble; with --finish combines the provided signatures
    with ours into the completed transaction. */
+/* Decode a hex argument (inline, @FILE or -) into (out). Returns the length, or
+   0 with the reason printed. */
+static size_t read_hex_arg(const char *arg, const char *what, uint8_t *out, size_t cap)
+{
+    char *txt = read_text(arg);
+    if (!txt) { fprintf(stderr, "kw: cannot read %s\n", what); return 0; }
+    size_t hl = strlen(txt), n = hl / 2;
+    int ok = hl && !(hl % 2) && n <= cap && kw_hex_decode(txt, hl, out, n);
+    free(txt);
+    if (!ok) { fprintf(stderr, "kw: %s is not valid hex\n", what); return 0; }
+    return n;
+}
+
 static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *redeem_arg,
-                      const char *wif_arg, int vin, const char **sig_args, int nsigs,
-                      int finish)
+                      const char *utxo_arg, const char *wif_arg, int vin,
+                      const char **sig_args, int nsigs, int finish)
 {
     if (!tx_arg || !redeem_arg) { usage(); return 2; }
     if (vin < 0) vin = 0;                      /* cosign works on one input */
@@ -1765,6 +1787,53 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
     uint8_t sk[32]; int comp = 0;
     kw_secure_keep(sk, sizeof sk);
     if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); return 1; }
+
+    /* The script has to name this key. Without that, --redeem set to the p2pkh
+       scriptPubKey of a coin this key holds turns a "cosignature" into a valid
+       p2pkh spend of that coin to wherever --tx pays, and the counterparty needs
+       only the pubkey it already has for the multisig. A hash160 in a p2pkh
+       script is not a pushed key, so that script is refused; a script with
+       branches around its keys, which is what a payment channel's redeem looks
+       like, still passes. */
+    uint8_t mypub[33];
+    if (!kw_ec_pubkey(sk, mypub)) {
+        kw_secure_forget(sk, sizeof sk);
+        fprintf(stderr, "kw: cannot derive the public key for that wif\n");
+        return 1;
+    }
+    if (!kw_script_names_key(redeem, rl, mypub)) {
+        kw_secure_forget(sk, sizeof sk);
+        fprintf(stderr, "kw: --redeem does not name this key, so signing it would not be "
+                        "a co-signature;\n    a script that spends with one key is not one "
+                        "to sign on request\n");
+        return 1;
+    }
+
+    /* and if the coin is supplied, bind the script to it the way psbt sign does */
+    if (utxo_arg) {
+        uint8_t prevraw[16384];
+        size_t pn = read_hex_arg(utxo_arg, "--utxo", prevraw, sizeof prevraw);
+        kw_tx prev;
+        uint8_t pid[32], want[23];
+        size_t wl = kw_script_p2sh(redeem, rl, want);
+        uint32_t n = tx.vin[vin].vout;
+        if (!pn || kw_tx_parse(prevraw, pn, &prev) != pn) {
+            kw_secure_forget(sk, sizeof sk);
+            fprintf(stderr, "kw: --utxo is not a transaction\n"); return 1;
+        }
+        kw_hash256(prevraw, pn, pid);
+        if (memcmp(pid, tx.vin[vin].prevout, 32) != 0 || n >= prev.nout || !wl ||
+            prev.vout[n].scriptlen != wl || memcmp(prev.vout[n].script, want, wl) != 0) {
+            kw_secure_forget(sk, sizeof sk);
+            fprintf(stderr, "kw: --utxo is not the coin input %d spends, or it does not pay "
+                            "p2sh(--redeem)\n", vin);
+            return 1;
+        }
+    }
+
+    /* what is being signed, on stderr so a caller still reads one signature on
+       stdout: cosign printed nothing about the transaction at all */
+    show_tx_to(stderr, cp, raw, rawlen, NULL);
 
     uint8_t mysig[KW_EC_SIG_DER_MAX + 1]; size_t mylen = sizeof mysig;
     int ok = kw_tx_signature(&tx, (size_t)vin, sk, redeem, rl, KW_SIGHASH_ALL, mysig, &mylen);
@@ -1829,18 +1898,6 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
     return 0;
 }
 
-/* Decode a hex argument (inline, @FILE or -) into (out). Returns the length, or
-   0 with the reason printed. */
-static size_t read_hex_arg(const char *arg, const char *what, uint8_t *out, size_t cap)
-{
-    char *txt = read_text(arg);
-    if (!txt) { fprintf(stderr, "kw: cannot read %s\n", what); return 0; }
-    size_t hl = strlen(txt), n = hl / 2;
-    int ok = hl && !(hl % 2) && n <= cap && kw_hex_decode(txt, hl, out, n);
-    free(txt);
-    if (!ok) { fprintf(stderr, "kw: %s is not valid hex\n", what); return 0; }
-    return n;
-}
 
 static int print_psbt(const kw_psbt *p)
 {
@@ -2094,7 +2151,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
-    else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, wif_arg, vin, sigs, nsigs, finish);
+    else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }
     kw_ec_stop();
     return rc;

@@ -99,6 +99,13 @@ int  kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
                         const size_t *siglens, size_t nsigs,
                         const uint8_t *redeem, size_t redeemlen);
 
+/* 1 if (script) pushes (pub) as a 33-byte compressed key: 0x21 then the key,
+   which is the only form a compressed pubkey takes in a script, whether the
+   script is bare multisig or has branches around it. A signer uses this to
+   refuse a script that does not name its own key, which is what separates
+   "co-sign our 2-of-2" from "sign this p2pkh coin of yours". */
+int  kw_script_names_key(const uint8_t *script, size_t scriptlen, const uint8_t pub[33]);
+
 /* Read an m-of-n bare multisig script back into its parts. Compressed keys
    only, the shape kw_script_multisig builds; (pubkeys) holds up to 16.
    Returns 1, or 0 if the script is not that shape. */

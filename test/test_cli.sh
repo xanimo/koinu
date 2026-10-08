@@ -246,6 +246,17 @@ if ./kw --regtest send --tx "${FULL}deadbeef" --node 127.0.0.1 --yes >/dev/null 
     echo "FAIL: broadcast a transaction with trailing bytes" >&2; exit 1
 fi
 
+# cosign refuses a script that does not name the signing key. --redeem set to the
+# p2pkh scriptPubKey of a coin that key holds would otherwise make the
+# "cosignature" a valid p2pkh spend of it to wherever --tx pays.
+P2PKH=76a914$(printf '%040d' 0)88ac
+if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$P2PKH" --wif "@$WORK/w1" >/dev/null 2>&1; then
+    echo "FAIL: cosign signed a script that does not name its key" >&2; exit 1
+fi
+# and the summary goes to stderr, so stdout is still one signature
+LINES=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1" 2>/dev/null | wc -l)
+[ "$LINES" -eq 1 ] || { echo "FAIL: cosign printed $LINES lines on stdout, want 1" >&2; exit 1; }
+
 # a wrong hashtype and a duplicated key must be refused
 if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w2" \
        --sig "${SIGA%01}00" --finish >/dev/null 2>&1; then
@@ -300,4 +311,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign"

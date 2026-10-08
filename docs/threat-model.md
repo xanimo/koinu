@@ -133,9 +133,12 @@ consensus does, so a signature over a script containing one is the signature a
 node checks rather than one that verifies only locally.
 
 `kw psbt` and `kw cosign` verify every counterparty signature against the sighash
-before assembling a spend, and a psbt is only signed against the utxo it spends,
-so a redeem script the counterparty supplies has to be the one that coin is
-locked to, so a signature that would fail on chain is refused
+before assembling a spend, and neither signs a script that does not name the
+signing key: a script spending with one key is not a script to co-sign on
+request, which is how a p2pkh scriptPubKey passed off as a redeem script turned a
+cosignature into a spend of the signer's own coin. psbt sign also binds the
+script to the coin, since a psbt carries it; cosign can only do that when
+`--utxo` is given, and without it the key check is the whole of the binding, so a signature that would fail on chain is refused
 locally rather than broadcast. A psbt carrying fields koinu cannot represent is
 refused rather than parsed with those fields dropped, since a combiner that
 silently discards what it does not understand loses the other party's data.
