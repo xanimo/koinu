@@ -89,7 +89,11 @@ long kw_cf_scan_cached(kw_peer *p, const kw_headerstore *s,
 
 /* The status of an outpoint over [since, tip], from the filter cache. status:
    0 unspent (height,value set), 1 spent (height set), 2 not seen in range. */
-typedef struct { int status; long height; uint64_t value; long tipheight; } kw_outpoint_result;
+/* (coinbase) marks an output a miner created: it cannot be spent until
+   KOINU_COINBASE_MATURITY confirmations and an orphaned block erases it rather
+   than returning it to a mempool, so a caller counting confirmations needs to
+   know which kind of output it is looking at. */
+typedef struct { int status; long height; uint64_t value; long tipheight; int coinbase; } kw_outpoint_result;
 
 /* Fill (res) for (txid,vout) paying (spk), testing cached filters over
    [since, tip] and reading only the matching blocks. Updates the filter cache

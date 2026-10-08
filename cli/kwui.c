@@ -781,7 +781,7 @@ int main(int argc, char **argv)
        stopped at kwui's own --gap while send_flow still selected those coins
        from the set and then failed at signing. */
     int extent = 0;
-    kw_scanmeta_read(utxos, NULL, &extent);
+    kw_scanmeta_read(utxos, NULL, &extent, NULL);
     if (extent > gap) gap = extent;
     if (gap > MAXADDR / 2) gap = MAXADDR / 2;
 

@@ -909,7 +909,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     kw_headerstore_free(&s);
 
     if (kw_utxoset_save(&us, utxos_path)) {
-        kw_scanmeta_write(utxos_path, p.peer_feerate, watched);
+        kw_scanmeta_write(utxos_path, p.peer_feerate, watched, (uint32_t)nh);
         record_receives(cp, watch, watch_cap, watched, &us, utxos_path);
         printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
                nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
@@ -969,6 +969,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
 
     kw_utxoset us; int have_us = 0;
     kw_bip32_key *keymap = NULL; uint8_t (*h160map)[20] = NULL; int keymap_n = 0;
+    unsigned immature_skipped = 0;
 
     /* destination up front, so auto selection knows the target */
     char tob[160];
@@ -1060,7 +1061,8 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         /* scan metadata: default the rate to the peer floor it recorded, and
            derive as far as it watched so every tracked utxo's key is available */
         int64_t hint = 0; int extent = 0;
-        kw_scanmeta_read(up, &hint, &extent);
+        uint32_t scan_tip = 0;
+        kw_scanmeta_read(up, &hint, &extent, &scan_tip);
         if (!feerate_arg) rate = peer_rate(rate, hint);
         int derive_n = gap; if (extent > derive_n) derive_n = extent;
         change_scan = derive_n;
@@ -1084,6 +1086,16 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             const kw_utxo *e = &us.u[u];
             if (e->spklen != 25 || e->spk[0] != 0x76 || e->spk[1] != 0xa9 || e->spk[2] != 0x14 ||
                 e->spk[23] != 0x88 || e->spk[24] != 0xac) continue;     /* only p2pkh */
+            /* A coinbase the chain will not let go of yet. The node refuses the
+               spend with bad-txns-premature-spend-of-coinbase, and an orphaned
+               block erases such an output rather than returning it to a mempool,
+               so it is not money to spend from. */
+            if (!kw_utxo_mature(e, scan_tip)) {
+                if (!immature_skipped++)
+                    fprintf(stderr, "kw: skipping coinbase outputs that are not %d "
+                                    "confirmations deep yet\n", KOINU_COINBASE_MATURITY);
+                continue;
+            }
             int j = -1;
             for (int t = 0; t < m; t++) if (memcmp(h160map[t], e->spk + 3, 20) == 0) { j = t; break; }
             if (j < 0) continue;                                        /* not ours within the gap */
@@ -1463,10 +1475,11 @@ out:
 }
 
 /* Report the confirmation status of an outpoint the caller names, watching the
-   script it pays. Exits 0 if the outpoint is unspent (printing depth), 3 if it
-   is not in the unspent set (unconfirmed or already spent), 1 on error. Lets a
-   caller confirm a funding output to its own depth policy without trusting a
-   claimed height. */
+   script it pays. Exits 0 if the outpoint is unspent (printing depth), 5 if it is
+   unspent but an immature coinbase, which the chain will not let anyone spend yet
+   and an orphaned block erases, 3 if it is not in the unspent set (unconfirmed or
+   already spent), 1 on error. Lets a caller confirm a funding output to its own
+   depth policy without trusting a claimed height. */
 /* Ask a running kwd over its unix socket. Prints the reply text, returns its rc. */
 static int outpoint_via_daemon(const char *sock, const char *watch, const char *op, long since)
 {
@@ -1553,8 +1566,19 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
         kw_headerstore_free(&s);
         if (ok != 1) { fprintf(stderr, "kw: filter/block scan failed\n"); goto out; }
         if (r.status == 1) { printf("spent at height %ld depth %ld\n", r.height, r.tipheight - r.height + 1); rc = 3; }
-        else if (r.status == 0) { printf("unspent height %ld depth %ld value %llu koinu\n",
-                                         r.height, r.tipheight - r.height + 1, (unsigned long long)r.value); rc = 0; }
+        else if (r.status == 0) {
+            long depth = r.tipheight - r.height + 1;
+            /* A coinbase is not an ordinary payment: the chain refuses to let it
+               be spent until it is mature, and an orphaned block erases it rather
+               than returning it to a mempool. Said plainly, and with its own exit
+               code, so a backend cannot read it as a payment that has landed. */
+            int immature = r.coinbase && depth < KOINU_COINBASE_MATURITY;
+            printf("unspent%s height %ld depth %ld value %llu koinu%s\n",
+                   immature ? " but immature" : "", r.height, depth,
+                   (unsigned long long)r.value,
+                   r.coinbase ? " (coinbase)" : "");
+            rc = immature ? 5 : 0;
+        }
         else { printf("not seen since %ld\n", since); rc = 4; }
         goto out;
     }
@@ -1573,9 +1597,12 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
             if (us.u[u].vout == vout && memcmp(us.u[u].txid, txint, 32) == 0) { found = &us.u[u]; break; }
         if (found) {
             long depth = (long)tipheight - (long)found->height + 1;
-            printf("unspent height %u depth %ld value %llu koinu\n",
-                   found->height, depth, (unsigned long long)found->value);
-            rc = 0;
+            int immature = !kw_utxo_mature(found, (uint32_t)tipheight);
+            printf("unspent%s height %u depth %ld value %llu koinu%s\n",
+                   immature ? " but immature" : "", found->height, depth,
+                   (unsigned long long)found->value,
+                   found->coinbase ? " (coinbase)" : "");
+            rc = immature ? 5 : 0;
         } else {
             printf("not found (unconfirmed or already spent)\n");
             rc = 3;

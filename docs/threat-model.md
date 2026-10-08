@@ -162,6 +162,12 @@ temp file and a rename, since all three name amounts, heights and addresses. The
 utxo set carries its own count, so a file cut short refuses to load rather than
 loading as a smaller balance.
 
+A coinbase output is tracked as one and is not spendable until
+KOINU_COINBASE_MATURITY confirmations: outpoint says "unspent but immature" and
+exits 5 rather than 0, and signing leaves it out of selection. An orphaned block
+erases such an output rather than returning it to a mempool, so a confirmation on
+one is worth less than a confirmation on a payment.
+
 Change goes to the first address the utxo set and the journal agree is unused,
 and signing records it, so consecutive spends do not share one. That means
 signing the same spend twice gives two transactions differing in their change

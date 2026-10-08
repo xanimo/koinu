@@ -90,8 +90,16 @@ static void utxo_remove(kw_utxoset *us, const uint8_t txid[32], uint32_t vout)
     }
 }
 
+int kw_utxo_mature(const kw_utxo *u, uint32_t tip_height)
+{
+    if (!u || !u->coinbase) return 1;
+    if (tip_height < u->height) return 0;                /* not even confirmed yet */
+    return tip_height - u->height + 1 >= KOINU_COINBASE_MATURITY;
+}
+
 int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
-                   uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen)
+                   uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen,
+                   int coinbase)
 {
     if (spklen > KW_SPK_MAX) return 0;
     /* Refuse anything that would carry the total past what a uint64 holds. Dogecoin
@@ -112,20 +120,32 @@ int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
     e->height = height;
     memcpy(e->spk, spk, spklen);
     e->spklen = spklen;
+    e->coinbase = coinbase ? 1 : 0;
     us->total += value;
     return 1;
 }
 
 struct apply_ctx {
-    kw_utxoset        *us;
-    const kw_watchset *ws;
-    uint32_t           height;
-    int                ok;
+    kw_utxoset  *us;
+    kw_watchset *ws;
+    int          coinbase;        /* the transaction being walked spends nothing */
+    int          ninput;
+    uint32_t     height;
+    int          ok;
 };
 
 static void on_input(void *vc, const uint8_t prev[32], uint32_t vout)
 {
     struct apply_ctx *c = (struct apply_ctx *)vc;
+    /* inputs come before outputs, so by the time an output is reported this says
+       whether the transaction creating it is a coinbase: one input, spending
+       nothing */
+    if (c->ninput++ == 0) {
+        static const uint8_t zero[32] = { 0 };
+        c->coinbase = (vout == 0xffffffffu && memcmp(prev, zero, 32) == 0);
+    } else {
+        c->coinbase = 0;
+    }
     utxo_remove(c->us, prev, vout);
 }
 
@@ -139,13 +159,13 @@ static void on_output(void *vc, const uint8_t txid[32], uint32_t index,
     /* marked before the add, and never cleared by a later spend: this is what
        "used" means to the gap rule */
     c->ws->w[at].seen = 1;
-    if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen)) c->ok = 0;
+    if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen, c->coinbase)) c->ok = 0;
 }
 
 int kw_utxoset_apply_tx(kw_utxoset *us, kw_watchset *ws,
                         const uint8_t *rawtx, size_t len, uint32_t height)
 {
-    struct apply_ctx c = { us, ws, height, 1 };
+    struct apply_ctx c = { us, ws, 0, 0, height, 1 };
     if (kw_tx_scan(rawtx, len, NULL, on_input, on_output, &c) == 0) return 0;
     return c.ok;
 }
@@ -197,8 +217,9 @@ int kw_utxoset_save(const kw_utxoset *us, const char *path)
         char txid[65], spk[2 * KW_SPK_MAX + 1];
         if (!kw_hex_encode(u->txid, 32, txid, sizeof txid) ||
             !kw_hex_encode(u->spk, u->spklen, spk, sizeof spk)) { ok = 0; break; }
-        if (fprintf(f, "%s %u %llu %u %s\n", txid, u->vout,
-                    (unsigned long long)u->value, u->height, spk) < 0) ok = 0;
+        if (fprintf(f, "%s %u %llu %u %s%s\n", txid, u->vout,
+                    (unsigned long long)u->value, u->height, spk,
+                    u->coinbase ? " c" : "") < 0) ok = 0;
     }
     /* The count last, so a file that was cut short cannot load as a smaller
        balance. A line boundary or an even number of script bytes both parse. */
@@ -206,20 +227,22 @@ int kw_utxoset_save(const kw_utxoset *us, const char *path)
     return commit_temp(f, tmp, path, ok);
 }
 
-int kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent)
+int kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent, uint32_t tip)
 {
     char p[4200], tmp[4300];
     if ((size_t)snprintf(p, sizeof p, "%s.meta", utxos_path) >= sizeof p) return 0;
     FILE *f = open_private_temp(p, tmp, sizeof tmp);
     if (!f) return 0;
-    int ok = fprintf(f, "feerate %lld\ngap %d\n", (long long)feerate, extent) > 0;
+    int ok = fprintf(f, "feerate %lld\ngap %d\ntip %u\n",
+                     (long long)feerate, extent, tip) > 0;
     return commit_temp(f, tmp, p, ok);
 }
 
-void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent)
+void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent, uint32_t *tip)
 {
     if (feerate) *feerate = 0;
     if (extent) *extent = 0;
+    if (tip) *tip = 0;
     char p[4200];
     snprintf(p, sizeof p, "%s.meta", utxos_path);
     FILE *f = fopen(p, "r");
@@ -228,6 +251,7 @@ void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent)
     while (fscanf(f, "%31s %lld", key, &v) == 2) {
         if (!strcmp(key, "feerate") && feerate) *feerate = (int64_t)v;
         else if (!strcmp(key, "gap") && extent) *extent = (int)v;
+        else if (!strcmp(key, "tip") && tip && v >= 0) *tip = (uint32_t)v;
     }
     fclose(f);
 }
@@ -255,14 +279,21 @@ int kw_utxoset_load(kw_utxoset *us, const char *path)
            KW_SPK_MAX becomes a build error rather than a silent overflow. */
         _Static_assert(2 * KW_SPK_MAX + 2 == 130, "the %129s below tracks KW_SPK_MAX");
         unsigned vout, height; unsigned long long value;
-        if (sscanf(line, "%127s %u %llu %u %129s", txidhex, &vout, &value, &height, spkhex) != 5) { ok = 0; break; }
+        /* The sixth field says whether the output is a coinbase. A line without it
+           is from a release that did not track maturity: read as not a coinbase,
+           which is what every such line meant. */
+        char cbflag[8] = "";
+        int got = sscanf(line, "%127s %u %llu %u %129s %7s",
+                         txidhex, &vout, &value, &height, spkhex, cbflag);
+        if (got != 5 && got != 6) { ok = 0; break; }
+        int coinbase = (got == 6 && cbflag[0] == 'c');
         if (strlen(spkhex) > 2 * KW_SPK_MAX) { ok = 0; break; }
         uint8_t txid[32], spk[KW_SPK_MAX];
         size_t spklen = strlen(spkhex) / 2;
         if (strlen(txidhex) != 64 || spklen == 0 || spklen > KW_SPK_MAX ||
             !kw_hex_decode(txidhex, 64, txid, 32) ||
             !kw_hex_decode(spkhex, strlen(spkhex), spk, spklen)) { ok = 0; break; }
-        if (!kw_utxoset_add(us, txid, vout, value, height, spk, spklen)) { ok = 0; break; }
+        if (!kw_utxoset_add(us, txid, vout, value, height, spk, spklen, coinbase)) { ok = 0; break; }
         added++;
     }
     fclose(f);

@@ -181,8 +181,24 @@ grep -q "^unknown:" "$D/orph.out" || {
     cat "$D/orph.out" >&2; exit 1; }
 [ "$ORC" -ne 0 ] || { echo "FAIL: send exited 0 for a transaction the node does not hold" >&2; exit 1; }
 
+# a coinbase is not an ordinary payment: the chain will not let it be spent until
+# it is mature, and an orphaned block erases it rather than returning it to a
+# mempool. outpoint used to report it exactly as it reports a payment.
+CBTX=$($C getblock "$($C getblockhash "$($C getblockcount)")" 1 \
+    | tr ',' '\n' | grep -A2 '"tx"' | grep -o '[0-9a-f]\{64\}' | head -1)
+CBADDR=$($C getrawtransaction "$CBTX" 1 | tr ',' '\n' | grep -o '"[mn2][1-9A-HJ-NP-Za-km-z]\{25,34\}"' | head -1 | tr -d '"')
+if [ -n "$CBTX" ] && [ -n "$CBADDR" ]; then
+    CBOUT=$(./kw --regtest outpoint --watch "$CBADDR" --outpoint "$CBTX:0" --spv \
+            --since "$(( $($C getblockcount) - 2 ))" --node "127.0.0.1:$P2P" 2>/dev/null) || CBRC=$?
+    case "$CBOUT" in
+        *"immature"*) ;;
+        *) echo "FAIL: a one-confirmation coinbase was reported as an ordinary payment" >&2
+           echo "$CBOUT" >&2; exit 1;;
+    esac
+fi
+
 echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
 echo "  journaled with heights, a rescan adds nothing, a later payment appends, and"
 echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable,"
-echo "  a spent address still counts as used, and send tells a relayed transaction"
-echo "  from one the node does not hold"
+echo "  a spent address still counts as used, an immature coinbase says so, and send"
+echo "  tells a relayed transaction from one the node does not hold"

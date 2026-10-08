@@ -333,22 +333,25 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
             fprintf(stderr, "[spv] no filters, fetching %ld block(s) from %u\n", nm, since);
     }
 
-    long created_h = -1, spent_h = -1; uint64_t value = 0;
+    long created_h = -1, spent_h = -1; uint64_t value = 0; int created_cb = 0;
     for (long i = 0; i < nm; i++) {
         size_t idx = heights[i] - base_height;
         const uint8_t *pl = NULL; size_t pn = 0;
-        kw_outpoint_status st = { 0, 0, 0 };
+        kw_outpoint_status st = { 0, 0, 0, 0 };
         if (!kw_spv_get_block(p, s->h[idx].hash, &pl, &pn) ||
             !kw_block_find_outpoint(pl, pn, txid, vout, spk, spklen, &st)) { free(heights); return -1; }
-        if (st.created) { created_h = (long)heights[i]; value = st.created_value; }
+        if (st.created) { created_h = (long)heights[i]; value = st.created_value; created_cb = st.coinbase; }
         if (st.spent) spent_h = (long)heights[i];
     }
     free(heights);
 
     res->tipheight = (long)base_height + (long)s->count - 1;
-    res->value = 0; res->height = 0;
+    res->value = 0; res->height = 0; res->coinbase = 0;
     if (spent_h >= 0) { res->status = 1; res->height = spent_h; }
-    else if (created_h >= 0) { res->status = 0; res->height = created_h; res->value = value; }
+    else if (created_h >= 0) {
+        res->status = 0; res->height = created_h; res->value = value;
+        res->coinbase = created_cb;
+    }
     else res->status = 2;
     return 1;
 }

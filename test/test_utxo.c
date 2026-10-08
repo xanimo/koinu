@@ -173,16 +173,16 @@ int main(void)
         memset(t1, 0x11, 32);
         memset(t2, 0x22, 32);
         if (!kw_utxoset_init(&o)) { fprintf(stderr, "FAIL: init\n"); return 1; }
-        if (!kw_utxoset_add(&o, t1, 0, (uint64_t)1 << 63, 100, spk, sizeof spk))
+        if (!kw_utxoset_add(&o, t1, 0, (uint64_t)1 << 63, 100, spk, sizeof spk, 0))
             { fprintf(stderr, "FAIL: a lone huge value should be accepted\n"); return 1; }
-        if (kw_utxoset_add(&o, t2, 1, (uint64_t)1 << 63, 101, spk, sizeof spk))
+        if (kw_utxoset_add(&o, t2, 1, (uint64_t)1 << 63, 101, spk, sizeof spk, 0))
             { fprintf(stderr, "FAIL: a second one wrapped the total and was accepted\n"); return 1; }
         if (kw_utxoset_count(&o) != 1) { fprintf(stderr, "FAIL: the refused entry was stored\n"); return 1; }
         if (kw_utxoset_balance(&o) != ((uint64_t)1 << 63))
             { fprintf(stderr, "FAIL: balance %llu after the refusal\n",
                       (unsigned long long)kw_utxoset_balance(&o)); return 1; }
         /* and room freed by a spend is usable again */
-        if (!kw_utxoset_add(&o, t2, 1, 1000, 101, spk, sizeof spk))
+        if (!kw_utxoset_add(&o, t2, 1, 1000, 101, spk, sizeof spk, 0))
             { fprintf(stderr, "FAIL: a value that fits was refused\n"); return 1; }
         kw_utxoset_free(&o);
     }

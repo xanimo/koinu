@@ -9,7 +9,8 @@
  *
  *   outpoint <address|spkhex> <txid:vout> <since>\n
  *
- * reply: "<rc> <text>\n", rc 0 unspent, 3 spent, 4 not seen, 1 error. */
+ * reply: "<rc> <text>\n", rc 0 unspent, 3 spent, 4 not seen, 5 unspent but an
+ *   immature coinbase, 1 error. */
 
 #include "chainparams.h"
 #include "base58.h"
@@ -234,8 +235,13 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     }
     int n;
     if (r.status == 1)      n = snprintf(reply, sizeof reply, "3 spent at height %ld depth %ld\n", r.height, r.tipheight - r.height + 1);
-    else if (r.status == 0) n = snprintf(reply, sizeof reply, "0 unspent height %ld depth %ld value %llu koinu\n",
-                                         r.height, r.tipheight - r.height + 1, (unsigned long long)r.value);
+    else if (r.status == 0) {
+        long depth = r.tipheight - r.height + 1;
+        int immature = r.coinbase && depth < KOINU_COINBASE_MATURITY;
+        n = snprintf(reply, sizeof reply, "%d unspent%s height %ld depth %ld value %llu koinu%s\n",
+                     immature ? 5 : 0, immature ? " but immature" : "", r.height, depth,
+                     (unsigned long long)r.value, r.coinbase ? " (coinbase)" : "");
+    }
     else                    n = snprintf(reply, sizeof reply, "4 not seen since %ld\n", since);
     if (n > 0) write_all(fd, reply, (size_t)n);
 }

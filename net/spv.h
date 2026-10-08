@@ -63,7 +63,7 @@ int kw_spv_fetch_block(kw_peer *p, const uint8_t hash[32],
                        kw_utxoset *us, kw_watchset *ws, uint32_t height);
 
 /* Whether a block creates or spends one specific outpoint (txid,vout). */
-typedef struct { int created; uint64_t created_value; int spent; } kw_outpoint_status;
+typedef struct { int created; uint64_t created_value; int spent; int coinbase; } kw_outpoint_status;
 
 /* Scan a block message for (txid,vout): set st->created (with created_value) if
    an output at that outpoint exists AND pays (spk), and st->spent if an input

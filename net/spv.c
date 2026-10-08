@@ -163,11 +163,17 @@ struct fo_ctx {
     const uint8_t *txid; uint32_t vout;
     const uint8_t *spk; size_t spklen;
     int created; uint64_t value; int spent;
+    int coinbase;             /* the transaction that created it spends nothing */
+    int ninput;
 };
 
 static void fo_on_input(void *v, const uint8_t prev[32], uint32_t vout)
 {
     struct fo_ctx *c = (struct fo_ctx *)v;
+    /* inputs precede outputs, so this is set before the output is reported */
+    static const uint8_t zero[32] = { 0 };
+    if (c->ninput++ == 0) c->coinbase = (vout == 0xffffffffu && memcmp(prev, zero, 32) == 0);
+    else c->coinbase = 0;
     if (vout == c->vout && memcmp(prev, c->txid, 32) == 0) c->spent = 1;
 }
 static void fo_on_output(void *v, const uint8_t txid[32], uint32_t index,
@@ -199,10 +205,17 @@ int kw_block_find_outpoint(const uint8_t *msg, size_t len,
     uint64_t ntx = rd_varint(msg, len, &off, &bad);
     if (bad || ntx > (uint64_t)len) return 0;
 
-    struct fo_ctx c = { txid, vout, spk, spklen, 0, 0, 0 };
+    struct fo_ctx c = { txid, vout, spk, spklen, 0, 0, 0, 0, 0 };
     for (uint64_t i = 0; i < ntx; i++) {
+        c.ninput = 0;
+        int was_cb = c.coinbase;
+        int had = c.created;
         size_t consumed = kw_tx_scan(msg + off, len - off, NULL, fo_on_input, fo_on_output, &c);
         if (!consumed) return 0;
+        /* the flag belongs to the transaction that created the output, not to
+           whichever one is walked last */
+        if (c.created && !had) st->coinbase = c.coinbase;
+        else c.coinbase = was_cb;
         off += consumed;
     }
     st->created = c.created; st->created_value = c.value; st->spent = c.spent;

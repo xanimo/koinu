@@ -46,7 +46,7 @@ static void add_utxo(kw_utxoset *us, const uint8_t spk[25], uint32_t vout)
 {
     uint8_t txid[32];
     memset(txid, 0x11, 32);
-    kw_utxoset_add(us, txid, vout, 100000000ULL, 1, spk, 25);
+    kw_utxoset_add(us, txid, vout, 100000000ULL, 1, spk, 25, 0);
 }
 
 int main(void)

@@ -33,6 +33,12 @@ long kw_watchset_find(const kw_watchset *ws, const uint8_t *spk, size_t len);
 void kw_watchset_free(kw_watchset *ws);
 
 /* ── UTXO set ────────────────────────────────────────────────── */
+/* Dogecoin's COINBASE_MATURITY: a coinbase output cannot be spent until this many
+   blocks sit on top of the one that created it, and an orphaned block erases it
+   rather than returning it to the mempool. Measured against dogecoind 1.14.9 on
+   regtest: 101 blocks mined leaves 41 spendable. */
+#define KOINU_COINBASE_MATURITY 60
+
 typedef struct {
     uint8_t  txid[32];               /* internal byte order */
     uint32_t vout;
@@ -40,7 +46,14 @@ typedef struct {
     uint32_t height;
     uint8_t  spk[KW_SPK_MAX];
     size_t   spklen;
+    uint8_t  coinbase;               /* a miner's output: not spendable until mature */
 } kw_utxo;
+
+/* 1 if (u) can be spent with the chain at (tip_height). Only a coinbase is ever
+   unspendable here, and nothing checked: outpoint reported a one-confirmation
+   coinbase exactly as it reports an ordinary payment, scan counted it in the
+   balance and sign selected it, and the node refused the spend. */
+int kw_utxo_mature(const kw_utxo *u, uint32_t tip_height);
 
 /* (total) is the sum of every value held, maintained on add and remove. It exists so
    the sum cannot wrap: an entry that would carry it past UINT64_MAX is refused, which
@@ -57,7 +70,8 @@ uint64_t kw_utxoset_balance(const kw_utxoset *us);
 /* Insert one UTXO. Returns 1, or 0 on a too-long script, out of memory, or a value
    that would carry the set's total past what a uint64 holds. */
 int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
-                   uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen);
+                   uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen,
+                   int coinbase);
 
 /* Persist the set as text, one "txid vout value height spk" line per UTXO (txid
    and spk hex, internal byte order). Load appends onto (us). Return 1, or 0 on
@@ -68,10 +82,12 @@ int kw_utxoset_load(kw_utxoset *us, const char *path);
 /* Scan metadata, written beside the utxo file as "<path>.meta": the peer's
    advertised feefilter (so a later offline sign defaults to it) and how many
    addresses per chain the scan watched (so every reader derives far enough to
-   key every tracked utxo, rather than each one guessing with its own gap).
+   key every tracked utxo, rather than each one guessing with its own gap), and
+   the tip height it saw, which is what lets an offline sign tell a mature
+   coinbase from one the chain will not let it spend yet.
    Read leaves both at 0 when there is no file. Write returns 1 on success. */
-int  kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent);
-void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent);
+int  kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent, uint32_t tip);
+void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent, uint32_t *tip);
 
 /* Apply one transaction at (height): remove UTXOs it spends, add outputs paying
    a watched script. Returns 1, or 0 if the transaction is malformed. */
