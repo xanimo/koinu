@@ -254,6 +254,10 @@ test/fakenode: test/fakenode.o $(LIB) $(SECP_LIB)
 net_handshake: test/net_handshake.o $(LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_handshake.o $(LIB)
 
+# asks a real tor which circuit each connection got
+net_tor: test/net_tor.o $(LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_tor.o $(LIB)
+
 # Fuzz targets over the parsers that read bytes a peer chose. `make fuzz` needs
 # clang for libFuzzer; `make fuzz-run CORPUS=dir` replays a corpus with any
 # compiler, so CI can check the known inputs without clang.
@@ -402,7 +406,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

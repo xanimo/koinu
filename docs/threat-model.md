@@ -129,6 +129,9 @@ what tor keys a circuit on, so kwd's resident peers, the parallel download's
 workers and the three chains being weighed do not share one exit. With no
 credentials offered they could, and that exit would see plaintext p2p for every
 peer the wallet treats as independent and be able to withhold from all of them.
+`make net_tor` opens three connections through a local daemon and reads
+`circuit-status` off the control port, so the circuits are counted rather than
+assumed.
 
 Peer choice is the weakest part of all of this. Without `--node` the mainnet
 seeds are two hostnames in one domain, so whoever controls them, or the resolver
