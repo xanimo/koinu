@@ -41,15 +41,34 @@ static int listen_local(int *port)
 
 /* The mock proxy. (grant) chooses whether it replies success or refused.
    Exits 0 if the client's handshake was exactly right, nonzero otherwise. */
-static void run_proxy(int ls, int grant, int domain)
+/* (userpass) makes the proxy choose RFC 1929, as tor does when credentials are
+   offered, and write the username it was given to (out) so the caller can check
+   that two connections do not share one. */
+static void run_proxy_auth(int ls, int grant, int domain, int userpass, int outfd)
 {
     int c = accept(ls, NULL, NULL);
     if (c < 0) _exit(10);
 
-    uint8_t g[3];
-    if (!read_all(c, g, 3) || g[0] != 0x05 || g[1] != 0x01 || g[2] != 0x00) _exit(11);
-    uint8_t methsel[2] = { 0x05, 0x00 };
+    /* version 5, two methods: none and username/password */
+    uint8_t g[4];
+    if (!read_all(c, g, 4) || g[0] != 0x05 || g[1] != 0x02 ||
+        g[2] != 0x00 || g[3] != 0x02) _exit(11);
+    uint8_t methsel[2] = { 0x05, userpass ? 0x02 : 0x00 };
     if (write(c, methsel, 2) != 2) _exit(12);
+
+    if (userpass) {
+        uint8_t v, ul;
+        if (!read_all(c, &v, 1) || v != 0x01 || !read_all(c, &ul, 1) || ul == 0) _exit(21);
+        uint8_t user[256];
+        if (!read_all(c, user, ul)) _exit(22);
+        uint8_t pl;
+        if (!read_all(c, &pl, 1) || pl == 0) _exit(23);
+        uint8_t pass[256];
+        if (!read_all(c, pass, pl)) _exit(24);
+        if (outfd >= 0 && write(outfd, user, ul) != ul) _exit(25);
+        uint8_t ok[2] = { 0x01, 0x00 };
+        if (write(c, ok, 2) != 2) _exit(26);
+    }
 
     uint8_t h[4];
     if (!read_all(c, h, 4) || h[0] != 0x05 || h[1] != 0x01 || h[2] != 0x00 || h[3] != 0x03) _exit(13);
@@ -78,6 +97,11 @@ static void run_proxy(int ls, int grant, int domain)
     if (grant) { uint8_t k = 'K'; if (write(c, &k, 1) != 1) _exit(20); }
     close(c);
     _exit(0);
+}
+
+static void run_proxy(int ls, int grant, int domain)
+{
+    run_proxy_auth(ls, grant, domain, 0, -1);
 }
 
 static int scenario(int grant, int domain, int *client_ok)
@@ -116,7 +140,49 @@ int main(void)
     if (!scenario(1, 1, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: domain grant path\n"); return 1; }
     if (!scenario(0, 1, &client_ok) || !client_ok) { fprintf(stderr, "FAIL: domain refuse path\n"); return 1; }
 
+    /* Tor keys a circuit on the credentials, so two connections offering the same
+       pair share an exit, and offering none shares one too: that exit sees
+       plaintext p2p for every peer this wallet thinks is independent. The pair is
+       random per connection, so the usernames must differ. */
+    {
+        uint8_t seen[2][16];
+        for (int i = 0; i < 2; i++) {
+            int port = 0;
+            int ls = listen_local(&port);
+            if (ls < 0) { fprintf(stderr, "FAIL: listen\n"); return 1; }
+            int pipefd[2];
+            if (pipe(pipefd) != 0) { fprintf(stderr, "FAIL: pipe\n"); return 1; }
+
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(pipefd[0]);
+                run_proxy_auth(ls, 1, 0, 1, pipefd[1]);
+                _exit(0);
+            }
+            close(pipefd[1]);
+            int fd = kw_socks5_connect("127.0.0.1", port, "example.onion", 22556, 5);
+            if (fd < 0) { fprintf(stderr, "FAIL: the username/password method was refused\n"); return 1; }
+            close(fd);
+            if (!read_all(pipefd[0], seen[i], sizeof seen[i])) {
+                fprintf(stderr, "FAIL: no username reached the proxy\n"); return 1;
+            }
+            close(pipefd[0]);
+            close(ls);
+            int st = 0;
+            waitpid(pid, &st, 0);
+            if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+                fprintf(stderr, "FAIL: proxy exited %d\n", WEXITSTATUS(st)); return 1;
+            }
+        }
+        if (memcmp(seen[0], seen[1], sizeof seen[0]) == 0) {
+            fprintf(stderr, "FAIL: two connections offered the same credentials, "
+                            "so tor would put them on one circuit\n");
+            return 1;
+        }
+    }
+
     printf("socks5 ok: greeting, CONNECT domain/port, grant returns usable fd, refuse returns -1,\n"
-           "  and a 255-byte domain bound address in the reply is read without overflowing\n");
+           "  a 255-byte domain bound address in the reply is read without overflowing,\n"
+           "  and two connections offer different credentials, so tor isolates them\n");
     return 0;
 }

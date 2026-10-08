@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "socks5.h"
+#include "rng.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -58,11 +59,33 @@ int kw_socks5_connect(const char *proxy_host, int proxy_port,
 
     if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(fd); return -1; }
 
-    /* greeting: version 5, one method, no authentication */
-    uint8_t greet[3] = { 0x05, 0x01, 0x00 };
+    /* Greeting: version 5, offering username/password as well as no
+       authentication. Tor keys a circuit on the credentials, so a random pair per
+       connection puts each peer on its own circuit and its own exit: with no
+       credentials offered, every connection kwd's resident peers, psync's workers
+       and the three-way work comparison make can share one exit, and that exit
+       then sees plaintext p2p for all of them and can withhold from all of them,
+       which is the comparison the threat model leans on. A proxy that is not tor
+       either accepts the pair or picks method 0, and both are handled. */
+    uint8_t greet[4] = { 0x05, 0x02, 0x00, 0x02 };
     uint8_t rep[2];
     if (!write_all(fd, greet, sizeof greet) || !read_all(fd, rep, sizeof rep) ||
-        rep[0] != 0x05 || rep[1] != 0x00) { close(fd); return -1; }
+        rep[0] != 0x05) { close(fd); return -1; }
+
+    if (rep[1] == 0x02) {                  /* RFC 1929: a random pair, never reused */
+        uint8_t iso[32];
+        if (!kw_random_bytes(iso, sizeof iso)) { close(fd); return -1; }
+        uint8_t auth[3 + 16 + 16];
+        size_t an = 0;
+        auth[an++] = 0x01;                 /* the subnegotiation's own version */
+        auth[an++] = 16;
+        for (int i = 0; i < 16; i++) auth[an++] = (uint8_t)('a' + (iso[i] & 15));
+        auth[an++] = 16;
+        for (int i = 16; i < 32; i++) auth[an++] = (uint8_t)('a' + (iso[i] & 15));
+        uint8_t ar[2];
+        if (!write_all(fd, auth, an) || !read_all(fd, ar, sizeof ar) ||
+            ar[0] != 0x01 || ar[1] != 0x00) { close(fd); return -1; }
+    } else if (rep[1] != 0x00) { close(fd); return -1; }
 
     /* CONNECT to a domain name */
     uint8_t req[4 + 1 + 255 + 2];

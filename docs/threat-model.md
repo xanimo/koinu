@@ -121,6 +121,12 @@ the comparison unless every peer reached is in on it. For anything accepting
 payment on the strength of a confirmation, prefer a node you control, which is what
 `--node` is for, and pass it more than once.
 
+Over Tor each connection offers a fresh random username and password, which is
+what tor keys a circuit on, so kwd's resident peers, the parallel download's
+workers and the three chains being weighed do not share one exit. With no
+credentials offered they could, and that exit would see plaintext p2p for every
+peer the wallet treats as independent and be able to withhold from all of them.
+
 Peer choice is the weakest part of all of this. Without `--node` the mainnet
 seeds are two hostnames in one domain, so whoever controls them, or the resolver
 path to them, picks every peer the parallel sync and the three-way work
