@@ -33,6 +33,7 @@ int kw_watchset_add(kw_watchset *ws, const uint8_t *spk, size_t len)
     }
     memcpy(ws->w[ws->count].spk, spk, len);
     ws->w[ws->count].len = len;
+    ws->w[ws->count].seen = 0;      /* malloc'd, and the scan reads it to find the highest used index */
     ws->count++;
     return 1;
 }

@@ -37,6 +37,12 @@ int main(void)
     if (!kw_watchset_init(&ws) || !kw_watchset_add(&ws, spk, spklen)) {
         fprintf(stderr, "FAIL: watchset\n"); return 1;
     }
+    /* The set is malloc'd and the scan reads this flag to find the highest used
+       index: unset, heap left over from the derivation marks addresses paid that
+       never were, and each one costs a whole-chain rescan. */
+    if (ws.w[0].seen != 0) {
+        fprintf(stderr, "FAIL: a freshly added script is already marked seen\n"); return 1;
+    }
 
     kw_utxoset us;
     if (!kw_utxoset_init(&us)) { fprintf(stderr, "FAIL: utxoset init\n"); return 1; }
