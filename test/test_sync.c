@@ -582,10 +582,49 @@ int main(void)
         kw_headerstore_free(&t);
     }
 
+    /* A header past the two-hour bound ends the sync where it stands rather than
+       discarding it: core refuses that header and keeps the chain below it, and a
+       sequential mainnet sync takes longer than the bound itself. */
+    {
+        kw_headerstore t;
+        if (!kw_headerstore_init(&t)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+
+        uint8_t prev[32] = {0};
+        uint32_t now32 = (uint32_t)time(NULL);
+        uint8_t raw0[80];
+        mk_header(raw0, prev, now32 - 600, 1);
+        kw_block_header h0;
+        kw_block_header_parse(raw0, 80, &h0);
+        if (!kw_headerstore_append(&t, &h0)) { fprintf(stderr, "FAIL: seed\n"); return 1; }
+
+        uint8_t batches[2][80];
+        mk_header(batches[0], h0.hash, now32 - 300, 2);          /* fine */
+        uint8_t good[32];
+        {
+            kw_block_header hh; kw_block_header_parse(batches[0], 80, &hh);
+            memcpy(good, hh.hash, 32);
+            mk_header(batches[1], hh.hash, now32 + 7400, 3);     /* past the bound */
+        }
+
+        kw_peer p3;
+        if (!scripted_peer(&p3, &KW_DOGE_REGTEST, batches, 2)) {
+            fprintf(stderr, "FAIL: scripted peer\n"); return 1;
+        }
+        long r3 = kw_sync_headers(&p3, &t, &KW_DOGE_REGTEST);
+        kw_peer_close(&p3);
+
+        if (r3 != 1) { fprintf(stderr, "FAIL: kept %ld header(s) before the bad one, want 1\n", r3); return 1; }
+        if (t.count != 2 || memcmp(t.h[1].hash, good, 32) != 0) {
+            fprintf(stderr, "FAIL: the good header before the refused one was discarded\n");
+            return 1;
+        }
+        kw_headerstore_free(&t);
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
            "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network, the chain id demanded above the merge-mining start, the\n  bip66 and bip65 base-version floors enforced at each network's heights,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
-       "  a cached chain checked against the pins on load by hashing it and every\n  record above the newest anchor rehashed, two forks in one exchange both\n  refused with our chain put back,\n  and a locator, a work sum and a rollback to choose between chains with\n");
+       "  a cached chain checked against the pins on load by hashing it and every\n  record above the newest anchor rehashed, two forks in one exchange both\n  refused with our chain put back, a header past the future bound ending the\n  sync rather than discarding it,\n  and a locator, a work sum and a rollback to choose between chains with\n");
     return 0;
 }

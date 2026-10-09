@@ -297,7 +297,6 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
 
     kw_block_header *batch = (kw_block_header *)malloc(KW_MAX_HEADERS * sizeof *batch);
     if (!batch) return -1;
-    const int64_t now = (int64_t)time(NULL);
 
     /* set once the peer's chain forks below our tip: what we dropped, so it can
        go back when the replacement does not outweigh it */
@@ -315,7 +314,13 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
     size_t cpi = cp_from(cp, (uint32_t)s->count + 1);
 
     long total = 0;
+    int stop = 0;                 /* a header the chain refuses: keep what came before */
     for (;;) {
+        /* Read per batch. A sequential mainnet sync from genesis takes longer
+           than the two-hour bound, so a single (now) taken at the start makes
+           honest headers near the tip look stamped in the future, and the sync
+           fails at its last batch every time. */
+        const int64_t now = (int64_t)time(NULL);
         /* The full locator, not just the tip. After a reorg the peer does not
            have our tip on its chain, and a one-hash locator makes it answer from
            genesis: the first header then links to nothing we hold, the append
@@ -440,15 +445,21 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
             /* The retarget rule is derived from these timestamps, so a chain that
                can write them freely writes its own difficulty. */
             if (!kw_sync_time_ok(s, cp, height, kw_header_time(batch[i].raw), now)) {
+                /* Core refuses this header and keeps the chain below it, and so
+                   does this: failing the call threw away every header the sync
+                   had already checked, which on a fresh chain is all of them. */
                 if (kw_net_verbose)
-                    fprintf(stderr, "[headers] %u is timestamped outside what the "
-                                    "chain before it allows\n", height);
-                goto fail;
+                    fprintf(stderr, "[headers] %u is timestamped outside what the chain "
+                                    "before it allows; keeping the %ld below it\n",
+                            height, total);
+                stop = 1;
+                break;
             }
             if (!kw_headerstore_append(s, &batch[i])) { goto fail; }
             total++;
         }
         if (kw_net_verbose) fprintf(stderr, "[headers] %ld synced\n", total);
+        if (stop) break;
     }
 
     /* A chain that stops below the newest anchor is not this chain. Without this a
