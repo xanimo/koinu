@@ -41,6 +41,9 @@ typedef struct {
     uint32_t         bip66_height;     /* base version 3 from here, DER signatures */
     uint32_t         bip65_height;     /* base version 4 from here, CHECKLOCKTIMEVERIFY */
     int              strict_chain_id;  /* core's fStrictChainId: off on testnet */
+    uint32_t         maturity_switch;  /* the height nCoinbaseMaturity changes at */
+    uint32_t         maturity_below;   /* confirmations a coinbase below it needs */
+    uint32_t         maturity_from;    /* and from it on */
     const kw_checkpoint *checkpoints;  /* ascending by height, [0] is genesis; NULL if none */
     size_t           ncheckpoints;
     const char *const *dns_seeds;      /* seeder hostnames; NULL if none */
@@ -48,6 +51,11 @@ typedef struct {
     const kw_cfcheckpoint *cfcheckpoints;  /* ascending by height; NULL if none */
     size_t           ncfcheckpoints;
 } kw_chainparams;
+
+/* The confirmations a coinbase mined at (height) needs before it can be spent.
+   Core carries nCoinbaseMaturity in the consensus parameters and picks the set by
+   the coin's own height, so one constant is wrong on two thirds of the chain. */
+uint32_t kw_coinbase_maturity(const kw_chainparams *cp, uint32_t height);
 
 extern const kw_chainparams KW_DOGE_MAINNET;
 extern const kw_chainparams KW_DOGE_TESTNET;

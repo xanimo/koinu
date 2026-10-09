@@ -9,6 +9,7 @@
  * scriptSig validity, so it need not be signed. */
 
 #include "utxo.h"
+#include "chainparams.h"
 #include "tx.h"
 #include "testutil.h"
 #include "hex.h"
@@ -193,7 +194,50 @@ int main(void)
         kw_utxoset_free(&o);
     }
 
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a cut or empty file refused,\n"
+    /* Core carries nCoinbaseMaturity in the consensus parameters and picks the
+       set by the coin's own height: 30 below 145000 and 240 from there on, on
+       mainnet and testnet alike, and 60 throughout on regtest. One constant of
+       60 called a mainnet coinbase at depth 60 spendable, which the node refuses
+       with bad-txns-premature-spend-of-coinbase, and held an early one back for
+       twice as long as the chain asks. */
+    {
+        kw_utxo cb100k = { {0}, 0, 100000000ULL, 100000, {0}, 25, 1 };
+        kw_utxo cb4m   = { {0}, 0, 100000000ULL, 4000000, {0}, 25, 1 };
+        kw_utxo plain  = { {0}, 0, 100000000ULL, 4000000, {0}, 25, 0 };
+        const kw_chainparams *m = &KW_DOGE_MAINNET, *rt = &KW_DOGE_REGTEST;
+
+        if (!kw_utxo_mature(m, &cb100k, 100000 + 29)) {
+            fprintf(stderr, "FAIL: a coinbase below 145000 is spendable at depth 30\n"); return 1; }
+        if (kw_utxo_mature(m, &cb100k, 100000 + 28)) {
+            fprintf(stderr, "FAIL: depth 29 is not 30\n"); return 1; }
+        if (kw_utxo_mature(m, &cb4m, 4000000 + 238)) {
+            fprintf(stderr, "FAIL: a coinbase above 145000 was called spendable at depth 239, "
+                            "where the chain wants 240\n"); return 1; }
+        if (!kw_utxo_mature(m, &cb4m, 4000000 + 239)) {
+            fprintf(stderr, "FAIL: depth 240 is not enough above 145000\n"); return 1; }
+        if (!kw_utxo_mature(rt, &cb4m, 4000000 + 59)) {
+            fprintf(stderr, "FAIL: regtest asks for 60 at every height\n"); return 1; }
+        if (!kw_utxo_mature(m, &plain, 4000000)) {
+            fprintf(stderr, "FAIL: an ordinary output is never immature\n"); return 1; }
+
+        /* and the balance a wallet may spend is not what it holds */
+        kw_utxoset sp;
+        if (!kw_utxoset_init(&sp)) { fprintf(stderr, "FAIL: set init\n"); return 1; }
+        uint8_t spk1[25]; memset(spk1, 0x11, sizeof spk1);
+        uint8_t id1[32]; memset(id1, 0x22, sizeof id1);
+        uint8_t id2[32]; memset(id2, 0x33, sizeof id2);
+        if (!kw_utxoset_add(&sp, id1, 0, 500, 4000000, spk1, sizeof spk1, 1) ||
+            !kw_utxoset_add(&sp, id2, 0, 700, 4000000, spk1, sizeof spk1, 0)) {
+            fprintf(stderr, "FAIL: set add\n"); return 1; }
+        if (kw_utxoset_balance(&sp) != 1200) { fprintf(stderr, "FAIL: held\n"); return 1; }
+        if (kw_utxoset_spendable(m, &sp, 4000000 + 10) != 700) {
+            fprintf(stderr, "FAIL: an immature coinbase counted as spendable\n"); return 1; }
+        if (kw_utxoset_spendable(m, &sp, 4000000 + 239) != 1200) {
+            fprintf(stderr, "FAIL: a matured coinbase left out of the spendable total\n"); return 1; }
+        kw_utxoset_free(&sp);
+    }
+
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a cut or empty file refused,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
            "  and a value that would wrap the total refused\n");
     return 0;
 }

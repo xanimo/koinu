@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "chainparams.h"
+
 #define KW_SPK_MAX 64        /* p2pkh is 25, p2sh 23; a watched script fits here */
 
 /* ── watch set ───────────────────────────────────────────────── */
@@ -33,11 +35,10 @@ long kw_watchset_find(const kw_watchset *ws, const uint8_t *spk, size_t len);
 void kw_watchset_free(kw_watchset *ws);
 
 /* ── UTXO set ────────────────────────────────────────────────── */
-/* Dogecoin's COINBASE_MATURITY: a coinbase output cannot be spent until this many
-   blocks sit on top of the one that created it, and an orphaned block erases it
-   rather than returning it to the mempool. Measured against dogecoind 1.14.9 on
-   regtest: 101 blocks mined leaves 41 spendable. */
-#define KOINU_COINBASE_MATURITY 60
+/* Dogecoin's COINBASE_MATURITY lives in the chain parameters, because core picks
+   it by the coin's own height: 30 below 145000 and 240 from there on, mainnet and
+   testnet alike, and 60 throughout on regtest. See kw_coinbase_maturity. A single
+   60 called a mainnet coinbase at depth 60 spendable where the node wants 240. */
 
 typedef struct {
     uint8_t  txid[32];               /* internal byte order */
@@ -49,11 +50,12 @@ typedef struct {
     uint8_t  coinbase;               /* a miner's output: not spendable until mature */
 } kw_utxo;
 
-/* 1 if (u) can be spent with the chain at (tip_height). Only a coinbase is ever
-   unspendable here, and nothing checked: outpoint reported a one-confirmation
-   coinbase exactly as it reports an ordinary payment, scan counted it in the
-   balance and sign selected it, and the node refused the spend. */
-int kw_utxo_mature(const kw_utxo *u, uint32_t tip_height);
+/* 1 if (u) can be spent with the chain at (tip_height), under (cp)'s rule for the
+   height it was mined at. Only a coinbase is ever unspendable here, and nothing
+   checked: outpoint reported a one-confirmation coinbase exactly as it reports an
+   ordinary payment, scan counted it in the balance and sign selected it, and the
+   node refused the spend. */
+int kw_utxo_mature(const kw_chainparams *cp, const kw_utxo *u, uint32_t tip_height);
 
 /* (total) is the sum of every value held, maintained on add and remove. It exists so
    the sum cannot wrap: an entry that would carry it past UINT64_MAX is refused, which
@@ -66,6 +68,12 @@ int      kw_utxoset_init(kw_utxoset *us);
 void     kw_utxoset_free(kw_utxoset *us);
 size_t   kw_utxoset_count(const kw_utxoset *us);
 uint64_t kw_utxoset_balance(const kw_utxoset *us);
+
+/* What the set holds that can be spent at (tip_height), which is the number a
+   balance should show: counting an immature coinbase promises money the chain
+   will not let go of yet. */
+uint64_t kw_utxoset_spendable(const kw_chainparams *cp, const kw_utxoset *us,
+                              uint32_t tip_height);
 
 /* Insert one UTXO. Returns 1, or 0 on a too-long script, out of memory, or a value
    that would carry the set's total past what a uint64 holds. */

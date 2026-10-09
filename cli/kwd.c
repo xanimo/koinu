@@ -237,7 +237,8 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     if (r.status == 1)      n = snprintf(reply, sizeof reply, "3 spent at height %ld depth %ld\n", r.height, r.tipheight - r.height + 1);
     else if (r.status == 0) {
         long depth = r.tipheight - r.height + 1;
-        int immature = r.coinbase && depth < KOINU_COINBASE_MATURITY;
+        int immature = r.coinbase &&
+                       (uint32_t)depth < kw_coinbase_maturity(cp, (uint32_t)r.height);
         n = snprintf(reply, sizeof reply, "%d unspent%s height %ld depth %ld value %llu koinu%s\n",
                      immature ? 5 : 0, immature ? " but immature" : "", r.height, depth,
                      (unsigned long long)r.value, r.coinbase ? " (coinbase)" : "");

@@ -932,13 +932,19 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         fprintf(stderr, "[scan] address %d used, extending watch to %d and rescanning\n", maxidx, maxidx + gap);
         watched = maxidx + gap;
     }
+    uint32_t scanned_to = (uint32_t)s.count;     /* the chain's height, not this run's delta */
     kw_headerstore_free(&s);
 
     if (kw_utxoset_save(&us, utxos_path)) {
-        kw_scanmeta_write(utxos_path, p.peer_feerate, watched, (uint32_t)nh);
+        kw_scanmeta_write(utxos_path, p.peer_feerate, watched, scanned_to);
         record_receives(cp, watch, watch_cap, watched, &us, utxos_path);
+        uint64_t held = kw_utxoset_balance(&us);
+        uint64_t spendable = kw_utxoset_spendable(cp, &us, scanned_to);
         printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
-               nh, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
+               nh, kw_utxoset_count(&us), (unsigned long long)held);
+        if (spendable != held)
+            printf("  of which %llu koinu is spendable; the rest is coinbase the chain "
+                   "will not let go of yet\n", (unsigned long long)spendable);
         printf("watched %d addresses per chain, saved to %s\n", watched, utxos_path);
         if (p.peer_feerate > 0) printf("peer fee floor %lld koinu/kB\n", (long long)p.peer_feerate);
         rc = 0;
@@ -1019,6 +1025,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         /* The coins are named, so nothing here needs the utxo set. It is loaded
            anyway when there is one, since it is what says which change addresses
            have already been paid. */
+        uint32_t input_tip = 0;
         {
             char defpath[4096];
             const char *up = utxos_path;
@@ -1026,6 +1033,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             kw_utxoset_init(&us);
             if (kw_utxoset_load(&us, up)) have_us = 1;
             else kw_utxoset_free(&us);
+            if (have_us) kw_scanmeta_read(up, NULL, NULL, &input_tip);
         }
         /* manual: the operator names each outpoint and its key index */
         for (int i = 0; i < ninputs; i++) {
@@ -1060,6 +1068,14 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                     fprintf(stderr, "kw: --input %s:%u holds %llu koinu in the tracked set, "
                                     "not the %llu given; the difference would go to the miner\n",
                             txid, vout, (unsigned long long)known->value, (unsigned long long)amt);
+                    goto out;
+                }
+                if (known && !kw_utxo_mature(cp, known, input_tip)) {
+                    fprintf(stderr, "kw: --input %s:%u is a coinbase at depth %u, and the "
+                                    "chain wants %u before it can be spent\n",
+                            txid, vout,
+                            input_tip >= known->height ? input_tip - known->height + 1 : 0,
+                            kw_coinbase_maturity(cp, known->height));
                     goto out;
                 }
                 if (!known)
@@ -1121,10 +1137,11 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                spend with bad-txns-premature-spend-of-coinbase, and an orphaned
                block erases such an output rather than returning it to a mempool,
                so it is not money to spend from. */
-            if (!kw_utxo_mature(e, scan_tip)) {
+            if (!kw_utxo_mature(cp, e, scan_tip)) {
                 if (!immature_skipped++)
-                    fprintf(stderr, "kw: skipping coinbase outputs that are not %d "
-                                    "confirmations deep yet\n", KOINU_COINBASE_MATURITY);
+                    fprintf(stderr, "kw: skipping coinbase outputs that are not %u "
+                                    "confirmations deep yet\n",
+                            kw_coinbase_maturity(cp, e->height));
                 continue;
             }
             int j = -1;
@@ -1325,6 +1342,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
 
     int rc = 1, peer_open = 1;
     kw_utxoset us; int have_us = 0;
+    uint32_t sweep_tip = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
     {
         kw_headerstore s; kw_headerstore_init(&s);
@@ -1332,6 +1350,7 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
         if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
         kw_utxoset_init(&us); have_us = 1;
         long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        sweep_tip = (uint32_t)s.count;
         kw_headerstore_free(&s);
         if (nb < 0) { fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block"); goto out; }
     }
@@ -1359,9 +1378,13 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
         kw_tx tx; kw_tx_init(&tx);
         uint8_t prevspk[KW_TX_MAX_IN][25];
         int nin = 0; uint64_t total_in = 0;
+        int sweep_immature = 0;
         for (size_t u = 0; u < us.count && nin < KW_TX_MAX_IN; u++) {
             const kw_utxo *e = &us.u[u];
             if (e->spklen != 25) continue;
+            /* The node refuses a premature coinbase spend, and sweeping one in
+               with the rest takes the whole transaction down with it. */
+            if (!kw_utxo_mature(cp, e, sweep_tip)) { sweep_immature++; continue; }
             char disphex[65]; uint8_t disp[32];
             for (int b = 0; b < 32; b++) disp[b] = e->txid[31 - b];
             kw_hex_encode(disp, 32, disphex, sizeof disphex);
@@ -1369,7 +1392,11 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
             memcpy(prevspk[nin], e->spk, 25);
             total_in += e->value; nin++;
         }
-        if ((size_t)nin < us.count) fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
+        if (sweep_immature)
+            fprintf(stderr, "kw: leaving %d coinbase output(s) the chain has not released yet\n",
+                    sweep_immature);
+        if ((size_t)nin + (size_t)sweep_immature < us.count)
+            fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
 
         /* an uncompressed pubkey adds 32 bytes to each input's scriptSig */
         uint64_t fee = have_fixed ? fixed : est_fee(nin, 1, rate) + (comp ? 0 : (32ULL * (uint64_t)nin * rate + 999) / 1000);
@@ -1609,7 +1636,8 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
                be spent until it is mature, and an orphaned block erases it rather
                than returning it to a mempool. Said plainly, and with its own exit
                code, so a backend cannot read it as a payment that has landed. */
-            int immature = r.coinbase && depth < KOINU_COINBASE_MATURITY;
+            int immature = r.coinbase &&
+                           (uint32_t)depth < kw_coinbase_maturity(cp, (uint32_t)r.height);
             printf("unspent%s height %ld depth %ld value %llu koinu%s\n",
                    immature ? " but immature" : "", r.height, depth,
                    (unsigned long long)r.value,
@@ -1634,7 +1662,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
             if (us.u[u].vout == vout && memcmp(us.u[u].txid, txint, 32) == 0) { found = &us.u[u]; break; }
         if (found) {
             long depth = (long)tipheight - (long)found->height + 1;
-            int immature = !kw_utxo_mature(found, (uint32_t)tipheight);
+            int immature = !kw_utxo_mature(cp, found, (uint32_t)tipheight);
             printf("unspent%s height %u depth %ld value %llu koinu%s\n",
                    immature ? " but immature" : "", found->height, depth,
                    (unsigned long long)found->value,

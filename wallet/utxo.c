@@ -91,11 +91,21 @@ static void utxo_remove(kw_utxoset *us, const uint8_t txid[32], uint32_t vout)
     }
 }
 
-int kw_utxo_mature(const kw_utxo *u, uint32_t tip_height)
+int kw_utxo_mature(const kw_chainparams *cp, const kw_utxo *u, uint32_t tip_height)
 {
     if (!u || !u->coinbase) return 1;
     if (tip_height < u->height) return 0;                /* not even confirmed yet */
-    return tip_height - u->height + 1 >= KOINU_COINBASE_MATURITY;
+    return tip_height - u->height + 1 >= kw_coinbase_maturity(cp, u->height);
+}
+
+uint64_t kw_utxoset_spendable(const kw_chainparams *cp, const kw_utxoset *us,
+                              uint32_t tip_height)
+{
+    if (!us) return 0;
+    uint64_t total = 0;
+    for (size_t i = 0; i < us->count; i++)
+        if (kw_utxo_mature(cp, &us->u[i], tip_height)) total += us->u[i].value;
+    return total;
 }
 
 int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,

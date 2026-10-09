@@ -228,13 +228,17 @@ static int page_rows(void)
    index what is on screen and not the unfiltered array: with the filter on, a
    selection into the array could land on a hidden row. */
 static void draw(const kw_chainparams *cp, const row *rows, const int *vis, int nvis,
-                 int top, int sel, uint64_t total, size_t nutxo, int used_only,
-                 const char *ks, int partial)
+                 int top, int sel, uint64_t total, uint64_t spendable, size_t nutxo,
+                 int used_only, const char *ks, int partial)
 {
     printf("\033[H\033[2J");
     char bal[32]; fmt_doge(total, bal, sizeof bal);
     printf("\033[1m koinu \033[0m %s   %s\r\n", cp->name, ks);
     printf(" balance %s DOGE across %zu outputs\r\n", bal, nutxo);
+    if (spendable != total) {
+        char sp[32]; fmt_doge(spendable, sp, sizeof sp);
+        printf(" %s DOGE of that is spendable; the rest is coinbase the chain holds\r\n", sp);
+    }
     if (partial)
         printf(" \033[7m the utxo file did not read to the end: this is part of it \033[0m\r\n");
     printf("\r\n");
@@ -501,6 +505,7 @@ static int addr_to_spk(const kw_chainparams *cp, const char *addr, uint8_t *out,
    the process talking to peers. The seed is not kept while browsing, so the
    passphrase is asked for again here, which is also the last confirmation. */
 static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxos,
+                      uint32_t scan_tip,
                       const kw_utxoset *us, const row *rows, int nrows)
 {
     char to[128] = "", amt[64] = "";
@@ -532,7 +537,8 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         int pick = -1;
         uint32_t best_h = 0xffffffffu;
         for (size_t u = 0; u < us->count; u++)
-            if (!used[u] && us->u[u].spklen == 25 && us->u[u].height <= best_h) {
+            if (!used[u] && us->u[u].spklen == 25 && us->u[u].height <= best_h &&
+                kw_utxo_mature(cp, &us->u[u], scan_tip)) {
                 best_h = us->u[u].height; pick = (int)u;
             }
         if (pick < 0) break;
@@ -784,7 +790,8 @@ int main(int argc, char **argv)
        stopped at kwui's own --gap while send_flow still selected those coins
        from the set and then failed at signing. */
     int extent = 0;
-    kw_scanmeta_read(utxos, NULL, &extent, NULL);
+    uint32_t scan_tip = 0;
+    kw_scanmeta_read(utxos, NULL, &extent, &scan_tip);
     if (extent > gap) gap = extent;
     if (gap > MAXADDR / 2) gap = MAXADDR / 2;
 
@@ -804,7 +811,8 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; i++) if (!used_only || rows[i].nutxo) vis[nvis++] = i;
         if (sel >= nvis) sel = nvis ? nvis - 1 : 0;
 
-        draw(cp, rows, vis, nvis, top, sel, total, us.count, used_only, ks, utxos_partial);
+        draw(cp, rows, vis, nvis, top, sel, total,
+             kw_utxoset_spendable(cp, &us, scan_tip), us.count, used_only, ks, utxos_partial);
         int c = getchar();
         switch (c) {
         case 'q': case 3: case EOF: running = 0; break;
@@ -828,7 +836,7 @@ int main(int argc, char **argv)
             }
             break;
         }
-        case 's': send_flow(cp, ks, utxos, &us, rows, n); break;
+        case 's': send_flow(cp, ks, utxos, scan_tip, &us, rows, n); break;
         case 'c': coins_view(&us, rows, n); break;
         case 'h': history_view(utxos); break;
         case '\n': case '\r':
