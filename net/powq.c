@@ -40,6 +40,7 @@ struct kw_powq {
     uint64_t         checked;
     int              failed;
     uint32_t         bad_height;
+    int              strict_chain_id;   /* core's fStrictChainId, off on testnet */
 };
 
 static void sha256d(const uint8_t *in, size_t len, uint8_t out[32])
@@ -108,7 +109,7 @@ static void *worker(void *arg)
                 kw_auxpow ap;
                 size_t off = 0;
                 if (!kw_auxpow_parse(mine[i].aux, mine[i].auxlen, &off, &ap) ||
-                    !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID)) {
+                    !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID, q->strict_chain_id)) {
                     if (!bad || mine[i].height < bad_at) bad_at = mine[i].height;
                     bad = 1;
                     continue;
@@ -146,7 +147,7 @@ static void *worker(void *arg)
     return NULL;
 }
 
-kw_powq *kw_powq_start(int nthreads, size_t depth)
+kw_powq *kw_powq_start(int nthreads, size_t depth, int strict_chain_id)
 {
     if (nthreads <= 0) {
         long n = sysconf(_SC_NPROCESSORS_ONLN);
@@ -164,6 +165,7 @@ kw_powq *kw_powq_start(int nthreads, size_t depth)
     q->tid = (pthread_t *)calloc((size_t)nthreads, sizeof *q->tid);
     if (!q->ring || !q->tid) { free(q->ring); free(q->tid); free(q); return NULL; }
     q->depth = depth;
+    q->strict_chain_id = strict_chain_id;
     pthread_mutex_init(&q->m, NULL);
     pthread_cond_init(&q->has_work, NULL);
     pthread_cond_init(&q->has_room, NULL);

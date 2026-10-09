@@ -126,7 +126,7 @@ int main(int argc, char **argv)
                off - 80, ap.coinbase_len, ap.script_len, ap.nchain, ap.nmerkle, ap.chain_index);
         show("  parent   ", ap.parent);
 
-        int ok = kw_auxpow_check(&ap, id, bits, KW_AUXPOW_CHAIN_ID, scratch);
+        int ok = kw_auxpow_check(&ap, id, bits, KW_AUXPOW_CHAIN_ID, 1, scratch);
         printf("  check     %s\n", ok ? "PASS" : "FAIL");
         if (!ok) rc = 1;
 

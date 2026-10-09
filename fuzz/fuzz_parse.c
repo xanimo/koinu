@@ -182,7 +182,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         size_t off = 0;
         kw_auxpow ap;
         if (kw_auxpow_parse(in + 32, len - 32, &off, &ap))
-            (void)kw_auxpow_check_structure(&ap, aux_hash, KW_AUXPOW_CHAIN_ID);
+            (void)kw_auxpow_check_structure(&ap, aux_hash, KW_AUXPOW_CHAIN_ID, 1);
         break;
     }
     case 6:                                    /* the tracked utxo set */

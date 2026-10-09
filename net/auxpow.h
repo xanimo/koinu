@@ -78,13 +78,17 @@ int kw_auxpow_parse(const uint8_t *in, size_t len, size_t *off, kw_auxpow *ap);
    is measured against the target the Dogecoin chain demanded. (scratch) is
    KW_SCRYPT_SCRATCH bytes or NULL. Returns 1 when every rule holds. */
 int kw_auxpow_check(const kw_auxpow *ap, const uint8_t aux_hash[32], uint32_t aux_bits,
-                    int32_t chain_id, void *scratch);
+                    int32_t chain_id, int strict_chain_id, void *scratch);
 
 /* Every rule except the parent's work. A validator hashing eight parents at once
    needs the structure checked separately from the hashing, since the batch core
-   wants all eight headers together; ap->parent is the 80 bytes it must hash. */
+   wants all eight headers together; ap->parent is the 80 bytes it must hash.
+
+   (chain_id) names this chain and decides the slot its hash must sit in, which
+   is checked on every network. (strict_chain_id) is core's fStrictChainId: with
+   it set the parent may not carry (chain_id) either. Testnet turns it off. */
 int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
-                              int32_t chain_id);
+                              int32_t chain_id, int strict_chain_id);
 
 /* The slot a nonce and a chain id put this chain in, for a tree of height (h).
    Exposed because it is the one rule with no data to check it against: a test has

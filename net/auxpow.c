@@ -203,7 +203,7 @@ static uint32_t rd32le(const uint8_t *p)
 }
 
 int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
-                              int32_t chain_id)
+                              int32_t chain_id, int strict_chain_id)
 {
     static const uint8_t tag[4] = { 0xfa, 0xbe, 'm', 'm' };
 
@@ -212,14 +212,16 @@ int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
     if (ap->chain_index < 0) return 0;
     if (ap->nchain > KW_AUXPOW_MAX_CHAIN) return 0;
 
-    /* the parent must be on another chain, or the work is not borrowed at all */
-    uint32_t parent_version = rd32le(ap->parent);
-    int32_t parent_chain = (int32_t)(parent_version >> 16);
-    if (parent_chain == chain_id) return 0;
-    /* and it must be an ordinary block of that chain: Core refuses a parent that
-       claims an auxpow of its own ("auxpow parent block has auxpow version"),
-       which would otherwise let a proof chain through another proof */
-    if (parent_version & KW_BLOCK_VERSION_AUXPOW) return 0;
+    /* The parent must be on another chain, or the work is not borrowed at all.
+       Core gates this on fStrictChainId, which testnet turns off, and the slot
+       below is computed from the chain id either way. Nothing is checked about
+       the parent's version: CAuxPow::check has no such test, the parent is a
+       bare header where the auxpow flag means nothing, and refusing it would
+       stop a sync on any parent chain that happens to signal bit 8. */
+    if (strict_chain_id) {
+        int32_t parent_chain = (int32_t)(rd32le(ap->parent) >> 16);
+        if (parent_chain == chain_id) return 0;
+    }
 
     /* this block's hash has to sit in the tree the parent's coinbase commits to */
     uint8_t root[32];
@@ -274,9 +276,9 @@ int kw_auxpow_check_structure(const kw_auxpow *ap, const uint8_t aux_hash[32],
 }
 
 int kw_auxpow_check(const kw_auxpow *ap, const uint8_t aux_hash[32], uint32_t aux_bits,
-                    int32_t chain_id, void *scratch)
+                    int32_t chain_id, int strict_chain_id, void *scratch)
 {
-    if (!kw_auxpow_check_structure(ap, aux_hash, chain_id)) return 0;
+    if (!kw_auxpow_check_structure(ap, aux_hash, chain_id, strict_chain_id)) return 0;
 
     /* and the parent's own work has to meet the target this chain asked for */
     uint8_t pow[32];

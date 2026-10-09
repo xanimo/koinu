@@ -33,8 +33,11 @@ typedef struct kw_powq kw_powq;
 
 /* Start (nthreads) workers with room for (depth) queued headers. (nthreads) at or
    below zero means one per core, which is the right number: the work is issue-bound
-   and hyperthreads add nothing. Returns NULL on failure. */
-kw_powq *kw_powq_start(int nthreads, size_t depth);
+   and hyperthreads add nothing.
+
+   (strict_chain_id) is core's fStrictChainId: with it set an auxpow parent may
+   not carry this chain's id. Testnet turns it off. Returns NULL on failure. */
+kw_powq *kw_powq_start(int nthreads, size_t depth, int strict_chain_id);
 
 /* Hand over a header to check. (aux) is its AuxPoW blob, or NULL for a header that
    proves its own work; both are copied, so the caller's buffer is free immediately.

@@ -12,6 +12,7 @@
  * scrypt is the slow part, so this stays under a few hundred headers. */
 
 #include "powq.h"
+#include "auxpow.h"
 #include "hex.h"
 #include "pow.h"
 #include "scrypt.h"
@@ -69,7 +70,7 @@ int main(void)
     /* every header good: one legacy and one merged-mined, submitted together so a
        batch holds both kinds */
     {
-        kw_powq *q = kw_powq_start(2, 8);
+        kw_powq *q = kw_powq_start(2, 8, KW_AUXPOW_CHAIN_ID);
         if (!q) { bad("the pool would not start"); return 1; }
         for (int i = 0; i < 4; i++) {
             if (!kw_powq_submit(q, 1, gen, NULL, 0)) bad("submit genesis");
@@ -90,7 +91,7 @@ int main(void)
         memcpy(hard, gen, 80);
         hard[72] = 0x84; hard[73] = 0x41; hard[74] = 0x36; hard[75] = 0x1b;   /* 1b364184 */
 
-        kw_powq *q = kw_powq_start(2, 8);
+        kw_powq *q = kw_powq_start(2, 8, KW_AUXPOW_CHAIN_ID);
         if (!q) { bad("the pool would not start"); return 1; }
         for (int i = 0; i < 3; i++) kw_powq_submit(q, 100 + (uint32_t)i, gen, NULL, 0);
         kw_powq_submit(q, 500, hard, NULL, 0);
@@ -113,7 +114,7 @@ int main(void)
         memcpy(hard, gen, 80);
         hard[72] = 0x84; hard[73] = 0x41; hard[74] = 0x36; hard[75] = 0x1b;
 
-        kw_powq *q = kw_powq_start(4, 64);
+        kw_powq *q = kw_powq_start(4, 64, KW_AUXPOW_CHAIN_ID);
         if (!q) { bad("the pool would not start"); return 1; }
         for (uint32_t h = 42; h <= 7000; h += 1379) kw_powq_submit(q, h, hard, NULL, 0);
         uint32_t at = 0;
@@ -127,7 +128,7 @@ int main(void)
         memcpy(broken, aux, auxlen);
         broken[auxlen - 4] ^= 1;                     /* the parent header's nonce */
 
-        kw_powq *q = kw_powq_start(1, 8);
+        kw_powq *q = kw_powq_start(1, 8, KW_AUXPOW_CHAIN_ID);
         if (!q) { bad("the pool would not start"); return 1; }
         kw_powq_submit(q, 371337, broken, broken + 80, auxlen - 80);
         uint32_t at = 0;
@@ -139,7 +140,7 @@ int main(void)
     /* a queue shorter than the work must block the producer, not lose or grow. 200
        submissions through a ring of 8 is 25 times around it. */
     {
-        kw_powq *q = kw_powq_start(2, 8);
+        kw_powq *q = kw_powq_start(2, 8, KW_AUXPOW_CHAIN_ID);
         if (!q) { bad("the pool would not start"); return 1; }
         int sent = 0;
         for (uint32_t i = 0; i < 200; i++) if (kw_powq_submit(q, i, gen, NULL, 0)) sent++;
@@ -151,7 +152,7 @@ int main(void)
 
     /* a pool nothing was given must still come back clean */
     {
-        kw_powq *q = kw_powq_start(1, 8);
+        kw_powq *q = kw_powq_start(1, 8, KW_AUXPOW_CHAIN_ID);
         uint64_t checked = 1;
         if (!q || !kw_powq_finish(q, &checked, NULL)) bad("an empty pool failed");
         if (checked != 0) bad("an empty pool checked something");

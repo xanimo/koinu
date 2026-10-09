@@ -71,7 +71,7 @@ static int on_header(void *ctx, const kw_block_header *h, const uint8_t *aux, si
             for (size_t i = 0; i < auxlen; i++) printf("%02x", aux[i]);
             printf("\n");
         }
-        if (!kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID)) {
+        if (!kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID, 1)) {
             if (sw) s->segwit_bad++;
             if (!s->bad_struct++) printf("%u: auxpow structure refused (version %08x)\n", at, version);
             if (!s->first_bad) s->first_bad = at;

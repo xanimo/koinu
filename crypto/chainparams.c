@@ -361,6 +361,7 @@ const kw_chainparams KW_DOGE_MAINNET = {
     1386325540, 0x1e0ffff0u,
     0x1e0fffffu,              /* powLimit: ~uint256(0) >> 20 */
     1034383, 3464751,         /* BIP66Height, BIP65Height */
+    1,                        /* fStrictChainId */
     KW_DOGE_MAINNET_CHECKPOINTS,
     sizeof KW_DOGE_MAINNET_CHECKPOINTS / sizeof KW_DOGE_MAINNET_CHECKPOINTS[0],
     KW_DOGE_MAINNET_SEEDS, 2,
@@ -376,6 +377,7 @@ const kw_chainparams KW_DOGE_TESTNET = {
     1391503289, 0x1e0ffff0u,
     0x1e0fffffu,              /* powLimit, same as mainnet */
     708658, 1854705,          /* BIP66Height, BIP65Height */
+    0,                        /* fStrictChainId: off on testnet */
     0, 0,
     KW_DOGE_TESTNET_SEEDS, 1,
     0, 0
@@ -389,6 +391,7 @@ const kw_chainparams KW_DOGE_REGTEST = {
     1296688602, 0x207fffffu,
     0x207fffffu,              /* powLimit: regtest asks for almost nothing */
     1251, 1351,               /* BIP66Height, BIP65Height */
+    1,                        /* fStrictChainId */
     0, 0,
     0, 0,
     0, 0

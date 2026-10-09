@@ -189,7 +189,7 @@ static int verifies(void (*edit)(struct built *), int *parsed)
     if (!kw_auxpow_parse(b.blob, b.blob_len, &off, &ap)) { if (parsed) *parsed = 0; return 0; }
     if (parsed) *parsed = 1;
     if (off != b.blob_len) { bad("the parser did not consume the whole blob"); return 0; }
-    return kw_auxpow_check(&ap, b.aux_hash, AUX_BITS, KW_AUXPOW_CHAIN_ID, NULL);
+    return kw_auxpow_check(&ap, b.aux_hash, AUX_BITS, KW_AUXPOW_CHAIN_ID, 1, NULL);
 }
 
 static void must_fail(const char *what, void (*edit)(struct built *))
@@ -334,7 +334,7 @@ static void real_proofs(void)
             fail = 1; free(raw); continue;
         }
         if (off != n) { fprintf(stderr, "FAIL: %s left %zu bytes over\n", real[i].what, n - off); fail = 1; }
-        if (!kw_auxpow_check(&ap, id, bits, KW_AUXPOW_CHAIN_ID, NULL)) {
+        if (!kw_auxpow_check(&ap, id, bits, KW_AUXPOW_CHAIN_ID, 1, NULL)) {
             fprintf(stderr, "FAIL: %s does not verify\n", real[i].what);
             fail = 1; free(raw); continue;
         }
@@ -352,7 +352,7 @@ static void real_proofs(void)
         raw[parent_at + 76] ^= 1;                       /* the parent's nonce */
         off = 80;
         if (kw_auxpow_parse(raw, n, &off, &ap) &&
-            kw_auxpow_check(&ap, id, bits, KW_AUXPOW_CHAIN_ID, NULL)) {
+            kw_auxpow_check(&ap, id, bits, KW_AUXPOW_CHAIN_ID, 1, NULL)) {
             fprintf(stderr, "FAIL: %s verified with the parent's nonce moved\n", real[i].what);
             fail = 1;
         }
@@ -361,7 +361,7 @@ static void real_proofs(void)
         /* and the target still has to be the one the chain asked for */
         off = 80;
         if (kw_auxpow_parse(raw, n, &off, &ap) &&
-            kw_auxpow_check(&ap, id, 0x1a000001u, KW_AUXPOW_CHAIN_ID, NULL)) {
+            kw_auxpow_check(&ap, id, 0x1a000001u, KW_AUXPOW_CHAIN_ID, 1, NULL)) {
             fprintf(stderr, "FAIL: %s met a target far above its own\n", real[i].what);
             fail = 1;
         }
@@ -427,14 +427,21 @@ int main(void)
         kw_auxpow ap;
         size_t off = 0;
         if (kw_auxpow_parse(b.blob, b.blob_len, &off, &ap) &&
-            kw_auxpow_check(&ap, b.aux_hash, 0x01000001u, KW_AUXPOW_CHAIN_ID, NULL))
+            kw_auxpow_check(&ap, b.aux_hash, 0x01000001u, KW_AUXPOW_CHAIN_ID, 1, NULL))
             bad("the parent met a target of one");
     }
 
     if (fail) return 1;
-    /* A parent that claims an auxpow of its own is refused, which Core calls
-       "auxpow parent block has auxpow version": otherwise a proof chains through
-       another proof. The parent's version is in the blob's last 80 bytes. */
+    /* A parent carrying the auxpow bit in its version is accepted, because core
+       accepts it: CAuxPow::check tests the index, the parent's chain id under
+       fStrictChainId, and the branch length, and nothing about the parent's
+       version. The parent is a bare header there, where the flag means nothing.
+       Refusing it would stop a sync at any mainnet block whose parent chain
+       happens to signal bit 8. The parent's version is in the blob's last 80
+       bytes.
+
+       The chain-id rule is testnet's: core turns fStrictChainId off there, so a
+       parent on our own chain has to be accepted when the id is not demanded. */
     {
         size_t hexlen = strlen(b371337);
         size_t n = hexlen / 2;
@@ -448,7 +455,7 @@ int main(void)
         kw_auxpow ap;
         size_t off = 0;
         if (!kw_auxpow_parse(blob + 80, n - 80, &off, &ap) ||
-            !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID)) {
+            !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID, 1)) {
             fprintf(stderr, "FAIL: the honest proof no longer parses\n"); return 1;
         }
 
@@ -456,15 +463,34 @@ int main(void)
         uint8_t *parent = blob + 80 + (off - 80);
         parent[1] |= 0x01;
         off = 0;
+        if (!kw_auxpow_parse(blob + 80, n - 80, &off, &ap) ||
+            !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID, 1)) {
+            fprintf(stderr, "FAIL: a parent signalling auxpow in its version was "
+                            "refused, which core accepts\n"); return 1;
+        }
+
+        /* and the parent chain id: refused when demanded, taken when it is not */
+        parent[1] &= (uint8_t)~0x01;
+        parent[2] = (uint8_t)(KW_AUXPOW_CHAIN_ID & 0xff);
+        parent[3] = (uint8_t)(KW_AUXPOW_CHAIN_ID >> 8);
+        off = 0;
         if (kw_auxpow_parse(blob + 80, n - 80, &off, &ap) &&
-            kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID)) {
-            fprintf(stderr, "FAIL: a parent claiming its own auxpow was accepted\n"); return 1;
+            kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID, 1)) {
+            fprintf(stderr, "FAIL: a parent on our own chain was accepted where the "
+                            "id is demanded\n"); return 1;
+        }
+        off = 0;
+        if (!kw_auxpow_parse(blob + 80, n - 80, &off, &ap) ||
+            !kw_auxpow_check_structure(&ap, id, KW_AUXPOW_CHAIN_ID, 0)) {
+            fprintf(stderr, "FAIL: the parent's chain id was demanded on a network "
+                            "that does not ask for it\n"); return 1;
         }
         free(blob);
     }
 
     printf("auxpow ok: 4 real mainnet proofs verify and fail with one bit of the parent\n"
            "  moved, none meets its own target, and 9 tampers on a built proof plus\n"
-           "  truncation, an impossible target and a parent claiming its own auxpow\n  are refused\n");
+           "  truncation and an impossible target are refused, a parent signalling\n"
+           "  auxpow is taken as core takes it, and the parent chain id is demanded\n  only where the chain demands it\n");
     return 0;
 }
