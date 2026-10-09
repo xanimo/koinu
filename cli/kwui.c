@@ -37,7 +37,12 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MAXADDR 200
+/* The rows are allocated from the gap rather than fixed: kwui capped at 100 per
+   chain while kw scan watches up to 20000, so a wallet whose .meta recorded a
+   gap of 160 showed the coins below 100 and left the rest out of the balance
+   while send_flow still selected them and failed at signing. The ceiling is
+   scan's own, so what the scan watched is always drawable. */
+#define MAXADDR 20000
 
 static const kw_chainparams *chain_for(int net)
 {
@@ -750,7 +755,7 @@ int main(int argc, char **argv)
     }
     if (!ks) { fprintf(stderr, "kwui: --keystore is required\n"); return 2; }
     if (gap < 1) gap = 1;
-    if (gap > MAXADDR / 2) gap = MAXADDR / 2;
+    if (gap > MAXADDR) gap = MAXADDR;
     const kw_chainparams *cp = chain_for(net);
     if (!kw_ec_start()) { fprintf(stderr, "kwui: ec init failed\n"); return 1; }   /* derivation needs it */
 
@@ -793,12 +798,13 @@ int main(int argc, char **argv)
     uint32_t scan_tip = 0;
     kw_scanmeta_read(utxos, NULL, &extent, &scan_tip);
     if (extent > gap) gap = extent;
-    if (gap > MAXADDR / 2) gap = MAXADDR / 2;
+    if (gap > MAXADDR) gap = MAXADDR;
 
-    row *rows = (row *)calloc(MAXADDR, sizeof *rows);
+    /* two chains, receive and change */
+    row *rows = (row *)calloc((size_t)gap * 2, sizeof *rows);
     if (!rows) { kw_utxoset_free(&us); kw_secure_forget(seed, sizeof seed); return 1; }
     uint64_t total = 0;
-    int n = build_rows(cp, seed, gap, &us, rows, MAXADDR, &total);
+    int n = build_rows(cp, seed, gap, &us, rows, gap * 2, &total);
     kw_secure_forget(seed, sizeof seed);     /* addresses are derived; the seed is done */
 
     int *vis = (int *)calloc((size_t)(n > 0 ? n : 1), sizeof *vis);

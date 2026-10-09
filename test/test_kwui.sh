@@ -31,10 +31,13 @@ printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK" > "$WORK/ks.utxos"
 # A coin past kwui's --gap but inside what kw scan watched. kwui used to derive
 # its own gap only, so this one was missing from the balance while send_flow
 # still spent it and then failed at signing.
-SPK25=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 25 --spk)
+# index 150, past the 100 per chain kwui used to cap itself at, and inside the
+# 160 the meta records: the rows are allocated from the gap now, so what the scan
+# watched is what kwui can show.
+SPK25=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 150 --spk)
 TXID3=3333333333333333333333333333333333333333333333333333333333333333
 printf '%s 0 900000000000 101 %s\n# end 2\n' "$TXID3" "$SPK25" >> "$WORK/ks.utxos"
-printf 'feerate 0\ngap 30\n' > "$WORK/ks.utxos.meta"
+printf 'feerate 0\ngap 160\n' > "$WORK/ks.utxos.meta"
 
 # wait until (file) contains (pattern), or fail after ~10s
 wait_for() {
@@ -59,8 +62,8 @@ UI_PID=$!
 exec 3<> "$WORK/in"
 
 printf 'a test passphrase\n' >&3
-# 5 DOGE at index 0 plus 9000 at index 25, which is past --gap 2 and inside the
-# extent the meta records
+# 5 DOGE at index 0 plus 9000 at index 150, which is past --gap 2 and past the
+# 100 kwui used to cap at, and inside the extent the meta records
 wait_for "$WORK/out" '9005.00000000 DOGE across 2'
 
 printf '\n' >&3
@@ -92,4 +95,4 @@ wait "$UI_PID" || { echo "FAIL: kwui exited non-zero" >&2; exit 1; }
 UI_PID=""
 
 echo "kwui ok: browse, address, coins, empty history, refresh picks up a new output,"
-echo "  and a coin past --gap inside the scan's extent is counted"
+echo "  and a coin at index 150 inside the scan's extent is counted"
