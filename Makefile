@@ -273,16 +273,21 @@ NETFUZZ = peer sync psync pfill cfsync spvsync outpoint kwdflow
 fuzz-net: $(SECP_LIB)
 	@for t in $(NETFUZZ); do \
 	    echo "building fz_$$t"; \
-	    $(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined \
-	        -fno-sanitize-recover=undefined -fno-omit-frame-pointer -pthread \
+	    $(FUZZ_CC) $(FUZZFLAGS) -pthread \
 	        $(CPPFLAGS) -Ifuzz/net -Itest -o fz_$$t fuzz/net/fz_$$t.c $(CORE_SRC) $(SECP_LIB) || exit 1; \
 	done
+# -fno-sanitize-recover, as the stateful harnesses and the sanitizer gates carry:
+# without it ubsan prints and the run carries on, so a release gate that lists
+# `make fuzz` would have passed over every undefined operation it found.
+FUZZFLAGS = -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined \
+            -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+
 fuzz: fuzz/fuzz_parse.c fuzz/fuzz_wire.c $(SECP_LIB)
-	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined $(CPPFLAGS) \
+	$(FUZZ_CC) $(FUZZFLAGS) $(CPPFLAGS) \
 	    -o fuzz_parse fuzz/fuzz_parse.c $(CORE_SRC) $(SECP_LIB)
-	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined -pthread $(CPPFLAGS) \
+	$(FUZZ_CC) $(FUZZFLAGS) -pthread $(CPPFLAGS) \
 	    -DKW_FUZZ_SOCKS5 -o fuzz_socks5 fuzz/fuzz_wire.c $(CORE_SRC) $(SECP_LIB)
-	$(FUZZ_CC) -std=gnu11 -O1 -g -fsanitize=fuzzer,address,undefined -pthread $(CPPFLAGS) \
+	$(FUZZ_CC) $(FUZZFLAGS) -pthread $(CPPFLAGS) \
 	    -DKW_FUZZ_KWD -o fuzz_kwd fuzz/fuzz_wire.c $(CORE_SRC) $(SECP_LIB)
 
 fuzz-run: fuzz/fuzz_parse.c $(LIB) $(SECP_LIB)
