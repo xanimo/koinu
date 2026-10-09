@@ -234,6 +234,18 @@ OUT=$(./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since
 case "$OUT" in "kw: --outpoint"*)
     echo "FAIL: the canonical spelling was refused: $OUT" >&2; exit 1;; esac
 
+# each --input amount is bounded on its own, and the sum was not: nineteen
+# inputs of ten billion DOGE wrapped the total and produced outputs the fee was
+# computed against.
+BIG=""
+for i in $(seq 1 19); do
+    BIG="$BIG --input 1111111111111111111111111111111111111111111111111111111111111111:$i:10000000000:0"
+done
+if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" $BIG \
+       --to "$ADDR1:1000" >/dev/null 2>&1; then
+    echo "FAIL: nineteen ten-billion-DOGE inputs signed" >&2; exit 1
+fi
+
 # the mnemonic is the only backup, so a write that fails must not leave a
 # keystore behind: against /dev/full every write failed and kw still sealed one
 # and exited 0.

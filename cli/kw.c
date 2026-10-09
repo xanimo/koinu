@@ -1140,6 +1140,15 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 if (!known)
                     fprintf(stderr, "kw: --input %s:%u is not in the tracked set, "
                                     "so its amount is taken as given\n", txid, vout);
+            } else {
+                /* No set at all: legacy sighash does not commit to input value,
+                   so a wrong amount still signs and the difference goes to the
+                   miner. Nothing here can catch that, which the operator should
+                   hear once rather than never. */
+                if (i == 0)
+                    fprintf(stderr, "kw: no utxo set to check --input amounts against, so "
+                                    "they are taken as given;\n    a wrong one is paid to "
+                                    "the miner\n");
             }
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 0, index, &inkeys[nin])) {
                 fprintf(stderr, "kw: cannot derive input %d\n", i); goto out;
@@ -1152,6 +1161,15 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             kw_hash160(pub, 33, h);
             h160_to_spk(h, prevspk[nin]);
             if (!kw_tx_add_input(&tx, txid, vout)) { fprintf(stderr, "kw: too many inputs\n"); goto out; }
+            /* Each amount is bounded on its own and the sum was not: nineteen
+               inputs of ten billion DOGE wrapped the total and produced outputs
+               the fee was computed against. The chain's whole supply fits in the
+               bound, so a total past it is a typo rather than a wallet. */
+            if (amt > KOINU_MAX_MONEY - total_in) {
+                fprintf(stderr, "kw: the --input amounts add up past every koinu there "
+                                "will ever be\n");
+                goto out;
+            }
             total_in += amt; nin++;
         }
     } else {
