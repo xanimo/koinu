@@ -219,7 +219,11 @@ static void kw_tty_restore(int sig)
     raise(sig);
 }
 
-static char *read_secret(const char *arg, const char *prompt)
+/* (sealing) is 1 where an empty passphrase would be written into a new keystore
+   and 0 where one is being opened. Refusing an empty line on open locks out every
+   keystore 0.2.5 sealed with one, which is a wallet its owner can no longer
+   spend from. */
+static char *read_secret_mode(const char *arg, const char *prompt, int sealing)
 {
     char *line = (char *)malloc(KW_SECRET_MAX);
     if (!line) return NULL;
@@ -267,17 +271,23 @@ static char *read_secret(const char *arg, const char *prompt)
                                  "or passphrase needs\n", KW_SECRET_MAX - 1);
     if (n < 0) { secret_free(line); return NULL; }
     chomp(line);
-    /* An empty line is not a passphrase. argon2 over zero bytes seals a keystore
-       that opens with nothing, against the claim that a stolen one yields nothing
-       without its passphrase, and kwui already refuses one, so kw could make a
-       wallet kwui could not open. */
-    if (!line[0]) {
+    /* An empty line is not a passphrase to seal with. argon2 over zero bytes
+       seals a keystore that opens with nothing, against the claim that a stolen
+       one yields nothing without its passphrase. Opening is the other way round:
+       0.2.5 sealed such keystores, and refusing the empty line there locks their
+       owners out of their own coins. */
+    if (sealing && !line[0]) {
         fprintf(stderr, "kw: that was empty; a passphrase of nothing seals a keystore "
                         "that opens with nothing\n");
         secret_free(line);
         return NULL;
     }
     return line;
+}
+
+static char *read_secret(const char *arg, const char *prompt)
+{
+    return read_secret_mode(arg, prompt, 0);
 }
 
 
@@ -609,7 +619,7 @@ static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char
 static int seal_and_report(const kw_chainparams *cp, const char *path,
                            const char *pass_arg, const uint8_t seed[64])
 {
-    char *pass = read_secret(pass_arg, "new passphrase: ");
+    char *pass = read_secret_mode(pass_arg, "new passphrase: ", 1);
     if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 1; }
 
     uint8_t blob[8192];

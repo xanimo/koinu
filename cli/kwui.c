@@ -119,7 +119,10 @@ static char *ask_pass(void)
         signal(SIGTERM, SIG_DFL);
         fprintf(stderr, "\n");
     }
-    if (truncated || n == 0) { kw_secure_forget(line, KWUI_SECRET_MAX); free(line); return NULL; }
+    /* An empty line opens a keystore sealed with one, which 0.2.5 wrote. kw
+       refuses an empty passphrase where it seals and takes one where it opens,
+       and kwui only ever opens. */
+    if (truncated) { kw_secure_forget(line, KWUI_SECRET_MAX); free(line); return NULL; }
     return line;
 }
 
