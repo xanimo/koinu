@@ -296,12 +296,11 @@ int main(void)
         kw_utxoset_free(&u2); kw_watchset_free(&w2);
     }
 
-    /* A 64-byte transaction is the one length that reads as a pair of txids, so
-       one blob can stand in for two leaves under a root that commits to neither,
-       and the duplicate-pair check never sees it because the halves are not a
-       pair at that level. This one is a well-formed coinbase of exactly 64 bytes
-       under an honest root, so every other rule accepts it and only the length
-       refuses it. */
+    /* A 64-byte transaction reads as a pair of txids, so one blob can stand in
+       for two leaves under a root committing to neither. Refusing the length
+       refuses real blocks: a p2sh(OP_TRUE) spend paying one OP_RETURN is 64
+       bytes, standard, and dogecoind mines it, so one of them in a block would
+       have stopped every scan over that block. The block must read. */
     {
         static const uint8_t t64[64] = {
             0x01,0,0,0,                                     /* version */
@@ -330,8 +329,9 @@ int main(void)
         memcpy(blk + n, t64, sizeof t64); n += sizeof t64;
         kw_hash256(t64, sizeof t64, blk + 36);              /* the honest root */
 
-        if (kw_block_merkle_ok(blk, n)) {
-            fprintf(stderr, "FAIL: a 64-byte transaction passed the merkle check\n"); return 1;
+        if (!kw_block_merkle_ok(blk, n)) {
+            fprintf(stderr, "FAIL: a block holding a 64-byte transaction was refused, "
+                            "which is every scan over that block\n"); return 1;
         }
 
         /* a transaction with no inputs is refused outright, which is the other
@@ -367,7 +367,7 @@ int main(void)
 
     printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
            "  an output that pays another script refused, a body its header does not\n"
-           "  commit to refused, a 64-byte stand-in and an input-less transaction\n"
+           "  commit to refused, a block holding a 64-byte transaction still read,\n  an input-less transaction\n"
            "  refused, and a repeated last node with it\n");
     return 0;
 }

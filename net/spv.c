@@ -99,15 +99,17 @@ int kw_block_merkle_ok(const uint8_t *msg, size_t len)
         size_t consumed = kw_tx_scan(msg + off, len - off, NULL,
                                      i == 0 ? cb_on_input : NULL, NULL, &first);
         if (!consumed) { free(h); return 0; }
-        /* A 64-byte transaction is the one length that can be read as a pair of
-           txids, which is how a single blob stands in for two leaves under a root
-           that commits to neither. The duplicate-pair check above does not see it,
-           because the two halves are not a pair at this level. No transaction on
-           this chain is 64 bytes: the shortest legacy form is 60 and needs empty
-           scripts to get there. */
-        if (consumed == 64) { free(h); return 0; }
-        /* and the first transaction in a block is a coinbase, which a stand-in
-           would have to grind a null prevout inside a txid to satisfy */
+        /* A 64-byte transaction is the one length that reads as a pair of txids,
+           so one blob can stand in for two leaves under a root committing to
+           neither. Refusing that length refuses real blocks: a p2sh(OP_TRUE)
+           spend paying one OP_RETURN is 64 bytes, standard, and dogecoind mines
+           it, so one such transaction would have stopped every scan over its
+           block. What is left is what core enforces, and it is enough here: a
+           blob of two hashes has to parse with a non-empty vin and vout, and a
+           forged leaf has to pay the watched scriptPubKey to be read as a
+           payment, which is grinding a chosen script out of sha256d output. */
+        /* The first transaction in a block is a coinbase, which a stand-in would
+           have to grind a null prevout inside a txid to satisfy. */
         if (i == 0 && !first.coinbase) { free(h); return 0; }
         kw_hash256(msg + off, consumed, h[n++]);
         off += consumed;

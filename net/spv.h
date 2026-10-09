@@ -45,7 +45,12 @@ int kw_block_scan(const uint8_t *msg, size_t len,
    Rejects a block whose tree has an identical adjacent pair at any level, which is
    CVE-2012-2459: the odd-node duplication rule lets two different transaction lists
    produce one root, so a valid block can be replayed as an invalid one with the same
-   hash. Returns 0 on a malformed body too. */
+   hash. A transaction with an empty vin or vout is refused with it, which core
+   refuses too and which is what let a 64-byte blob equal to two txids parse as a
+   leaf. The length itself is not refused: a standard p2sh spend of that size
+   exists and is mined, so refusing it would make the block unreadable.
+
+   Returns 0 on a malformed body too. */
 int kw_block_merkle_ok(const uint8_t *msg, size_t len);
 
 /* Download one block by hash over (p) and check that it is the block asked for.
