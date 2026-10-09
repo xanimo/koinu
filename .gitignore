@@ -66,3 +66,7 @@
 /local.txt
 /offsite.txt
 /net_tor
+/crash-*
+/leak-*
+/timeout-*
+/oom-*

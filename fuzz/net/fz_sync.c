@@ -176,9 +176,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             work_of(&tmp, (uint32_t)same, &b);
             if (kw_u256_cmp(&a, &b) <= 0) NF_FAIL("I3 store shrank %zu -> %zu without more work", start_n, s.count);
         }
-        /* I5 */
-        if (npeers == 1 && (size_t)ret != s.count - start_n) NF_FAIL("I5 ret %ld but grew %zu -> %zu", ret, start_n, s.count);
-        if (npeers > 1 && r.winner >= 0 && (size_t)ret != s.count - r.fork_height)
+        /* I5: what was returned is what was appended, which is the store above
+           the fork and not its net growth. A one-peer sync follows a reorg too,
+           dropping a tail before it appends, so comparing against start_n held
+           only while no fork happened: 37 headers forking at 33 and appending 8
+           ends at 41, which is a return of 8 and a growth of 4. The multi-peer
+           branch has read fork_height all along, and the single-peer path sets
+           it the same way. */
+        if (r.winner >= 0 && (size_t)ret != s.count - r.fork_height)
             NF_FAIL("I5 ret %ld, count %zu, fork %u", ret, s.count, r.fork_height);
     }
 
