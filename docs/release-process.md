@@ -93,6 +93,19 @@ Nothing is tagged until all of these pass on the commit being tagged:
                         These carry invariants on the store, the caches and
                         every answer, which is what a crash-only run misses
 
+`make fuzz` and `make fuzz-net` build; running the binaries is the gate. Run
+each under `setarch -R`:
+
+    setarch -R ./fz_spvsync -max_total_time=300 corpusdir
+
+Without it, half the runs on this host die with SIGSEGV and an empty log before
+libFuzzer prints a line. That is the sanitizer's shadow mapping colliding with
+`vm.mmap_rnd_bits=32`, which is what Ubuntu 24.04 on 6.8 sets, not a finding:
+six of twelve seeds crashed with randomization on and none of the same six with
+it off. `sysctl vm.mmap_rnd_bits=28` fixes it host-wide if you have root. The
+output is block buffered, so a run killed by a signal leaves nothing behind to
+read, which is what makes this look like an early crash rather than a late one.
+
 The release binary's hardening is a property of the toolchain that linked it, so
 check the artifact rather than the flags:
 
