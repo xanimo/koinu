@@ -273,6 +273,7 @@ static const kw_checkpoint KW_DOGE_MAINNET_CHECKPOINTS[] = {
     { 6325000, "a688b226eaf44e91d2b5604b1adc3c01fee641afc8c426c5abad4008eea34df2" },
     { 6350000, "948536c5d2be4002adf3478caecbcd8c322cb9ead584f9a67e7cacc2f33a420d" },
     { 6375000, "d8ed52f5734cec9e65435397e3b790bd265e557a2c850de93454ed64a4f2777a" },
+    { 6400000, "d9248a55b06dfa46841ae7fdff2d918c5c1d1434eaa60ba9cca27455903dd393" },
 };
 
 /* Basic-filter (BIP158) header anchors, every 100000 blocks. Each value is the
