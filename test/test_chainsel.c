@@ -313,6 +313,41 @@ int main(void)
         kw_headerstore_free(&s);
     }
 
+    /* And one peer alone must not put the comparison past the bound. The span was
+       taken from the highest advertised height, so a peer claiming 2^31-1 in its
+       version message collapsed the weighing to peers[0], which may be that peer:
+       a single lying peer could switch off the comparison the threat model rests
+       on. The bound is a median now, so a claim nobody else makes does not move
+       it. */
+    {
+        uint8_t liar[3][80];
+        if (!build_chain(liar, 3, base.hash, EASY, 950))
+            { fprintf(stderr, "FAIL: could not mine the liar's fork\n"); return 1; }
+
+        kw_headerstore s;
+        kw_headerstore_init(&s);
+        kw_headerstore_append(&s, &base);
+
+        kw_peer a, b;
+        if (!fake_peer(&a, &cp, liar, 3, 2) || !fake_peer(&b, &cp, liar, 3, 2))
+            { fprintf(stderr, "FAIL: peers\n"); return 1; }
+        a.peer_height = 2147483647;              /* the liar */
+        b.peer_height = 4;
+        kw_peer *const peers[2] = { &a, &b };
+
+        kw_chainsel_result r;
+        long n = kw_sync_headers_best(peers, 2, &s, &cp, 1, &r);
+        kw_peer_close(&a); kw_peer_close(&b);
+
+        if (n < 0) { fprintf(stderr, "FAIL: the sync failed with a lying peer\n"); return 1; }
+        if (r.ncandidates != 2) {
+            fprintf(stderr, "FAIL: one peer's claimed height left %d candidate(s), want 2\n",
+                    r.ncandidates);
+            return 1;
+        }
+        kw_headerstore_free(&s);
+    }
+
     /* One peer, and the chain it serves replaces the cached tip. The locator used
        to carry only that tip, so after a reorg the peer answered from genesis,
        the first header linked to nothing held, and the sync failed: with one
@@ -393,7 +428,7 @@ int main(void)
     }
 
     printf("chainsel ok: the heavier of two forks wins over the longer one, the cached\n"
-           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind, a span past the bound falls back\n  to one peer, a one-peer reorg is followed rather than wedging the cache,\n"
+           "  chain is a candidate, a fork with a header that fails its target is dropped,\n  one peer failing leaves nothing behind, a span past the bound falls back\n  to one peer while one peer's claimed height does not, a one-peer reorg is\n  followed rather than wedging the cache,\n"
            "  and a first run with no cache syncs from genesis\n");
     return 0;
 }

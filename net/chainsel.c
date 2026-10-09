@@ -20,6 +20,10 @@
    than have every peer's fork buffered. */
 #define KW_CHAINSEL_MAX_TAIL 200000
 
+/* --node takes at most eight, which is what the median below has to hold. More
+   peers than this are still weighed; only the heights past it are not sorted. */
+#define KW_CHAINSEL_MAX_PEERS 8
+
 /* The height in (s) whose hash is (h), or 0. Searched from the tip, which is
    where a fork point almost always is. */
 static uint32_t height_of(const kw_headerstore *s, const uint8_t h[32])
@@ -185,11 +189,30 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
        while every peer served the whole chain, each candidate was held in memory
        and hashed in full, and the winner was copied again. A peer's advertised
        height is what says how far that is before a byte is fetched. */
+    /* The median of what the peers advertise, not the highest. A height is a
+       claim in a version message, and taking the highest let one peer claiming
+       2^31 push the span past the cap and collapse the comparison to peers[0],
+       which may be that peer: a lying peer could switch off the comparison the
+       threat model rests on. A median moves only when most of them agree. */
     size_t span = s->count - floor;
-    for (int i = 0; i < npeers; i++) {
-        if (!peers[i] || peers[i]->peer_height <= 0) continue;
-        uint32_t ph = (uint32_t)peers[i]->peer_height;
-        if (ph > floor && (size_t)(ph - floor) > span) span = ph - floor;
+    {
+        uint32_t h[KW_CHAINSEL_MAX_PEERS];
+        int nh = 0;
+        for (int i = 0; i < npeers && nh < KW_CHAINSEL_MAX_PEERS; i++) {
+            if (!peers[i] || peers[i]->peer_height <= 0) continue;
+            h[nh++] = (uint32_t)peers[i]->peer_height;
+        }
+        for (int i = 1; i < nh; i++) {            /* a handful of values, so insertion */
+            uint32_t v = h[i]; int j = i;
+            while (j > 0 && h[j - 1] > v) { h[j] = h[j - 1]; j--; }
+            h[j] = v;
+        }
+        if (nh) {
+            /* the lower median, so two peers take the smaller: with only two
+               there is nothing to outvote a liar with */
+            uint32_t med = h[(nh - 1) / 2];
+            if (med > floor && (size_t)(med - floor) > span) span = med - floor;
+        }
     }
 
     size_t ntail = s->count - floor;
