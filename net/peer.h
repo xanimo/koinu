@@ -62,6 +62,12 @@ int  kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *ple
    is written down: the agent string said 0.1 for every release up to 0.2.5. */
 #define KW_USER_AGENT "/koinu:" KW_VERSION "/"
 
+/* BIP159 service bits this wallet reads. NODE_BLOOM is what says a node will
+   answer a BIP35 mempool request: core disconnects a peer that sends one with
+   -peerbloomfilters=0. */
+#define KW_NODE_NETWORK  (1ULL << 0)
+#define KW_NODE_BLOOM    (1ULL << 2)
+
 #define KW_PEER_MAX_SKIP 256
 
 /* The longest one exchange may take, whatever arrives during it. SO_RCVTIMEO

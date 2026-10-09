@@ -1798,6 +1798,10 @@ static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
 #define KW_SEND_PROBE_SECONDS 40
 #define KW_SEND_INV_GRACE_SECONDS 2
 
+/* How long to wait for a reject from a node that cannot be asked what it holds.
+   Core sends one as it processes the transaction, so this is short. */
+#define KW_SEND_REJECT_SECONDS 5
+
 static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node,
                     int port, int tor, int assume_yes)
 {
@@ -1860,7 +1864,14 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
        the protocol otherwise lacks; nothing matching is reported as unknown. */
     uint8_t txint[32];
     for (int i = 0; i < 32; i++) txint[i] = txid[i];
-    if (!kw_peer_send(&p, "mempool", NULL, 0)) {
+
+    /* A node run with -peerbloomfilters=0 does not answer a mempool request: it
+       disconnects the peer that sends one, so the probe produced "unknown" for
+       every transaction it had just accepted. The service bit says so before the
+       request is made, and there is no acknowledgement to be had from such a
+       node: say which it is rather than reporting it as not held. */
+    int can_ask = (p.peer_services & KW_NODE_BLOOM) != 0;
+    if (can_ask && !kw_peer_send(&p, "mempool", NULL, 0)) {
         fprintf(stderr, "kw: could not ask the node what it holds\n");
         goto out;
     }
@@ -1873,7 +1884,7 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
        in eight. Wait out the draw, and keep the deadline off the socket timeout
        so a peer that hangs up still ends it. */
     struct timespec probe0, last_inv;
-    int saw_inv = 0, said_waiting = 0;
+    int saw_inv = 0, said_waiting = 0, skipped = 0;
     clock_gettime(CLOCK_MONOTONIC, &probe0);
     last_inv = probe0;
     for (;;) {
@@ -1886,8 +1897,10 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
             long since_inv = now.tv_sec - last_inv.tv_sec;
             /* The absolute bound holds whatever arrives, so a node inv'ing on a
                timer of its own cannot hold this open by resetting the grace. */
-            if (total < KW_SEND_PROBE_SECONDS &&
-                (!saw_inv || since_inv < KW_SEND_INV_GRACE_SECONDS)) {
+            if (!can_ask) {
+                if (total < KW_SEND_REJECT_SECONDS) continue;
+            } else if (total < KW_SEND_PROBE_SECONDS &&
+                       (!saw_inv || since_inv < KW_SEND_INV_GRACE_SECONDS)) {
                 if (!said_waiting++)
                     fprintf(stderr, "kw: sent; waiting up to %ds for the node's "
                                     "inventory tick to say whether it holds it\n",
@@ -1896,8 +1909,22 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
             }
         }
         if (r != 1) {
-            printf("unknown: %s (no reject, and the node does not list it in its "
-                   "mempool; an orphan or a repeat looks like this)\n", txidhex);
+            if (can_ask)
+                printf("unknown: %s (no reject, and the node does not list it in its "
+                       "mempool; an orphan or a repeat looks like this)\n", txidhex);
+            else
+                printf("sent: %s (no reject arrived, and this node serves no mempool "
+                       "request, so it cannot be asked\n  whether it holds it; run it "
+                       "with -peerbloomfilters=1, or broadcast through a node that "
+                       "does)\n", txidhex);
+            rc = 4;
+            break;
+        }
+        /* a peer pinging inside every timeout window keeps this loop fed without
+           ever answering, which the deadline alone does not stop cheaply */
+        if (++skipped > KW_PEER_MAX_SKIP) {
+            printf("unknown: %s (the node sent %d messages without answering what it "
+                   "holds)\n", txidhex, skipped);
             rc = 4;
             break;
         }
