@@ -1,6 +1,39 @@
 # Changelog
 
 ## [Unreleased]
+
+## Upgrading from 0.2.x
+
+Rescan. A utxo set written by 0.2.x has no `# end` line, so it does not load and
+sign reports no utxo set until `kw scan` writes a new one. Nothing is lost by it:
+the set is derived from the chain.
+
+What a caller has to change:
+
+- `kw psbt sign` and `kw cosign` require `--utxo`, the raw transaction holding
+  the coin being spent, so the script being signed is tied to what that coin is
+  locked to.
+- `kw_block_find_outpoint` takes the scriptPubKey being waited on. An outpoint
+  alone says where a payment sits and not who it pays.
+- `kwd` refuses a request with no since height, and `kw outpoint --daemon` now
+  refuses to send one without `--since`.
+- `kw outpoint --daemon` and `kwd` take one spelling of an outpoint: one colon, a
+  64-character lowercase txid, and a vout with no leading zero.
+- Numeric arguments that 0.2.x read loosely are refused: `--input`'s key index,
+  an outpoint vout past 2^32, and anything with trailing characters.
+
+Exit codes, which 0.2.x did not have:
+
+    0   done
+    1   refused, with a reason
+    2   usage, or a flag the command needs and did not get
+    3   outpoint: spent, or not in the set the scan built
+    4   outpoint: not seen in the range asked for
+        send: the node does not hold the transaction, or cannot be asked
+    5   an immature coinbase: held, not spendable yet
+
+kwd answers with the same number in front of its reply line.
+
 ## What's Changed
 * kwd: check the work of the chain it answers from, and weigh several peers
   kwd answered confirmations from a chain it never checked the work of. It now
@@ -102,7 +135,8 @@
 * scan: an address that was paid stays used, even once it is spent
 * kw: ask the node whether it holds the transaction, rather than reading silence
   A node has no acknowledgement for a transaction it accepted, so send asks for
-  it back after broadcasting and exits 4 when the node does not hold it.
+  it back after broadcasting and exits 4 when the node does not hold it, and when
+  the node cannot be asked at all, which is a node run with -peerbloomfilters=0.
 * socks5: a fresh credential pair per connection, so tor isolates the streams
   Without credentials every connection could share one circuit and one exit,
   which is the comparison the threat model relies on above the newest anchor.
@@ -126,6 +160,63 @@
 * chainparams: anchor 6400000
   The tail a cold sync checks the slow way drops from 32315 headers to 7315.
 * chainparams: filter anchor 6400000
+
+* docs: a features list and the sync numbers as measured today
+* docs: say that the fuzz gate needs setarch -R on this host
+* kw: wait out the node's inventory tick before calling a send unknown
+  A node answers the BIP35 probe on its own inventory timer, averaging five
+  seconds, and send gave up at ten: about one send in eight reported "unknown"
+  with exit 4 for a transaction the node had accepted.
+* utxo: initialise the used flag, which the scan reads to size its window
+* kw: refuse an empty passphrase when sealing, not when opening
+  0.2.5 sealed keystores with an empty passphrase and the refusal applied to
+  opening too, locking those owners out of their own wallets.
+* spv: read a block holding a 64-byte transaction instead of refusing it
+  A standard p2sh spend of that size exists and is mined, and refusing the
+  length made every scan, outpoint and kwd query over its block fail. For one
+  fee anyone could have stopped them.
+* auxpow: make the parent rules the ones core actually applies
+* sync: account for every fork in an exchange, not only the first
+  A peer forking twice in one exchange truncated the store with the headers
+  between the two forks saved nowhere, and the next sync appended its lighter
+  chain with no work compared.
+* sync: keep the headers below one the chain refuses, and read the clock per batch
+  One header past the two-hour bound discarded the whole sync, and the bound
+  read the clock once, so a sequential mainnet sync taking longer than two hours
+  failed at its last batch every time.
+* utxo: take coinbase maturity from the chain, and record the height scanned
+  Maturity was 60 everywhere, where core wants 30 below height 145000 and 240
+  above it on mainnet and testnet, so a mainnet coinbase at depth 60 was offered
+  for spending and refused by the node. The scan also recorded the headers it
+  appended as the height it had reached, so a second scan with --headers made
+  every coinbase read as immature.
+* kw: cosign only a script that cannot be spent with the signing key alone
+  Breaking: cosign requires --utxo now. A p2pk script names the signing key, so
+  --redeem set to the p2pk scriptPubKey of a coin that key holds turned a
+  co-signature into a complete spend of it.
+* chainsel: bound the comparison by what the peers agree on, not the loudest
+  One peer advertising 2^31-1 pushed the span past the cap and collapsed the
+  multi-peer comparison to a single peer, which could be that one.
+* kw: do not ask a node that cannot answer, and bound what it may say instead
+* psbt: verify every signature a combine holds, not only the arriving ones
+* utxo: do not write the set through a symlink left at the temp path
+* tx: start the scriptCode at the separator that ran, not at the script
+  A separator executing before the CHECKSIG moves where the scriptCode starts,
+  so signatures over such a script were refused on chain.
+* cfstore: walk a cache longer than the chain back, rather than refusing it
+* net: bound a wait in time, which is what peer.h already claimed
+* kw: one spelling per outpoint, and a parsed key index
+* kwui: size the address list from the scan's extent, not a fixed 200
+  kwui capped at 100 addresses per chain while scan watches up to 20000, so a
+  wallet with coins past that showed a balance short of what it holds.
+* kw: ask for the passphrase before showing the mnemonic, and check it was written
+  kw new printed the mnemonic first, so a refused passphrase left it on screen
+  with no keystore, and an unwritable stdout sealed a keystore whose only backup
+  went nowhere while exiting 0.
+* kw: bound what the --input amounts add up to, and say when nothing checks them
+* build: make fuzz builds with -fno-sanitize-recover, as every other gate does
+* kw: the smaller things the review listed, one pass
+* gitignore the fuzz binaries make fuzz and fuzz-net build
 
 ## [0.2.5] - 2026-09-15
 ## What's Changed
