@@ -17,6 +17,7 @@
 #include "testutil.h"
 
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -66,6 +67,49 @@ static long feed_two(const kw_chainparams *cp)
     kw_peer_close(&p);
     close(sv[1]);
     return r;
+}
+
+/* An 80-byte header on (prev) at (when), regtest bits. Nothing here checks work,
+   which the validator pool does, so the nonce only has to make hashes differ. */
+static void mk_header(uint8_t raw[80], const uint8_t prev[32], uint32_t when, uint32_t nonce)
+{
+    memset(raw, 0, 80);
+    raw[0] = 0x04; raw[1] = 0x00; raw[2] = 0x62; raw[3] = 0x00;   /* version 4, our chain id */
+    memcpy(raw + 4, prev, 32);
+    raw[36] = (uint8_t)nonce;                                      /* a merkle root that differs */
+    raw[68] = (uint8_t)when;       raw[69] = (uint8_t)(when >> 8);
+    raw[70] = (uint8_t)(when >> 16); raw[71] = (uint8_t)(when >> 24);
+    raw[72] = 0xff; raw[73] = 0xff; raw[74] = 0x7f; raw[75] = 0x20; /* 207fffff */
+    raw[76] = (uint8_t)nonce;
+}
+
+/* A peer that answers each getheaders with one scripted batch, then nothing. */
+static int scripted_peer(kw_peer *p, const kw_chainparams *cp,
+                         uint8_t (*batches)[80], int nbatch)
+{
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return 0;
+    struct timeval tv = { 5, 0 };
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    uint8_t frame[4096];
+    for (int b = 0; b < nbatch; b++) {
+        uint8_t payload[128];
+        size_t pn = 0;
+        payload[pn++] = 1;
+        memcpy(payload + pn, batches[b], 80); pn += 80;
+        payload[pn++] = 0x00;
+        size_t fn = kw_msg_serialize(cp->magic, "headers", payload, pn, frame, sizeof frame);
+        if (!fn || write(sv[1], frame, fn) != (ssize_t)fn) { close(sv[0]); close(sv[1]); return 0; }
+    }
+    for (int r = 0; r < 2; r++) {
+        uint8_t empty = 0x00;
+        size_t fn = kw_msg_serialize(cp->magic, "headers", &empty, 1, frame, sizeof frame);
+        if (!fn || write(sv[1], frame, fn) != (ssize_t)fn) { close(sv[0]); close(sv[1]); return 0; }
+    }
+    kw_peer_from_fd(p, cp->magic, sv[0]);
+    p->cp = cp;
+    return 1;
 }
 
 int main(void)
@@ -491,10 +535,57 @@ int main(void)
         }
     }
 
+    /* Two forks in one exchange. Only the first was recorded, so a second batch
+       linking lower truncated again with the headers between the two forks saved
+       nowhere: the restore put the first tail back at the first fork, above where
+       the store now ended, so it could not re-append, the log said "keeping ours"
+       while ours was gone, and the next sync appended the peer's lighter chain as
+       an ordinary extension with no work compared. */
+    {
+        kw_headerstore t;
+        if (!kw_headerstore_init(&t)) { fprintf(stderr, "FAIL: store init\n"); return 1; }
+
+        uint8_t prev[32] = {0};
+        uint32_t when = 1600000000;
+        for (int i = 0; i < 7; i++) {
+            uint8_t raw[80];
+            mk_header(raw, prev, when + (uint32_t)i * 60, (uint32_t)(i + 1));
+            kw_block_header h;
+            kw_block_header_parse(raw, 80, &h);
+            if (!kw_headerstore_append(&t, &h)) { fprintf(stderr, "FAIL: honest chain\n"); return 1; }
+            memcpy(prev, h.hash, 32);
+        }
+        uint8_t honest_tip[32];
+        memcpy(honest_tip, t.h[6].hash, 32);
+
+        /* one header on height 5, then one on height 2: each carries the same
+           nBits as ours, so neither fork outweighs what it would replace */
+        uint8_t batches[2][80];
+        mk_header(batches[0], t.h[4].hash, when + 5 * 60 + 1, 101);
+        mk_header(batches[1], t.h[1].hash, when + 2 * 60 + 1, 102);
+
+        kw_peer p2;
+        if (!scripted_peer(&p2, &KW_DOGE_REGTEST, batches, 2)) {
+            fprintf(stderr, "FAIL: scripted peer\n"); return 1;
+        }
+        long r2 = kw_sync_headers(&p2, &t, &KW_DOGE_REGTEST);
+        kw_peer_close(&p2);
+
+        if (r2 >= 0) {
+            fprintf(stderr, "FAIL: two lighter forks were accepted (%ld)\n", r2); return 1;
+        }
+        if (t.count != 7 || memcmp(t.h[6].hash, honest_tip, 32) != 0) {
+            fprintf(stderr, "FAIL: the store kept %zu header(s) after refusing both forks, "
+                            "want our 7 back\n", t.count);
+            return 1;
+        }
+        kw_headerstore_free(&t);
+    }
+
     printf("sync ok: two getheaders rounds, blocks 1,2 appended, tip is block 2,\n"
            "  median-time-past and the two-hour future bound enforced, powLimit capped\n  on every network, the chain id demanded above the merge-mining start, the\n  bip66 and bip65 base-version floors enforced at each network's heights,\n"
        "  mainnet's first retarget demanded at height 240 and inheritance below it,\n"
        "  anchors enforced on the default path, a chain short of the last one refused,\n"
-       "  a cached chain checked against the pins on load by hashing it and every\n  record above the newest anchor rehashed,\n  and a locator, a work sum and a rollback to choose between chains with\n");
+       "  a cached chain checked against the pins on load by hashing it and every\n  record above the newest anchor rehashed, two forks in one exchange both\n  refused with our chain put back,\n  and a locator, a work sum and a rollback to choose between chains with\n");
     return 0;
 }

@@ -375,6 +375,24 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                 kw_u256_zero(&dropped_work);
                 fork_at = at;                     /* so the exit path restores it */
                 if (!kw_sync_chainwork(s, (uint32_t)at, (uint32_t)s->count, &dropped_work)) goto fail;
+            } else if (at < fork_at) {
+                /* A second fork, lower than the first. Only the first was
+                   recorded, so the headers between the two were truncated away
+                   and saved nowhere: the restore put back the first tail at the
+                   first fork, which is above where the store now ended, and the
+                   next sync appended the peer's lighter chain as an ordinary
+                   extension with nothing compared. Those headers are still ours
+                   and untouched, since everything below the first fork is. */
+                size_t extra = (size_t)(fork_at - at);
+                kw_block_header *nd = (kw_block_header *)realloc(dropped,
+                                        (ndropped + extra) * sizeof *nd);
+                if (!nd) { goto fail; }
+                dropped = nd;
+                memmove(dropped + extra, dropped, ndropped * sizeof *dropped);
+                memcpy(dropped, s->h + at, extra * sizeof *dropped);
+                ndropped += extra;
+                if (!kw_sync_chainwork(s, (uint32_t)at, (uint32_t)fork_at, &dropped_work)) goto fail;
+                fork_at = at;
             }
             if (kw_net_verbose)
                 fprintf(stderr, "[headers] a fork at %ld, %zu header(s) of ours above it\n",

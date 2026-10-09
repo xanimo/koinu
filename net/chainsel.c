@@ -129,18 +129,35 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
            checked. The multi-peer path below restores a candidate's rollback for
            the same reason. */
         size_t before = s->count;
+        /* Truncating back to (before) only shortens, and a sync that followed a
+           fork leaves the store shorter than it started: the tail it replaced
+           would then be gone with nothing to put back. The tail above the newest
+           anchor is saved here for that, the way the multi-peer path saves a
+           candidate's. */
+        uint32_t floor1 = anchor_floor(s, cp);
+        size_t ntail = before > floor1 ? before - floor1 : 0;
+        kw_block_header *tail = NULL;
+        if (ntail) {
+            tail = (kw_block_header *)malloc(ntail * sizeof *tail);
+            if (!tail) return -1;
+            memcpy(tail, s->h + floor1, ntail * sizeof *tail);
+        }
         kw_powq *q = kw_powq_start(0, 4096, cp->strict_chain_id);
-        if (!q) return -1;
+        if (!q) { free(tail); return -1; }
         r.threads = kw_powq_threads(q);
         long n = kw_sync_headers_checked(peers[0], s, cp, q, pow_from);
         uint64_t checked = 0;
         int ok = kw_powq_finish(q, &checked, &r.bad_height);
         r.pow_checked += checked;
         if (n < 0 || !ok) {
-            kw_headerstore_truncate(s, (uint32_t)before);
+            kw_headerstore_truncate(s, (uint32_t)floor1);
+            for (size_t i = 0; i < ntail; i++)
+                if (!kw_headerstore_append(s, &tail[i])) break;
+            free(tail);
             if (out) *out = r;
             return -1;
         }
+        free(tail);
         r.ncandidates = 1; r.winner = 0; r.appended = n;
         r.fork_height = (uint32_t)s->count - (uint32_t)n;
         if (out) *out = r;
