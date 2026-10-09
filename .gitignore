@@ -41,6 +41,9 @@
 /net_multisig
 /fuzz_parse
 /fuzz_replay
+/fuzz_socks5
+/fuzz_kwd
+/fz_*
 /test/test_scrypt
 /test/test_cpu
 /test/test_pow
