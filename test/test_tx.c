@@ -226,10 +226,112 @@ int main(void)
             fprintf(stderr, "FAIL: the signature does not verify against the digest a node computes\n");
             return 1;
         }
+
+        /* A separator that runs before the CHECKSIG moves where the scriptCode
+           starts: consensus hashes from just past the last one executed. Removing
+           every separator but keeping the whole script signed five opcodes where
+           the node hashes two, and the spend came back "mandatory-script-verify-
+           flag-failed (Signature must be zero for failed CHECK(MULTI)SIG)". */
+        {
+            uint8_t before[64], after[64];
+            size_t bn = 0, an = 0;
+            before[bn++] = 0x51;                    /* OP_1   */
+            before[bn++] = 0x75;                    /* OP_DROP */
+            before[bn++] = 0xab;                    /* OP_CODESEPARATOR */
+            before[bn++] = 0x21;
+            memcpy(before + bn, pub, 33); bn += 33;
+            before[bn++] = 0xac;                    /* OP_CHECKSIG */
+
+            after[an++] = 0x21;                     /* what a node hashes: the tail */
+            memcpy(after + an, pub, 33); an += 33;
+            after[an++] = 0xac;
+
+            uint8_t hb[32], ha[32];
+            if (!kw_tx_sighash(&tx, 0, before, bn, KW_SIGHASH_ALL, hb) ||
+                !kw_tx_sighash(&tx, 0, after, an, KW_SIGHASH_ALL, ha)) {
+                fprintf(stderr, "FAIL: executed-separator sighash\n"); return 1;
+            }
+            if (memcmp(hb, ha, 32) != 0) {
+                fprintf(stderr, "FAIL: the scriptCode did not start at the executed "
+                                "separator\n"); return 1;
+            }
+
+            /* A separator after the checksig moves nothing: consensus hashes
+               from the last one executed before the checksig being satisfied,
+               and taking the last one anywhere signed OP_1 alone here, which
+               the node refused as mandatory-script-verify-flag-failed. */
+            {
+                uint8_t after[80], want[80];
+                size_t an2 = 0, wn = 0;
+                after[an2++] = 0x21;
+                memcpy(after + an2, pub, 33); an2 += 33;
+                after[an2++] = 0xad;                /* OP_CHECKSIGVERIFY */
+                after[an2++] = 0xab;                /* OP_CODESEPARATOR, after it */
+                after[an2++] = 0x51;                /* OP_1 */
+
+                want[wn++] = 0x21;                  /* what a node hashes: the lot, */
+                memcpy(want + wn, pub, 33); wn += 33;
+                want[wn++] = 0xad;                  /* with the separator removed */
+                want[wn++] = 0x51;
+
+                uint8_t h1[32], h2[32];
+                if (!kw_tx_sighash(&tx, 0, after, an2, KW_SIGHASH_ALL, h1) ||
+                    !kw_tx_sighash(&tx, 0, want, wn, KW_SIGHASH_ALL, h2)) {
+                    fprintf(stderr, "FAIL: trailing-separator sighash\n"); return 1;
+                }
+                if (memcmp(h1, h2, 32) != 0) {
+                    fprintf(stderr, "FAIL: a separator after the checksig moved the "
+                                    "scriptCode\n"); return 1;
+                }
+
+                /* and one on each side of it: the leading one still decides */
+                uint8_t both[80];
+                size_t bn2 = 0;
+                both[bn2++] = 0xab;
+                memcpy(both + bn2, after, an2); bn2 += an2;
+                uint8_t h3[32];
+                if (!kw_tx_sighash(&tx, 0, both, bn2, KW_SIGHASH_ALL, h3)) {
+                    fprintf(stderr, "FAIL: leading and trailing separator sighash\n"); return 1;
+                }
+                if (memcmp(h3, h2, 32) != 0) {
+                    fprintf(stderr, "FAIL: a leading separator and a trailing one did "
+                                    "not give the node's digest\n"); return 1;
+                }
+
+                /* two checksigs with a separator between them: which one this
+                   signature is for decides the digest, and the bytes do not say */
+                uint8_t two[160];
+                size_t tn = 0;
+                two[tn++] = 0x21; memcpy(two + tn, pub, 33); tn += 33; two[tn++] = 0xad;
+                two[tn++] = 0xab;
+                two[tn++] = 0x21; memcpy(two + tn, pub, 33); tn += 33; two[tn++] = 0xac;
+                uint8_t h4[32];
+                if (kw_tx_sighash(&tx, 0, two, tn, KW_SIGHASH_ALL, h4)) {
+                    fprintf(stderr, "FAIL: signed a script whose separator sits between "
+                                    "two checksigs\n"); return 1;
+                }
+            }
+
+            /* and with a branch in the script, which separator runs is not in the
+               bytes: a signer that cannot know must refuse rather than guess. */
+            uint8_t branch[80];
+            size_t cn = 0;
+            branch[cn++] = 0x63;                    /* OP_IF */
+            branch[cn++] = 0xab;                    /* OP_CODESEPARATOR */
+            branch[cn++] = 0x68;                    /* OP_ENDIF */
+            branch[cn++] = 0x21;
+            memcpy(branch + cn, pub, 33); cn += 33;
+            branch[cn++] = 0xac;
+            uint8_t hc[32];
+            if (kw_tx_sighash(&tx, 0, branch, cn, KW_SIGHASH_ALL, hc)) {
+                fprintf(stderr, "FAIL: signed a script whose separator may or may not "
+                                "run\n"); return 1;
+            }
+        }
     }
 
     kw_ec_stop();
     printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips,\n"
-           "  uncompressed p2pkh verifies, and a scriptCode separator is stripped as consensus does\n");
+           "  uncompressed p2pkh verifies, a scriptCode starts at the separator executed\n  before its checksig and not at one after it, and a script a signer cannot\n  resolve is refused rather than guessed\n");
     return 0;
 }

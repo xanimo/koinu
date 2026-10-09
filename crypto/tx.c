@@ -157,6 +157,54 @@ static size_t strip_codeseparators(const uint8_t *in, size_t len, uint8_t *out, 
     return k;
 }
 
+/* Where the scriptCode starts. Consensus hashes from just past the last
+   OP_CODESEPARATOR executed before the CHECKSIG being satisfied, and removes the
+   rest, so a separator after that checksig does not move anything: taking the
+   last one anywhere in the script signed OP_1 alone for <pub> CHECKSIGVERIFY
+   OP_CODESEPARATOR OP_1, and the node refused the spend.
+
+   Which separator executes is a property of the run, so this is knowable from
+   the bytes only when no branch can skip one, and which checksig a signature
+   satisfies is knowable only when there is one of them or no separator sits
+   between them. (nsep) counts the separators, (branches) says a conditional was
+   seen, and (ambiguous) says a separator falls between two checksigs. */
+static size_t codeseparator_start(const uint8_t *in, size_t len,
+                                  int *nsep, int *branches, int *ambiguous)
+{
+    size_t start = 0, i = 0;
+    int ncheck = 0, sep_after_check = 0;
+    *nsep = 0; *branches = 0; *ambiguous = 0;
+    while (i < len) {
+        uint8_t op = in[i];
+        size_t datalen = 0, hdr = 1;
+        if (op >= 1 && op <= 75) datalen = op;
+        else if (op == 0x4c) { if (i + 2 > len) break; datalen = in[i + 1]; hdr = 2; }
+        else if (op == 0x4d) { if (i + 3 > len) break;
+            datalen = (size_t)in[i + 1] | (size_t)in[i + 2] << 8; hdr = 3; }
+        else if (op == 0x4e) { if (i + 5 > len) break;
+            datalen = (size_t)in[i + 1] | (size_t)in[i + 2] << 8 |
+                      (size_t)in[i + 3] << 16 | (size_t)in[i + 4] << 24; hdr = 5; }
+        if (datalen) {
+            if (i + hdr + datalen > len) break;
+            i += hdr + datalen;
+            continue;
+        }
+        if (op == 0x63 || op == 0x64) *branches = 1;              /* OP_IF, OP_NOTIF */
+        if (op == 0xab) {                                          /* OP_CODESEPARATOR */
+            (*nsep)++;
+            if (ncheck == 0) start = i + 1;                        /* before any checksig */
+            else sep_after_check = 1;
+        }
+        if (op == 0xac || op == 0xad || op == 0xae || op == 0xaf) ncheck++;
+        i++;
+    }
+    /* One checksig and the start is settled whatever follows it. Two, with a
+       separator between them, and the digest depends on which one this signature
+       is for, which the bytes do not say. */
+    if (sep_after_check && ncheck > 1) *ambiguous = 1;
+    return start;
+}
+
 int kw_tx_sighash(const kw_tx *tx, size_t index,
                   const uint8_t *subscript, size_t subscriptlen,
                   uint32_t hashtype, uint8_t out[32])
@@ -165,6 +213,19 @@ int kw_tx_sighash(const kw_tx *tx, size_t index,
     uint8_t code[KW_TX_SCRIPT_MAX];
     size_t codelen = 0;
     if (subscriptlen) {
+        /* The scriptCode runs from the last executed separator, and removing them
+           all while keeping the whole script is the right answer only when none
+           executes before the checksig. A script of OP_1 OP_DROP OP_CODESEPARATOR
+           <pub> OP_CHECKSIG got a signature over all five, where the node hashes
+           the last two, and the spend was refused as mandatory-script-verify-flag
+           failed. With no branch in the script every separator before the checksig
+           runs, so the start is the last of those; with a branch, or with one
+           falling between two checksigs, which it is is not in the bytes. */
+        int nsep = 0, branches = 0, ambiguous = 0;
+        size_t start = codeseparator_start(subscript, subscriptlen, &nsep, &branches, &ambiguous);
+        if (nsep && (branches || ambiguous)) return 0;
+        if (nsep) { subscript += start; subscriptlen -= start; }
+
         codelen = strip_codeseparators(subscript, subscriptlen, code, sizeof code);
         if (!codelen) return 0;
         subscript = code;
@@ -387,6 +448,35 @@ int kw_script_names_key(const uint8_t *script, size_t scriptlen, const uint8_t p
     for (size_t i = 0; i + 34 <= scriptlen; i++)
         if (script[i] == 0x21 && memcmp(script + i + 1, pub, 33) == 0) return 1;
     return 0;
+}
+
+size_t kw_script_key_count(const uint8_t *script, size_t scriptlen, size_t cap)
+{
+    uint8_t seen[16][65];
+    size_t seenlen[16], n = 0, i = 0;
+    if (cap > 16) cap = 16;
+    while (i < scriptlen) {
+        uint8_t op = script[i];
+        size_t datalen = 0, hdr = 1;
+        if (op >= 1 && op <= 75) datalen = op;
+        else if (op == 0x4c) { if (i + 2 > scriptlen) break; datalen = script[i + 1]; hdr = 2; }
+        else if (op == 0x4d) { if (i + 3 > scriptlen) break;
+            datalen = (size_t)script[i + 1] | (size_t)script[i + 2] << 8; hdr = 3; }
+        else if (op == 0x4e) { if (i + 5 > scriptlen) break;
+            datalen = (size_t)script[i + 1] | (size_t)script[i + 2] << 8 |
+                      (size_t)script[i + 3] << 16 | (size_t)script[i + 4] << 24; hdr = 5; }
+        if (!datalen) { i++; continue; }
+        if (i + hdr + datalen > scriptlen) break;
+        const uint8_t *p = script + i + hdr;
+        if (datalen == 33 || datalen == 65) {
+            int dup = 0;
+            for (size_t k = 0; k < n; k++)
+                if (seenlen[k] == datalen && memcmp(seen[k], p, datalen) == 0) { dup = 1; break; }
+            if (!dup && n < cap) { memcpy(seen[n], p, datalen); seenlen[n] = datalen; n++; }
+        }
+        i += hdr + datalen;
+    }
+    return n;
 }
 
 int kw_script_multisig_parse(const uint8_t *script, size_t scriptlen,
