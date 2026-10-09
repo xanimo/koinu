@@ -200,6 +200,12 @@ int kw_peer_wait(kw_peer *p, const char *want, const uint8_t **payload, size_t *
     const uint8_t *pl = NULL;
     size_t pn = 0;
     int skipped = 0;
+    /* The count alone bounds this at 257 times whatever one recv may take, which
+       at kw's fifteen-second socket timeout is about an hour, where peer.h says
+       one exchange is KW_PEER_EXCHANGE_SECONDS. Each recv holds that deadline for
+       itself; the wait holds one for the whole wait. */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     while (kw_peer_recv(p, cmd, &pl, &pn) == 1) {
         if (!strcmp(cmd, want)) {
             if (payload) *payload = pl;
@@ -208,6 +214,7 @@ int kw_peer_wait(kw_peer *p, const char *want, const uint8_t **payload, size_t *
         }
         if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
         if (++skipped > KW_PEER_MAX_SKIP) return 0;
+        if (since_ms(&t0) > KW_PEER_EXCHANGE_SECONDS * 1000L) return 0;
     }
     return 0;
 }

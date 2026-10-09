@@ -86,6 +86,13 @@ size_t kw_sync_locator(const kw_headerstore *s, const kw_chainparams *cp,
     return n;
 }
 
+static long sync_since_ms(const struct timespec *t0)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (now.tv_sec - t0->tv_sec) * 1000 + (now.tv_nsec - t0->tv_nsec) / 1000000;
+}
+
 int kw_sync_chainwork(const kw_headerstore *s, uint32_t from, uint32_t to,
                       kw_u256 *out)
 {
@@ -346,9 +353,19 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
         int got = 0, r;
         int skipped = 0;
+        /* and a deadline beside the count, since the count multiplies by whatever
+           one recv may take rather than bounding the detour in time */
+        struct timespec d0;
+        clock_gettime(CLOCK_MONOTONIC, &d0);
         while ((r = kw_peer_recv(p, cmd, &pl, &pn)) == 1) {
             if (!strcmp(cmd, "headers")) { got = 1; break; }
             if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
+            if (sync_since_ms(&d0) > KW_PEER_EXCHANGE_SECONDS * 1000L) {
+                if (kw_net_verbose)
+                    fprintf(stderr, "[headers] peer spent %d seconds not answering\n",
+                            KW_PEER_EXCHANGE_SECONDS);
+                break;
+            }
             if (++skipped > KW_SYNC_MAX_SKIP) {
                 if (kw_net_verbose)
                     fprintf(stderr, "[headers] peer sent %d messages without headers\n", skipped);
