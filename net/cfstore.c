@@ -246,7 +246,12 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         if (!ensure_index(path)) return -1;                 /* present but corrupt */
         have = index_count(path);
     }
-    if (have < 0 || (size_t)have > s->count) return -1;      /* corrupt or ahead of headers */
+    /* A cache longer than the header store is what a reorg onto a heavier but
+       shorter chain leaves behind, and refusing it here meant scan, outpoint and
+       kwd all failed until the chain grew past the old cache. The walk-back below
+       is what resolves it: it finds the last entry that still agrees and drops
+       the rest, which is the same thing it does for a fork at equal length. */
+    if (have < 0) return -1;
 
     /* Resume the verified filter-header chain. Cached filters on their own prove
        nothing: the sidecar is what ties them to a chain this wallet checked, so a

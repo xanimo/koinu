@@ -269,6 +269,27 @@ int main(void)
             }
             kw_headerstore_free(&rs);
 
+            /* A reorg onto a heavier but shorter chain leaves the cache longer
+               than the header store, and that was refused outright rather than
+               walked back: scan, outpoint and kwd all failed until the chain grew
+               past the old cache. The same walk-back resolves it. */
+            {
+                kw_headerstore shortr; kw_headerstore_init(&shortr);
+                kw_headerstore_append(&shortr, &h1);          /* one header, two cached */
+                /* nothing to fetch: the cache has to come back to one entry on
+                   its own, which is what the walk-back is for */
+                size_t zl[1] = { 1 };
+                const char *zc[1] = { "cfheaders" };
+                uint8_t zm[1] = { 0 };
+                long n = sync_round(&shortr, sp, zm, zl, zc, 0);
+                if (n < 0) {
+                    fprintf(stderr, "FAIL: a cache longer than the headers was refused "
+                                    "rather than walked back\n");
+                    return 1;
+                }
+                kw_headerstore_free(&shortr);
+            }
+
             /* put h2 back for the cases below */
             kw_headerstore rs2; kw_headerstore_init(&rs2);
             kw_headerstore_append(&rs2, &h1);
@@ -472,6 +493,6 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar and a stale index dropped with it,\n  filter-header anchor enforced\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar and a stale index dropped with it,\n  filter-header anchor enforced\n");
     return 0;
 }
