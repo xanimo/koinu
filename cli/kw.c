@@ -333,17 +333,22 @@ static int derive_address(const kw_chainparams *cp, const uint8_t seed[64],
                           uint32_t account, uint32_t change, uint32_t index,
                           char *addr, size_t addrcap)
 {
+    /* Locked, not only wiped: a child key is the seed one step on, and a stack
+       buffer holding one is pageable. The early return on a failed pubkey left
+       both of these in memory, unwiped, which is the one path out that skipped
+       the cleanup below. */
     kw_bip32_key master, key;
-    if (!kw_bip32_from_seed(seed, 64, cp->bip32, &master)) return 0;
-    int ok = kw_bip44_derive(&master, cp->bip44_coin, account, change, index, &key);
+    kw_secure_keep(&master, sizeof master);
+    kw_secure_keep(&key, sizeof key);
+    int ok = kw_bip32_from_seed(seed, 64, cp->bip32, &master) &&
+             kw_bip44_derive(&master, cp->bip44_coin, account, change, index, &key);
     if (ok) {
-        uint8_t pub[33], h160[20];
-        if (!kw_bip32_pubkey(&key, pub)) return 0;
-        kw_hash160(pub, 33, h160);
-        ok = kw_address_p2pkh(pub, cp->p2pkh, addr, addrcap) != 0;
+        uint8_t pub[33];
+        ok = kw_bip32_pubkey(&key, pub) &&
+             kw_address_p2pkh(pub, cp->p2pkh, addr, addrcap) != 0;
     }
-    kw_secure_zero(&master, sizeof master);
-    kw_secure_zero(&key, sizeof key);
+    kw_secure_forget(&master, sizeof master);
+    kw_secure_forget(&key, sizeof key);
     return ok;
 }
 
@@ -638,8 +643,12 @@ static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char
     }
     uint32_t bad = 0;
     if (s->count && !kw_sync_anchors_ok(s, cp, &bad)) {
-        fprintf(stderr, "kw: header cache %s does not match the block this release "
-                        "pins at height %u, ignoring it\n", path, bad);
+        /* Either an anchor this release pins, or a record above the newest one
+           that does not hash to its own header. Naming only the first was wrong
+           wherever the chain ships no anchors, which is testnet and regtest. */
+        fprintf(stderr, "kw: header cache %s does not check out at height %u: it is not "
+                        "the block this release pins there, or not the block its own "
+                        "record says it is. Ignoring it\n", path, bad);
         kw_headerstore_free(s);
         kw_headerstore_init(s);
     }
@@ -1625,6 +1634,15 @@ out:
 static int outpoint_via_daemon(const char *sock, const char *watch, const char *op, long since)
 {
     if (!watch || !op) { usage(); return 2; }
+    /* kwd refuses a request with no since height, because 0 means every block
+       since genesis on the unfiltered path and the whole filter cache on the
+       other. Sending 0 on the client's behalf asked for exactly that and made
+       the refusal unreachable through kw. */
+    if (since < 0) {
+        fprintf(stderr, "kw: --daemon needs --since HEIGHT; without one the daemon "
+                        "would scan from genesis\n");
+        return 2;
+    }
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) { fprintf(stderr, "kw: socket\n"); return 1; }
     struct sockaddr_un sa; memset(&sa, 0, sizeof sa);
@@ -1634,7 +1652,7 @@ static int outpoint_via_daemon(const char *sock, const char *watch, const char *
         fprintf(stderr, "kw: cannot reach daemon at %s\n", sock); close(fd); return 1;
     }
     char req[512];
-    int rn = snprintf(req, sizeof req, "outpoint %s %s %ld\n", watch, op, since >= 0 ? since : 0);
+    int rn = snprintf(req, sizeof req, "outpoint %s %s %ld\n", watch, op, since);
     if (rn <= 0 || write(fd, req, (size_t)rn) != rn) { close(fd); return 1; }
     char rep[256]; ssize_t r = read(fd, rep, sizeof rep - 1); close(fd);
     if (r <= 0) { fprintf(stderr, "kw: no reply from daemon\n"); return 1; }
@@ -2182,6 +2200,22 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
         }
     }
 
+    /* --finish needs an m-of-n script, and that was checked after the signature
+       was made: a caller passing --finish with a script it cannot assemble got
+       the key used first and the refusal second. */
+    int m = 0, n = 0; uint8_t keys[16][33];
+    if (finish && !kw_script_multisig_parse(redeem, rl, &m, keys, &n)) {
+        kw_secure_forget(sk, sizeof sk);
+        fprintf(stderr, "kw: --finish needs an m-of-n --redeem; without it kw prints this\n"
+                        "    key's signature and the caller assembles the scriptSig\n");
+        return 1;
+    }
+    if (finish && nsigs + 1 != m) {
+        kw_secure_forget(sk, sizeof sk);
+        fprintf(stderr, "kw: have %d signatures, need %d\n", nsigs + 1, m);
+        return 1;
+    }
+
     /* what is being signed, on stderr so a caller still reads one signature on
        stdout: cosign printed nothing about the transaction at all */
     show_tx_to(stderr, cp, raw, rawlen, NULL);
@@ -2198,13 +2232,6 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
         return 0;
     }
 
-    int m = 0, n = 0; uint8_t keys[16][33];
-    if (!kw_script_multisig_parse(redeem, rl, &m, keys, &n)) {
-        fprintf(stderr, "kw: --finish needs an m-of-n --redeem; without it kw prints this\n"
-                        "    key's signature and the caller assembles the scriptSig\n");
-        return 1;
-    }
-    if (nsigs + 1 != m) { fprintf(stderr, "kw: have %d signatures, need %d\n", nsigs + 1, m); return 1; }
 
     uint8_t sigbuf[16][KW_EC_SIG_DER_MAX + 1]; size_t sblen[16];
     for (int i = 0; i < nsigs; i++) {

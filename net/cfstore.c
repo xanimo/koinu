@@ -49,19 +49,41 @@ static int fh_load(const char *path, long *count, uint8_t hdr[32], uint8_t base[
    Written since the first sync is the only moment it is known, and without it a
    cache that has to drop a reorganised tail cannot re-derive what its new tip's
    verified header is, which left deleting the whole file as the only answer. */
+/* Through a temp file and renamed, with both the file and its directory fsynced.
+   Written in place, a crash between the truncate and this left a cache with no
+   sidecar covering it, which is the hard "delete both and sync again" refusal:
+   the rename makes the sidecar either the old one or the new one. */
 static int fh_save(const char *path, long count, const uint8_t hdr[32], const uint8_t base[32])
 {
-    char fp[4200]; snprintf(fp, sizeof fp, "%s.fh", path);
-    FILE *f = fopen(fp, "wb");
-    if (!f) return 0;
+    char fp[4200], tp[4300];
+    snprintf(fp, sizeof fp, "%s.fh", path);
+    snprintf(tp, sizeof tp, "%s.fh.tmp", path);
+
+    int fd = open(tp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
+    if (fd < 0) return 0;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) { close(fd); unlink(tp); return 0; }
+
     uint8_t buf[4 + 8 + 32 + 32];
     memcpy(buf, KW_FH_MAGIC2, 4);
     for (int i = 0; i < 8; i++) buf[4 + i] = (uint8_t)((uint64_t)count >> (8 * i));
     memcpy(buf + 12, hdr, 32);
     memcpy(buf + 44, base, 32);
     int ok = fwrite(buf, 1, sizeof buf, f) == sizeof buf;
+    if (ok && fflush(f) != 0) ok = 0;
+    if (ok && fsync(fileno(f)) != 0) ok = 0;
     if (fclose(f) != 0) ok = 0;
-    return ok;
+    if (ok && rename(tp, fp) != 0) ok = 0;
+    if (!ok) { unlink(tp); return 0; }
+
+    char dir[4200];
+    snprintf(dir, sizeof dir, "%s", fp);
+    char *slash = strrchr(dir, '/');
+    const char *d = ".";
+    if (slash) { *slash = '\0'; d = dir[0] ? dir : "/"; }
+    int dfd = open(d, O_RDONLY);
+    if (dfd >= 0) { fsync(dfd); close(dfd); }
+    return 1;
 }
 
 static int  ensure_index(const char *path);

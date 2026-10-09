@@ -341,8 +341,9 @@ int main(int argc, char **argv)
     {
         uint32_t bad = 0;
         if (s.count && !kw_sync_anchors_ok(&s, cp, &bad)) {
-            fprintf(stderr, "kwd: header cache does not match the block this release "
-                            "pins at height %u, starting fresh\n", bad);
+            fprintf(stderr, "kwd: header cache does not check out at height %u: it is "
+                            "not the block this release pins there, or not the block its "
+                            "own record says it is. Starting fresh\n", bad);
             kw_headerstore_free(&s); kw_headerstore_init(&s);
         }
     }
