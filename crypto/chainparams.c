@@ -350,6 +350,7 @@ static const kw_cfcheckpoint KW_DOGE_MAINNET_CFCHECKPOINTS[] = {
     { 6100000, "0d4b5fc268c0affc29549b8e2e7f8143d6fabb7f0dbd71c8fce7dd7751c281f6" },
     { 6200000, "b56a4e462182208430d89736df4cd4f42fa3ba9f47bc43ff8c373ab0623c74ba" },
     { 6300000, "8acd1af5e07116a777ca2c5bc79e9f58b06679476c6551f9734065bc59051183" },
+    { 6400000, "5daefee6452da80ed45b3ce0b637db41d19388cd11640b0d79faa79ba49c6c6c" },
 };
 
 const kw_chainparams KW_DOGE_MAINNET = {
