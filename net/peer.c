@@ -184,8 +184,12 @@ int kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen
         if (p->rlen == p->rcap && !ensure_cap(&p->rbuf, &p->rcap, p->rcap * 2)) return -1;
 
         ssize_t n = read(p->fd, p->rbuf + p->rlen, p->rcap - p->rlen);
-        if (n == 0) return 0;
-        if (n < 0) { if (errno == EINTR) continue; return 0; }
+        if (n == 0) { p->timed_out = 0; return 0; }                   /* hung up */
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            p->timed_out = (errno == EAGAIN || errno == EWOULDBLOCK);
+            return 0;
+        }
         p->rlen += (size_t)n;
     }
 }

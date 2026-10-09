@@ -1754,6 +1754,12 @@ static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
     return show_tx_to(stdout, cp, raw, rawlen, txidhex);
 }
 
+/* How long send waits for the node to list the transaction. The answer comes on
+   the node's inventory timer, averaging five seconds inbound, so this is the
+   tail of that draw rather than a round number. */
+#define KW_SEND_PROBE_SECONDS 40
+#define KW_SEND_INV_GRACE_SECONDS 2
+
 static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node,
                     int port, int tor, int assume_yes)
 {
@@ -1821,9 +1827,36 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
         goto out;
     }
 
+    /* A node answers the mempool request on its own inventory timer, which is a
+       poisson draw averaging five seconds for an inbound peer, so the inv for a
+       transaction it accepted arrives whenever it arrives: measured at 1.1, 2.0,
+       3.3 and 5.9 seconds against 1.14.9. One ten-second socket timeout ended
+       the probe, which reported a relayed transaction as unknown about one send
+       in eight. Wait out the draw, and keep the deadline off the socket timeout
+       so a peer that hangs up still ends it. */
+    struct timespec probe0, last_inv;
+    int saw_inv = 0, said_waiting = 0;
+    clock_gettime(CLOCK_MONOTONIC, &probe0);
+    last_inv = probe0;
     for (;;) {
         char cmd[13]; const uint8_t *pl = NULL; size_t pn = 0;
         int r = kw_peer_recv(&p, cmd, &pl, &pn);
+        if (r == 0 && p.timed_out) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long total = now.tv_sec - probe0.tv_sec;
+            long since_inv = now.tv_sec - last_inv.tv_sec;
+            /* The absolute bound holds whatever arrives, so a node inv'ing on a
+               timer of its own cannot hold this open by resetting the grace. */
+            if (total < KW_SEND_PROBE_SECONDS &&
+                (!saw_inv || since_inv < KW_SEND_INV_GRACE_SECONDS)) {
+                if (!said_waiting++)
+                    fprintf(stderr, "kw: sent; waiting up to %ds for the node's "
+                                    "inventory tick to say whether it holds it\n",
+                            KW_SEND_PROBE_SECONDS);
+                continue;
+            }
+        }
         if (r != 1) {
             printf("unknown: %s (no reject, and the node does not list it in its "
                    "mempool; an orphan or a repeat looks like this)\n", txidhex);
@@ -1857,6 +1890,12 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
                 rc = 0;
                 break;
             }
+            /* The node answers a mempool request with everything it holds, in
+               one tick and in back-to-back invs, so an inv without our txid in
+               it means the dump has started without us. Stop waiting out the
+               timer the first message buys, rather than the whole draw. */
+            saw_inv = 1;
+            clock_gettime(CLOCK_MONOTONIC, &last_inv);
             continue;
         }
         if (!strcmp(cmd, "ping")) { kw_peer_send(&p, "pong", pl, pn); continue; }

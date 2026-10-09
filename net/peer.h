@@ -28,6 +28,7 @@ typedef struct {
     int64_t  peer_feerate;               /* last BIP133 feefilter, koinu/kB, 0 if none */
     const kw_chainparams *cp;            /* the network connected to; NULL from kw_peer_from_fd */
     int      relay;                      /* advertise tx relay in the version */
+    int      timed_out;                  /* the last recv ended on SO_RCVTIMEO, not EOF */
 } kw_peer;
 
 /* Wrap an already-connected fd (used by tests over a socketpair). Returns 1. */
@@ -48,7 +49,9 @@ int  kw_peer_send(kw_peer *p, const char *cmd, const uint8_t *payload, size_t pl
 
 /* Read one message. Returns 1 with (cmd) NUL-terminated and (payload)/(plen)
    pointing at peer-owned storage valid until the next recv; 0 on clean EOF or
-   timeout; -1 on a framing/checksum/socket error. */
+   timeout; -1 on a framing/checksum/socket error. On 0, p->timed_out says which:
+   a caller that can afford to keep waiting needs to tell a quiet peer from one
+   that hung up, since reading again after EOF returns 0 without blocking. */
 int  kw_peer_recv(kw_peer *p, char cmd[13], const uint8_t **payload, size_t *plen);
 
 /* How many messages a peer may send in place of the one it was asked for before
