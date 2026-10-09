@@ -6,8 +6,10 @@
 #include "tx.h"
 #include "hex.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -190,7 +192,19 @@ int kw_utxoset_apply_tx(kw_utxoset *us, kw_watchset *ws,
 static FILE *open_private_temp(const char *path, char *tmp, size_t tmpcap)
 {
     if ((size_t)snprintf(tmp, tmpcap, "%s.tmp", path) >= tmpcap) return NULL;
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    /* O_EXCL, so a symlink planted at <path>.tmp is not followed: without it the
+       scan wrote through it, overwriting whatever it pointed at with the wallet's
+       outputs and leaving that file's old mode. It also stops two scans on one
+       path from sharing the temp file, where each would write half a set.
+       O_NOFOLLOW is belt and braces on the same open. */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (fd < 0 && errno == EEXIST) {
+        /* a temp file left by a killed run is ours to replace, once we know it is
+           a plain file and not a link */
+        struct stat st;
+        if (lstat(tmp, &st) == 0 && S_ISREG(st.st_mode) && unlink(tmp) == 0)
+            fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    }
     if (fd < 0) return NULL;
     FILE *f = fdopen(fd, "w");
     if (!f) { close(fd); unlink(tmp); return NULL; }

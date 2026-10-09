@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 static const char *CB_RAW =
@@ -156,6 +157,39 @@ int main(void)
             }
         }
 
+        /* A symlink planted at <path>.tmp was followed, so the scan wrote the
+           wallet's outputs through it and over whatever it named, which kept its
+           old mode. The open refuses it now. */
+        {
+            const char *target = "test_utxo_symlink_target.tmp";
+            FILE *t = fopen(target, "wb");
+            if (!t) { fprintf(stderr, "FAIL: symlink target\n"); return 1; }
+            fputs("not the wallet's\n", t);
+            fclose(t);
+
+            const char *victim = "test_utxo_victim.tmp";
+            char link[256];
+            snprintf(link, sizeof link, "%s.tmp", victim);
+            remove(link);
+            if (symlink(target, link) != 0) {
+                printf("  (no symlink support, temp-file check skipped)\n");
+            } else {
+                if (kw_utxoset_save(&us, victim)) {
+                    fprintf(stderr, "FAIL: the set was written through a symlinked temp file\n");
+                    return 1;
+                }
+                FILE *r = fopen(target, "rb");
+                char first[32] = {0};
+                if (r) { if (!fgets(first, sizeof first, r)) first[0] = '\0'; fclose(r); }
+                if (strncmp(first, "not the wallet's", 16) != 0) {
+                    fprintf(stderr, "FAIL: the symlink target was overwritten\n"); return 1;
+                }
+                remove(link);
+            }
+            remove(target);
+            remove(victim);
+        }
+
         /* and an empty file is not a zero balance either */
         const char *emptypath = "test_utxo_empty.tmp";
         FILE *e = fopen(emptypath, "wb"); if (e) fclose(e);
@@ -237,7 +271,7 @@ int main(void)
         kw_utxoset_free(&sp);
     }
 
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a cut or empty file refused,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
            "  and a value that would wrap the total refused\n");
     return 0;
 }
