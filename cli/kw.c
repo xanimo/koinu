@@ -78,7 +78,7 @@ static void usage(void)
       "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--utxo HEX] [--vin N]\n"
       "           combine --psbt HEX --psbt HEX ... | extract --psbt HEX\n"
       "           finalize --psbt HEX --vin N --scriptsig HEX\n"
-      "  cosign   --tx HEX|@FILE|- --redeem HEX [--wif @FILE|-] [--utxo HEX] [--vin N]\n"
+      "  cosign   --tx HEX|@FILE|- --redeem HEX --utxo HEX [--wif @FILE|-] [--vin N]\n"
       "           [--sig HEX ...] [--finish]\n"
       "\n"
       "  --headers PATH caches the header chain for scan, height and outpoint, so\n"
@@ -2011,13 +2011,17 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
     kw_secure_keep(sk, sizeof sk);
     if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); return 1; }
 
-    /* The script has to name this key. Without that, --redeem set to the p2pkh
-       scriptPubKey of a coin this key holds turns a "cosignature" into a valid
-       p2pkh spend of that coin to wherever --tx pays, and the counterparty needs
-       only the pubkey it already has for the multisig. A hash160 in a p2pkh
-       script is not a pushed key, so that script is refused; a script with
-       branches around its keys, which is what a payment channel's redeem looks
-       like, still passes. */
+    /* The script has to name this key, and naming it is not enough. A p2pk
+       script, <pub> OP_CHECKSIG, contains the pushed key, so asking only whether
+       the key appears let --redeem be set to the p2pk scriptPubKey of a coin
+       this key holds: the "cosignature" is then a complete spend of that coin to
+       wherever --tx pays, and the counterparty already has the pubkey. Core's
+       own generate pays p2pk, so a dumpprivkey'd mining key is exactly the
+       external wif this command takes.
+
+       So the script must spend with more than this key: either it parses as a
+       multisig demanding m of n, or it is longer than one key and a checksig,
+       which is what a payment channel's branching redeem looks like. */
     uint8_t mypub[33];
     if (!kw_ec_pubkey(sk, mypub)) {
         kw_secure_forget(sk, sizeof sk);
@@ -2031,9 +2035,34 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
                         "to sign on request\n");
         return 1;
     }
+    {
+        /* Refusing the exact 35-byte <pub> CHECKSIG shape caught p2pk and nothing
+           else: a 1-of-1 multisig, the same script with an OP_NOP after it, and
+           an OP_IF with this key in both branches all spend with this key alone,
+           and each of them signed. What they have in common is one key, so that
+           is what is counted. A branching two-key script still passes, which is
+           what a payment channel's redeem is; a branch of one that this key can
+           take alone is the counterparty's business to read, and --utxo above
+           ties the script to the coin either way. */
+        if (kw_script_key_count(redeem, rl, 4) < 2) {
+            kw_secure_forget(sk, sizeof sk);
+            fprintf(stderr, "kw: --redeem names one key, this one, so a signature over it "
+                            "is a spend\n    rather than a co-signature\n");
+            return 1;
+        }
+    }
 
-    /* and if the coin is supplied, bind the script to it the way psbt sign does */
-    if (utxo_arg) {
+    /* The coin being spent, which binds the script to what it is locked to. psbt
+       sign requires it for the same reason and cosign left it optional, so a
+       script that passed the checks above could still be signed against a coin
+       it does not lock. */
+    if (!utxo_arg) {
+        kw_secure_forget(sk, sizeof sk);
+        fprintf(stderr, "kw: cosign needs --utxo, the raw transaction holding the coin "
+                        "being spent;\n    without it nothing ties --redeem to that coin\n");
+        return 1;
+    }
+    {
         uint8_t prevraw[16384];
         size_t pn = read_hex_arg(utxo_arg, "--utxo", prevraw, sizeof prevraw);
         kw_tx prev;

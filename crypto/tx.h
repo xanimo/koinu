@@ -106,6 +106,13 @@ int  kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
    "co-sign our 2-of-2" from "sign this p2pkh coin of yours". */
 int  kw_script_names_key(const uint8_t *script, size_t scriptlen, const uint8_t pub[33]);
 
+/* How many distinct public keys the script pushes, counting both compressed and
+   uncompressed, up to (cap). A script that pushes one key is one that key alone
+   can satisfy however it is dressed up: 1-of-1 multisig, <pub> CHECKSIG with an
+   OP_NOP after it, and an OP_IF with the same key in both branches all push one.
+   A co-signing script names at least two. */
+size_t kw_script_key_count(const uint8_t *script, size_t scriptlen, size_t cap);
+
 /* Read an m-of-n bare multisig script back into its parts. Compressed keys
    only, the shape kw_script_multisig builds; (pubkeys) holds up to 16.
    Returns 1, or 0 if the script is not that shape. */

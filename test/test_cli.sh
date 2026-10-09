@@ -248,13 +248,15 @@ fi
 printf 'cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw\n' > "$WORK/w1"
 printf 'cNj3zTdrLAMQtUhdFPPVJtRY7a3TdUF38ShW5MrJkVh1CVaeuEGU\n' > "$WORK/w2"
 REDEEM=5221034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa2102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f2752ae
-UNSIGNED=0100000001ffeeddccbbaa99887766554433221100ffeeddccbbaa998877665544332211000000000000ffffffff0100e1f505000000001976a914111111111111111111111111111111111111111188ac00000000
-SIGA=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1")
-WANTSIG=304402207fce6e4d513888e576c636c4990e1ce638f745504eae9f5633b4f3977a71102902201f4b3f8a7fcf1c55c17ecec5b9c27e25cfab3e7c8c0ce497a046995209f766c401
+# the coin being spent, since cosign binds --redeem to it
+PREV=010000000111000000000000000000000000000000000000000000000000000000000000110000000000ffffffff0100c2eb0b0000000017a91463859964ea29ad5a0916500860e2c4adec0a6b278700000000
+UNSIGNED=010000000110a4f36cb349552094f0127a50b0d2bf8c6c02eab28b394957a5631c2a6989350000000000ffffffff0100e1f505000000001976a914111111111111111111111111111111111111111188ac00000000
+SIGA=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --utxo "$PREV" --wif "@$WORK/w1")
+WANTSIG=3045022100d812e692e83b7500f63ad59e77ba311532bf036104e1ccf3f914708add70aba10220281c316713e6ec4afaf6d01f91e22dbaea638263df3213ce49fbd83a73ca102701
 [ "$SIGA" = "$WANTSIG" ] || { echo "FAIL: cosign signature mismatch" >&2; exit 1; }
-FULL=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w2" --sig "$SIGA" --finish)
+FULL=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --utxo "$PREV" --wif "@$WORK/w2" --sig "$SIGA" --finish)
 case "$FULL" in *"$SIGA"*"$REDEEM"*) ;; *) echo "FAIL: finished tx missing sig or redeem" >&2; exit 1;; esac
-FULL2=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w2" --sig "$SIGA" --finish)
+FULL2=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --utxo "$PREV" --wif "@$WORK/w2" --sig "$SIGA" --finish)
 [ "$FULL" = "$FULL2" ] || { echo "FAIL: cosign not deterministic" >&2; exit 1; }
 
 # bytes after the transaction are not part of it, so the txid send would report
@@ -267,19 +269,37 @@ fi
 # p2pkh scriptPubKey of a coin that key holds would otherwise make the
 # "cosignature" a valid p2pkh spend of it to wherever --tx pays.
 P2PKH=76a914$(printf '%040d' 0)88ac
-if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$P2PKH" --wif "@$WORK/w1" >/dev/null 2>&1; then
+if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$P2PKH" --utxo "$PREV" --wif "@$WORK/w1" >/dev/null 2>&1; then
     echo "FAIL: cosign signed a script that does not name its key" >&2; exit 1
 fi
+# a script that names one key spends with that key alone, however it is dressed
+# up, so signing it is a spend of that coin rather than a co-signature. core's
+# generate pays p2pk, so the key for one is exactly the external wif this takes.
+# Refusing the exact 35-byte p2pk shape caught none of the rest: the 1-of-1 and
+# the OP_IF both reached a node's mempool as 1-of-1 spends.
+PUB1=034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa
+for ONE in "21${PUB1}ac" "5121${PUB1}51ae" "21${PUB1}ac61" "21${PUB1}ad51" \
+           "6321${PUB1}ac6721${PUB1}ac68"; do
+    if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$ONE" --utxo "$PREV" \
+           --wif "@$WORK/w1" >/dev/null 2>&1; then
+        echo "FAIL: cosign signed a script naming one key: $ONE" >&2; exit 1
+    fi
+done
+# and nothing ties the script to the coin without --utxo, so it is required
+if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1" >/dev/null 2>&1; then
+    echo "FAIL: cosign signed without --utxo" >&2; exit 1
+fi
+
 # and the summary goes to stderr, so stdout is still one signature
-LINES=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1" 2>/dev/null | wc -l)
+LINES=$(./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --utxo "$PREV" --wif "@$WORK/w1" 2>/dev/null | wc -l)
 [ "$LINES" -eq 1 ] || { echo "FAIL: cosign printed $LINES lines on stdout, want 1" >&2; exit 1; }
 
 # a wrong hashtype and a duplicated key must be refused
-if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w2" \
+if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --utxo "$PREV" --wif "@$WORK/w2" \
        --sig "${SIGA%01}00" --finish >/dev/null 2>&1; then
     echo "FAIL: cosign accepted a non-SIGHASH_ALL signature" >&2; exit 1
 fi
-if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1" \
+if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --utxo "$PREV" --wif "@$WORK/w1" \
        --sig "$SIGA" --finish >/dev/null 2>&1; then
     echo "FAIL: cosign accepted the same key twice" >&2; exit 1
 fi
@@ -320,8 +340,8 @@ SS=$(./kw --regtest psbt sigs --psbt "$PC" | awk '{printf "%02x%s", length($3)/2
 SS="00${SS}$(printf '%02x' $((${#REDEEM}/2)))$REDEEM"
 PF=$(./kw --regtest psbt finalize --psbt "$PC" --vin 0 --scriptsig "$SS")
 EXTRACTED=$(./kw --regtest psbt extract --psbt "$PF")
-SIGAP=$(./kw --regtest cosign --tx "$UNSIGNEDP" --redeem "$REDEEM" --wif "@$WORK/w1")
-FULLP=$(./kw --regtest cosign --tx "$UNSIGNEDP" --redeem "$REDEEM" --wif "@$WORK/w2" --sig "$SIGAP" --finish)
+SIGAP=$(./kw --regtest cosign --tx "$UNSIGNEDP" --redeem "$REDEEM" --utxo "$PREVTX" --wif "@$WORK/w1")
+FULLP=$(./kw --regtest cosign --tx "$UNSIGNEDP" --redeem "$REDEEM" --utxo "$PREVTX" --wif "@$WORK/w2" --sig "$SIGAP" --finish)
 [ "$EXTRACTED" = "$FULLP" ] || { echo "FAIL: psbt and cosign disagree on the transaction" >&2; exit 1; }
 # extracting before every input is final must fail
 if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
