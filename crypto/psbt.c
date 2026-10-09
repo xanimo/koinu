@@ -209,6 +209,14 @@ int kw_psbt_combine(kw_psbt *dst, const kw_psbt *src)
                 return 0;
             }
         }
+        /* Every signature now held, not only the ones that arrived in (src).
+           Checking one side only meant a flipped byte in the first --psbt
+           combined with exit 0 and was caught later or not at all, and which
+           side was checked depended on the order the two were passed in. Done
+           after the merge, so a signature whose redeem script came from the
+           other psbt is still checked against it. */
+        for (size_t k = 0; k < d->nsigs; k++)
+            if (!sig_verifies(dst, i, &d->sigs[k])) return 0;
     }
     for (size_t i = 0; i < dst->tx.nout; i++) {
         /* An output's redeem script conflicts the same way an input's does, and

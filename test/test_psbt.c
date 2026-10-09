@@ -131,6 +131,22 @@ int main(void)
             fprintf(stderr, "FAIL: combined a signature that does not verify\n"); return 1;
         }
 
+        /* and the same bytes in the other psbt. Only the arriving side was
+           checked, so which of the two was verified depended on the order they
+           were passed in: a flipped byte in the first --psbt combined with exit
+           0 and the error, in the other order, named a different problem. */
+        {
+            kw_psbt bad = a, good = a;
+            bad.in[0].nsigs = 1;
+            memcpy(bad.in[0].sigs[0].pubkey, pubB, 33);
+            memset(bad.in[0].sigs[0].sig, 0x41, 20);
+            bad.in[0].sigs[0].sig[19] = KW_SIGHASH_ALL;
+            bad.in[0].sigs[0].siglen = 20;
+            if (kw_psbt_combine(&bad, &good) != 0) {
+                fprintf(stderr, "FAIL: a bad signature in the first psbt combined\n"); return 1;
+            }
+        }
+
         uint8_t skC[32]; memset(skC, 0x33, 32);
         uint8_t pubC[33];
         if (!kw_ec_pubkey(skC, pubC)) { fprintf(stderr, "FAIL: pubkey C\n"); return 1; }
@@ -298,7 +314,7 @@ int main(void)
 
     kw_ec_stop();
 
-    printf("psbt ok: create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused, %d bip174 vectors parsed and round-tripped, %d refused\n",
+    printf("psbt ok: create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused whichever psbt carries them, %d bip174 vectors parsed and round-tripped, %d refused\n",
            parsed, refused);
     return 0;
 }
