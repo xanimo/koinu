@@ -94,4 +94,15 @@ case "$TRUNC" in
     *)  echo "FAIL: unterminated request answered with '$TRUNC'" >&2; exit 1;;
 esac
 
+# one spelling per outpoint on the socket too: strtok folded an empty vout field
+# and everything past a second colon, so a backend keying on the string it sent
+# could credit one payment once per spelling.
+OPTX=00000000000000000000000000000000000000000000000000000000000000ff
+for BAD in "$OPTX::0" "$OPTX:0:junk" "$OPTX" "$OPTX:00"; do
+    R=$(printf 'outpoint mfchMLScZtKtTR9SkQafyswfw3CLLccSwy %s 1\n' "$BAD" \
+            | nc -w 20 -U "$SOCK" 2>/dev/null | head -1)
+    case "$R" in "1 bad outpoint"*) ;; *)
+        echo "FAIL: kwd took \"$BAD\" as an outpoint: $R" >&2; exit 1;; esac
+done
+
 echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request and one with no since height are refused, and the chain\n  it answers from is work-checked over two peers"

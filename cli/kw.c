@@ -156,6 +156,36 @@ static int arg_u32(const char *name, const char *v, uint32_t hi, uint32_t *out)
     return 1;
 }
 
+/* One spelling per outpoint: exactly one colon, a 64-character lowercase txid,
+   and a vout with no leading zero. strtok folded "txid::0" to vout 0, ignored
+   everything after a second colon in "txid:0:junk", and read "00" as 0, so a
+   backend keying on the string it sent could credit one payment several times.
+   Returns 1 with (txint) in internal order. */
+static int parse_outpoint(const char *s, const char *name, uint8_t txint[32], uint32_t *vout)
+{
+    const char *colon = s ? strchr(s, ':') : NULL;
+    if (!colon || colon - s != 64 || strchr(colon + 1, ':')) {
+        fprintf(stderr, "kw: %s wants TXID:VOUT, one colon and a 64-character txid\n", name);
+        return 0;
+    }
+    for (const char *p = s; p < colon; p++)
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) {
+            fprintf(stderr, "kw: %s wants a lowercase hex txid\n", name);
+            return 0;
+        }
+    const char *v = colon + 1;
+    if (v[0] == '0' && v[1]) {
+        fprintf(stderr, "kw: %s vout wants no leading zeros, not \"%s\"\n", name, v);
+        return 0;
+    }
+    uint8_t disp[32];
+    if (!kw_hex_decode(s, 64, disp, 32)) { fprintf(stderr, "kw: bad txid\n"); return 0; }
+    for (int i = 0; i < 32; i++) txint[i] = disp[31 - i];
+    char vn[64];
+    snprintf(vn, sizeof vn, "%s vout", name);
+    return arg_u32(vn, v, UINT32_MAX, vout);
+}
+
 static void chomp(char *s)
 {
     size_t n = strlen(s);
@@ -1046,9 +1076,12 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             }
             uint64_t amt;
             if (!kw_parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
-            uint32_t vout = 0;
-    if (!arg_u32("--outpoint vout", vs, UINT32_MAX, &vout)) return 1;
-            uint32_t index = (uint32_t)strtoul(is, NULL, 10);
+            /* goto out, not return: the seed and the derived keys are locked and
+               wiped there, and returning from here left them in memory. The names
+               are --input's own, which the vout message borrowed from --outpoint. */
+            uint32_t vout = 0, index = 0;
+            if (!arg_u32("--input vout", vs, UINT32_MAX, &vout)) goto out;
+            if (!arg_u32("--input key index", is, KW_BIP32_HARDENED - 1, &index)) goto out;
             /* The typed amount is what the fee, the printed total and the --maxfee
                cap are computed from, and legacy sighash does not commit to input
                value, so a transaction built on a wrong one is valid and the
@@ -1587,14 +1620,9 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
         spklen = hl / 2;
     }
 
-    char ob[128]; snprintf(ob, sizeof ob, "%s", outpoint_arg);
-    char *ts = strtok(ob, ":"), *vs = strtok(NULL, ":");
-    if (!ts || !vs || strlen(ts) != 64) { fprintf(stderr, "kw: --outpoint wants TXID:VOUT\n"); return 1; }
-    uint8_t txdisp[32], txint[32];
-    if (!kw_hex_decode(ts, 64, txdisp, 32)) { fprintf(stderr, "kw: bad txid\n"); return 1; }
-    for (int i = 0; i < 32; i++) txint[i] = txdisp[31 - i];
+    uint8_t txint[32];
     uint32_t vout = 0;
-    if (!arg_u32("--outpoint vout", vs, UINT32_MAX, &vout)) return 1;
+    if (!parse_outpoint(outpoint_arg, "--outpoint", txint, &vout)) return 1;
 
     kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
     kw_net_verbose = 1;

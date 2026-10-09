@@ -196,19 +196,24 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     }
 
     uint8_t spk[64]; size_t spklen = to_spk(cp, watch, spk);
-    char opbuf[128]; snprintf(opbuf, sizeof opbuf, "%s", op);
-    char *ts = strtok(opbuf, ":"), *vs = strtok(NULL, ":");
+    /* One spelling per outpoint: exactly one colon, a 64-character lowercase
+       txid, and a vout with no leading zero and nothing after it. strtok folded
+       "txid::0" to vout 0 and ignored everything past a second colon, and "00"
+       read as 0, so a backend keying on the string it sent could credit one
+       payment once per spelling. */
+    const char *colon = strchr(op, ':');
     uint8_t txdisp[32], txint[32];
-    if (!spklen || !ts || !vs || strlen(ts) != 64 || !kw_hex_decode(ts, 64, txdisp, 32)) {
+    uint32_t vout = 0;
+    if (!spklen || !colon || colon - op != 64 || strchr(colon + 1, ':') ||
+        (colon[1] == '0' && colon[2]) || !kw_hex_decode(op, 64, txdisp, 32) ||
+        !parse_u32(colon + 1, UINT32_MAX, &vout)) {
         write_all(fd, "1 bad outpoint\n", 15); return;
     }
+    for (const char *q = op; q < colon; q++)
+        if (!((*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'))) {
+            write_all(fd, "1 bad outpoint\n", 15); return;
+        }
     for (int i = 0; i < 32; i++) txint[i] = txdisp[31 - i];
-    /* digits only, and inside the field: vout 4294967297, "1junk" and " +1" all
-       answered for vout 1, so one outpoint had several spellings and a backend
-       deduplicating on the string it sent would credit a payment once per
-       spelling. */
-    uint32_t vout = 0;
-    if (!parse_u32(vs, UINT32_MAX, &vout)) { write_all(fd, "1 bad outpoint\n", 15); return; }
     /* No since field used to mean 0, which is "every block since genesis" on the
        unfiltered path and the whole filter cache on the other. The only client
        always sends it, so a request without one is a mistake rather than a

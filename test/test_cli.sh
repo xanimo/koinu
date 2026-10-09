@@ -212,13 +212,27 @@ fi
 # one outpoint, one spelling: vout went through strtoul with no end pointer and no
 # range, so 4294967297, "1junk" and " +1" all answered for vout 1 and a backend
 # deduplicating on the string it sent would credit one payment several times.
-for BAD in 4294967297 1junk -1; do
+for BAD in 4294967297 1junk -1 00; do
     if ./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since 1 \
            --outpoint "0000000000000000000000000000000000000000000000000000000000000001:$BAD" \
            2>&1 | grep -q "^kw: --outpoint vout wants"; then :; else
         echo "FAIL: vout \"$BAD\" was not refused" >&2; exit 1
     fi
 done
+# and the shapes strtok folded away: an empty vout field, a second colon, and a
+# txid with no vout at all. Each answered for vout 0 before.
+OPTX=0000000000000000000000000000000000000000000000000000000000000001
+for BAD in "$OPTX::0" "$OPTX:0:" "$OPTX:0:junk" "$OPTX"; do
+    OUT=$(./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since 1 \
+               --outpoint "$BAD" 2>&1 | head -1)
+    case "$OUT" in "kw: --outpoint"*) ;; *)
+        echo "FAIL: \"$BAD\" was taken as an outpoint: $OUT" >&2; exit 1;; esac
+done
+# while the one spelling it does take gets past the parse
+OUT=$(./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since 1 \
+           --outpoint "$OPTX:0" 2>&1 | head -1)
+case "$OUT" in "kw: --outpoint"*)
+    echo "FAIL: the canonical spelling was refused: $OUT" >&2; exit 1;; esac
 
 # an empty passphrase seals a keystore that opens with nothing
 printf '\n' > "$WORK/emptypass"
