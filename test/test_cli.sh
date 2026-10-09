@@ -234,6 +234,16 @@ OUT=$(./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since
 case "$OUT" in "kw: --outpoint"*)
     echo "FAIL: the canonical spelling was refused: $OUT" >&2; exit 1;; esac
 
+# the mnemonic is the only backup, so a write that fails must not leave a
+# keystore behind: against /dev/full every write failed and kw still sealed one
+# and exited 0.
+if ./kw --regtest new --keystore "$WORK/ksfull" --passphrase "@$WORK/pass" > /dev/full 2>/dev/null; then
+    echo "FAIL: kw new exited 0 with the mnemonic written nowhere" >&2; exit 1
+fi
+if [ -e "$WORK/ksfull" ]; then
+    echo "FAIL: a keystore was sealed whose mnemonic was never shown" >&2; exit 1
+fi
+
 # an empty passphrase seals a keystore that opens with nothing
 printf '\n' > "$WORK/emptypass"
 if ./kw --regtest new --keystore "$WORK/ksempty" --passphrase "@$WORK/emptypass" >/dev/null 2>&1; then

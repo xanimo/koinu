@@ -646,12 +646,9 @@ static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char
 }
 
 /* seal a seed under a passphrase and write it, then print the first address */
-static int seal_and_report(const kw_chainparams *cp, const char *path,
-                           const char *pass_arg, const uint8_t seed[64])
+static int seal_with_pass(const kw_chainparams *cp, const char *path,
+                          char *pass, const uint8_t seed[64])
 {
-    char *pass = read_secret_mode(pass_arg, "new passphrase: ", 1);
-    if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 1; }
-
     uint8_t blob[8192];
     size_t n = kw_keystore_seal(seed, 64, pass, &KW_KEYSTORE_DEFAULT, blob, sizeof blob);
     secret_free(pass);
@@ -664,6 +661,14 @@ static int seal_and_report(const kw_chainparams *cp, const char *path,
         printf("first address  %s\n", addr);
     printf("keystore       %s\n", path);
     return 0;
+}
+
+static int seal_and_report(const kw_chainparams *cp, const char *path,
+                           const char *pass_arg, const uint8_t seed[64])
+{
+    char *pass = read_secret_mode(pass_arg, "new passphrase: ", 1);
+    if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 1; }
+    return seal_with_pass(cp, path, pass, seed);
 }
 
 static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_arg, int words)
@@ -685,15 +690,36 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
         return 1;
     }
 
-    /* Written straight to the descriptor: printf copies it into stdio's buffer,
-       which nothing wipes and which stays live through the argon2 seal below. */
-    const char *lead = "mnemonic (write this down, it is your only backup):\n  ";
-    kw_write_secret(STDOUT_FILENO, lead, strlen(lead));
-    kw_write_secret(STDOUT_FILENO, mnem, strlen(mnem));
-    kw_write_secret(STDOUT_FILENO, "\n\n", 2);
-    kw_secure_zero(mnem, sizeof mnem);
+    /* The passphrase first. Printing the mnemonic before asking meant a refused
+       passphrase left it on the screen with no keystore to go with it, which is
+       a secret shown for nothing. */
+    char *pass = read_secret_mode(pass_arg, "new passphrase: ", 1);
+    if (!pass) {
+        kw_secure_zero(mnem, sizeof mnem);
+        kw_secure_forget(seed, sizeof seed);
+        fprintf(stderr, "kw: no passphrase\n");
+        return 1;
+    }
 
-    int rc = seal_and_report(cp, path, pass_arg, seed);
+    /* Written straight to the descriptor: printf copies it into stdio's buffer,
+       which nothing wipes and which stays live through the argon2 seal below.
+       Checked, because the mnemonic is the only backup: against /dev/full every
+       write failed and kw still sealed a keystore and exited 0, so the wallet
+       existed and its only backup had been written nowhere. */
+    const char *lead = "mnemonic (write this down, it is your only backup):\n  ";
+    int shown = kw_write_secret(STDOUT_FILENO, lead, strlen(lead)) &&
+                kw_write_secret(STDOUT_FILENO, mnem, strlen(mnem)) &&
+                kw_write_secret(STDOUT_FILENO, "\n\n", 2);
+    kw_secure_zero(mnem, sizeof mnem);
+    if (!shown) {
+        secret_free(pass);
+        kw_secure_forget(seed, sizeof seed);
+        fprintf(stderr, "kw: could not write the mnemonic, so no keystore was made: "
+                        "it is the only backup\n");
+        return 1;
+    }
+
+    int rc = seal_with_pass(cp, path, pass, seed);
     kw_secure_forget(seed, sizeof seed);
     return rc;
 }
