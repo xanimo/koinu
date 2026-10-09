@@ -123,6 +123,9 @@
   A KWH2 cache stores each header's hash beside it and the load trusted it, so
   edited raw bytes with consistent stored hashes survived: above the newest
   anchor that is what the timestamp, retarget and work rules read.
+* chainparams: anchor 6400000
+  The tail a cold sync checks the slow way drops from 32315 headers to 7315.
+* chainparams: filter anchor 6400000
 
 ## [0.2.5] - 2026-09-15
 ## What's Changed
