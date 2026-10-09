@@ -4,6 +4,33 @@ a dogecoin wallet in c, built from the crypto up. secp256k1 is the only
 submodule; everything else it needs cryptographically lives in crypto/, either
 vendored from a named upstream at a named commit or written here, and frozen.
 
+## features
+
+- bip39 mnemonics of 12 or 24 words, bip32 derivation and bip44 accounts, with
+  the seed sealed under argon2id and chacha20-poly1305
+- p2pkh addresses, wif import and base58check on mainnet, testnet and regtest
+- legacy transaction building, signing and verification, byte-for-byte against
+  libdogecoin's signer on 322 spends the network already accepted
+- p2sh multisig co-signing, and the bip174 psbt subset dogecoin needs
+- utxo tracking read off the chain itself, with coinbase maturity, change
+  rotation and a fee defaulting to the peer's advertised relay floor
+- header sync checking scrypt proof of work, the auxpow merged-mining proof,
+  the digishield retarget, median time past, the bip66 and bip65 version floors
+  and the compiled-in anchors
+- parallel header download over as many connections as asked for, spread across
+  up to 8 nodes or the chain's dns seeds, split at the anchors, each worker
+  migrating to whichever host proves fastest
+- bip157/158 compact filters with the filter-header chain verified against the
+  peer's own commitments, or full-block spv where no peer serves filters
+- block bodies checked against the header's merkle root, CVE-2012-2459 included
+- tor through socks5 with a fresh credential pair per connection, so two
+  connections do not share a circuit
+- kwd, a resident daemon answering outpoint queries over a unix socket, and
+  kwui, a read-only terminal view of a wallet
+- one submodule: libsecp256k1. sha2, ripemd160, hmac, pbkdf2, scrypt, argon2id,
+  chacha20-poly1305, siphash, base58 and the bip158 gcs are in crypto/, each
+  vendored from a named upstream at a named commit or written here
+
 ## building
 
     git clone --recursive https://github.com/xanimo/koinu
@@ -125,8 +152,7 @@ connections at once, splitting it at the chainparams anchors and verifying each
 segment links internally and ends on its anchor. with no --node the peers come
 from the dns seeds, and connections migrate to whichever ones prove fastest. how
 long a cold sync takes is linear in the height and depends on the peers it lands
-on: 243 seconds at height 6376533 over 12 connections from the dns seeds, on one
-machine. measure it on yours rather than budgeting from that.
+on, so the numbers below are one machine on one evening rather than a budget.
 
 above the newest anchor a header sync asks three peers instead of one, since that
 range is where a chain can differ. every command that syncs headers does it the
@@ -135,6 +161,33 @@ held, each fork is synced and checked, and the one with the most work is kept,
 counting the cached chain as a candidate so a peer has to beat it. give --node
 more than once to choose the peers; one of them and there is nothing to compare,
 which the run says rather than implies.
+
+## measured
+
+a cold sync downloads and checks every header from genesis; a warm one loads the
+cache and asks three peers for what sits above the newest anchor. at height
+6407347 on an i5-10300H over a domestic connection, 2026-10-08, each row a
+`kw height --headers h` with the flags shown:
+
+    --peers 24                 255 s    dns seeds, 24 connections
+    --peers 12                 379 s    dns seeds, 12 connections
+    --node SBC --peers 12      757 s    one arm sbc, 12 connections
+    --node HOST               1800 s    one public node, sequential
+    --peers 12                 2.1 s    warm, nothing new to fetch
+
+which peers the seeds hand out decides most of that: in the 24-connection run one
+host served 120 of the 256 segments at 2805 hdr/s while another managed 350 hdr/s
+for two. a worker leaves a slow host for a faster one rather than waiting on it.
+the sbc row is the same 256 segments off one machine at a flat 740 hdr/s, which is
+what a single host gives you with nothing to migrate to.
+
+loading the 717MB cache costs 1.3 s, and checking it costs 20 ms: every anchor is
+hashed, and so is every record above the newest one, which is where the timestamp,
+retarget and work rules read raw bytes. rehashing all 6.4M would be 8.5 s on a cpu
+without sha-ni, which is what the stored hash exists to avoid.
+
+the test suite is 43 binaries, each against published vectors where they exist,
+and the fuzz corpus replays 18 seeds under asan and ubsan before mutating.
 
 ## kwui
 
@@ -151,10 +204,9 @@ them.
 ## kwd
 
 a resident daemon for a caller that asks repeatedly and cannot pay the chain load
-each time. kw loads the header cache on every invocation, which is linear in the
-height and was 313 to 321ms at 6.37M headers here; kwd pays that once at startup
-and holds the chain and its peer connections open, then answers over a unix
-socket.
+each time. kw loads the header cache on every invocation, which is the 1.3 s above
+and grows with the height; kwd pays that once at startup and holds the chain and
+its peer connections open, then answers over a unix socket.
 
 measured against mainnet at height 6380305, with a filter cache built from a node
 serving bip158: 8 to 25ms for a repeated query, 287ms over an 80000 block range,
