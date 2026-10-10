@@ -340,11 +340,20 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                                 "chain base, so it is being rebuilt\n", path);
                 have = 0; have_chain = 0; fhc = 0;
             } else {
+                /* The sidecar goes first, for the height being kept, and the
+                   cache is cut after it. The other order left a window where the
+                   sidecar vouched for more than the cache held, which is the one
+                   state the load refuses outright: delete both and sync again.
+                   This way a crash leaves a cache longer than its sidecar, and
+                   the load drops the unbacked tail and refetches it.
+
+                   chain_over only reads the first (agree) entries, so it does
+                   not need the cut to have happened yet. */
                 uint8_t newtip[32];
-                if (!cache_truncate(path, agree) ||
-                    !chain_over(path, agree, cbase, newtip) ||
-                    !cache_sync_to_disk(path) ||
-                    !fh_save(path, (long)agree, newtip, cbase)) {
+                if (!chain_over(path, agree, cbase, newtip) ||
+                    !fh_save(path, (long)agree, newtip, cbase) ||
+                    !cache_truncate(path, agree) ||
+                    !cache_sync_to_disk(path)) {
                     fprintf(stderr, "kw: cannot roll %s back to height %u\n",
                             path, base_height + (uint32_t)agree);
                     return -1;

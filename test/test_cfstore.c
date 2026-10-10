@@ -493,6 +493,80 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar and a stale index dropped with it,\n  filter-header anchor enforced\n");
+    /* The rollback writes the sidecar for the height it keeps and cuts the cache
+       after it. The other order left a window where the sidecar vouched for more
+       than the cache held, which is the one state the load refuses outright
+       rather than repairing. Forced here by making the sidecar write fail: the
+       cache must still be whole, since nothing should have been cut yet. */
+    {
+        const char *dir = "test_cfstore_order.d";
+        uint8_t msgs[512]; size_t lens[2]; const char *cmds[2] = { "cfheaders", "cfilter" };
+        char dp[256];
+        mkdir(dir, 0700);
+        snprintf(dp, sizeof dp, "%s/f", dir);
+        remove(dp);
+
+        uint8_t raw[80];
+        memset(raw, 0, 80); raw[0] = 1;
+        kw_block_header b1, b2, b2x;
+        kw_block_header_parse(raw, 80, &b1);
+        memset(raw, 0, 80); raw[0] = 2; memcpy(raw + 4, b1.hash, 32);
+        kw_block_header_parse(raw, 80, &b2);
+        memset(raw, 0, 80); raw[0] = 7; memcpy(raw + 4, b1.hash, 32);   /* the fork */
+        kw_block_header_parse(raw, 80, &b2x);
+
+        uint8_t fa[1] = { 0xa1 }, fb[1] = { 0xb2 }, ha[32], hb[32];
+        kw_hash256(fa, sizeof fa, ha);
+        kw_hash256(fb, sizeof fb, hb);
+        uint8_t zero[32] = { 0 }, c1[32];
+        kw_cf_header_step(ha, zero, c1);
+
+        kw_headerstore os; kw_headerstore_init(&os);
+        kw_headerstore_append(&os, &b1);
+        lens[0] = mk_cfheaders(msgs, b1.hash, zero, ha);
+        lens[1] = mk_cfilter(msgs + lens[0], b1.hash, fa, sizeof fa);
+        if (sync_round(&os, dp, msgs, lens, cmds, 2) != 1) {
+            fprintf(stderr, "FAIL: could not build the ordering cache\n");
+            kw_headerstore_free(&os); return 1;
+        }
+        kw_headerstore_append(&os, &b2);
+        lens[0] = mk_cfheaders(msgs, b2.hash, c1, hb);
+        lens[1] = mk_cfilter(msgs + lens[0], b2.hash, fb, sizeof fb);
+        if (sync_round(&os, dp, msgs, lens, cmds, 2) != 2) {
+            fprintf(stderr, "FAIL: could not extend the ordering cache\n");
+            kw_headerstore_free(&os); return 1;
+        }
+        long built = kw_cfstore_count(dp);
+        kw_headerstore_free(&os);
+        if (built != 2) { fprintf(stderr, "FAIL: ordering cache holds %ld\n", built); return 1; }
+
+        /* a chain that forks below what the cache holds, with the directory
+           read-only so the sidecar cannot be written */
+        kw_headerstore fs; kw_headerstore_init(&fs);
+        kw_headerstore_append(&fs, &b1);
+        kw_headerstore_append(&fs, &b2x);
+        if (chmod(dir, 0500) != 0) {
+            printf("  (cannot drop write on a directory, ordering unchecked)\n");
+        } else {
+            lens[0] = mk_cfheaders(msgs, b2x.hash, c1, hb);
+            lens[1] = mk_cfilter(msgs + lens[0], b2x.hash, fb, sizeof fb);
+            (void)sync_round(&fs, dp, msgs, lens, cmds, 2);
+            chmod(dir, 0700);
+            long after = kw_cfstore_count(dp);
+            if (after >= 0 && after < built) {
+                fprintf(stderr, "FAIL: the cache was cut to %ld of %ld before its "
+                                "sidecar was written\n", after, built);
+                kw_headerstore_free(&fs); return 1;
+            }
+        }
+        kw_headerstore_free(&fs);
+        chmod(dir, 0700);
+        remove(dp);
+        { char aux2[300]; snprintf(aux2, sizeof aux2, "%s.fh", dp); remove(aux2);
+          snprintf(aux2, sizeof aux2, "%s.idx", dp); remove(aux2); }
+        rmdir(dir);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced\n");
     return 0;
 }
