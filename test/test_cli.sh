@@ -234,6 +234,16 @@ OUT=$(./kw --regtest outpoint --watch "$ADDR1" --node 127.0.0.1 --port 1 --since
 case "$OUT" in "kw: --outpoint"*)
     echo "FAIL: the canonical spelling was refused: $OUT" >&2; exit 1;; esac
 
+# --input split with strtok, which folds an empty field and stops at the fourth,
+# so "T::1:5:0" and "T:1:5:0:extra" both signed.
+INTX=1111111111111111111111111111111111111111111111111111111111111111
+for BAD in "$INTX::1:5:0" "$INTX:1:5:0:extra" "$INTX:1:5" "$INTX:1::0"; do
+    if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+           --input "$BAD" --to "$ADDR1:1" >/dev/null 2>&1; then
+        echo "FAIL: --input \"$BAD\" was taken" >&2; exit 1
+    fi
+done
+
 # each --input amount is bounded on its own, and the sum was not: nineteen
 # inputs of ten billion DOGE wrapped the total and produced outputs the fee was
 # computed against.

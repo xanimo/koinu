@@ -156,6 +156,25 @@ static int arg_u32(const char *name, const char *v, uint32_t hi, uint32_t *out)
     return 1;
 }
 
+/* Split (s) on colons into exactly (want) non-empty fields. strtok folds empty
+   fields and stops at the count asked for, so "T::1:5:0" and "T:1:5:0:extra"
+   both read as four good ones and signed. */
+static int split_fields(char *s, char **f, int want)
+{
+    int n = 0;
+    char *p = s;
+    for (;;) {
+        char *colon = strchr(p, ':');
+        if (n == want) return 0;                 /* more fields than asked for */
+        if (colon) *colon = '\0';
+        if (!*p) return 0;                       /* an empty field is not a field */
+        f[n++] = p;
+        if (!colon) break;
+        p = colon + 1;
+    }
+    return n == want;
+}
+
 /* One spelling per outpoint: exactly one colon, a 64-character lowercase txid,
    and a vout with no leading zero. strtok folded "txid::0" to vout 0, ignored
    everything after a second colon in "txid:0:junk", and read "00" as 0, so a
@@ -1103,12 +1122,14 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         /* manual: the operator names each outpoint and its key index */
         for (int i = 0; i < ninputs; i++) {
             char buf[160];
-            snprintf(buf, sizeof buf, "%s", inputs[i]);
-            char *txid = strtok(buf, ":"), *vs = strtok(NULL, ":");
-            char *as = strtok(NULL, ":"), *is = strtok(NULL, ":");
-            if (!txid || !vs || !as || !is || strlen(txid) != 64) {
+            if ((size_t)snprintf(buf, sizeof buf, "%s", inputs[i]) >= sizeof buf) {
+                fprintf(stderr, "kw: --input is longer than any outpoint and amount\n"); goto out;
+            }
+            char *f[4];
+            if (!split_fields(buf, f, 4) || strlen(f[0]) != 64) {
                 fprintf(stderr, "kw: bad --input, want TXID:VOUT:AMOUNT:INDEX\n"); goto out;
             }
+            char *txid = f[0], *vs = f[1], *as = f[2], *is = f[3];
             uint64_t amt;
             if (!kw_parse_doge(as, &amt)) { fprintf(stderr, "kw: bad input amount\n"); goto out; }
             /* goto out, not return: the seed and the derived keys are locked and
