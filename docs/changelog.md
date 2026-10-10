@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-10
+
 ## Upgrading from 0.2.x
 
 Rescan. A utxo set written by 0.2.x has no `# end` line, so it does not load and
@@ -218,6 +220,8 @@ kwd answers with the same number in front of its reply line.
 * build: make fuzz builds with -fno-sanitize-recover, as every other gate does
 * kw: the smaller things the review listed, one pass
 * gitignore the fuzz binaries make fuzz and fuzz-net build
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.2.5...v0.3.0
 
 ## [0.2.5] - 2026-09-15
 ## What's Changed
