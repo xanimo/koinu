@@ -92,6 +92,47 @@ $SCAN >/dev/null
 NJ3=$(awk 'END{print NR}' "$J")
 [ "$NJ3" = "3" ] || { echo "FAIL: a new receive did not append, journal has $NJ3" >&2; cat "$J" >&2; exit 1; }
 
+# A coin received and then spent leaves nothing in the utxo set, so a wallet
+# restored from its words could say what it holds and not what it has done. The
+# scan sees the spend go past and records it, with the height of the block the
+# spending transaction is in.
+SPENDME=$($C getnewaddress)
+$C sendtoaddress "$A0" 3 >/dev/null
+$C generatetoaddress 1 "$MINE" >/dev/null
+$SCAN >/dev/null
+NJ4=$(awk 'END{print NR}' "$J")
+
+# spend everything the wallet holds back to the node, which consumes those coins
+RAWSPEND=$(./kw --regtest sign $K --utxos "$U" --to "$SPENDME:1" 2>/dev/null \
+            | awk '/^raw/{print $2}')
+if [ -n "$RAWSPEND" ]; then
+    $C sendrawtransaction "$RAWSPEND" >/dev/null
+    $C generatetoaddress 2 "$MINE" >/dev/null
+    $SCAN >/dev/null
+    # the scan's entries are the ones naming an outpoint a receive also names;
+    # kw sign writes an out entry too, for the destination, with no height,
+    # because at signing time there is no block to name
+    SEEN=$(awk '$2 == "in" { have[$3" "$4] = 1 }
+                $2 == "out" && ($3" "$4) in have { n++ }
+                END { print n+0 }' "$J")
+    [ "$SEEN" -ge 1 ] || {
+        echo "FAIL: a coin spent on chain left no out entry in the journal" >&2
+        cat "$J" >&2; exit 1; }
+    awk '$2 == "in" { have[$3" "$4] = 1 }
+         $2 == "out" && ($3" "$4) in have && $5 < 1 { exit 1 }' "$J" || {
+        echo "FAIL: a confirmed spend was recorded with no height" >&2
+        cat "$J" >&2; exit 1; }
+    # rescanning must not double it
+    $SCAN >/dev/null
+    SEEN2=$(awk '$2 == "in" { have[$3" "$4] = 1 }
+                 $2 == "out" && ($3" "$4) in have { n++ }
+                 END { print n+0 }' "$J")
+    [ "$SEEN" = "$SEEN2" ] || {
+        echo "FAIL: a rescan recorded the same spend again ($SEEN -> $SEEN2)" >&2; exit 1; }
+else
+    echo "FAIL: could not sign a spend of the scanned coins" >&2; exit 1
+fi
+
 # kw outpoint is what a payment backend calls, and it had no live test at all. It
 # must find the outpoint the scan already found, and it must check work while doing
 # it: until today it synced headers with no validator pool, so it checked none.

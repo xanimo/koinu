@@ -62,10 +62,16 @@ void kw_watchset_free(kw_watchset *ws)
 }
 
 /* ── UTXO set ────────────────────────────────────────────────── */
+void kw_utxoset_observe(kw_utxoset *us, const kw_utxo_watcher *w)
+{
+    if (us) us->watch = w;
+}
+
 int kw_utxoset_init(kw_utxoset *us)
 {
     us->count = 0;
     us->total = 0;
+    us->watch = NULL;
     us->cap = 16;
     us->u = (kw_utxo *)malloc(us->cap * sizeof *us->u);
     return us->u != NULL;
@@ -81,10 +87,17 @@ size_t kw_utxoset_count(const kw_utxoset *us) { return us->count; }
 
 uint64_t kw_utxoset_balance(const kw_utxoset *us) { return us->total; }
 
-static void utxo_remove(kw_utxoset *us, const uint8_t txid[32], uint32_t vout)
+static void utxo_remove(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
+                        uint32_t height, const uint8_t by[32])
 {
     for (size_t i = 0; i < us->count; i++) {
         if (us->u[i].vout == vout && memcmp(us->u[i].txid, txid, 32) == 0) {
+            /* reported before the entry goes, since afterwards there is nothing
+               left to report: the value and the script are only here */
+            if (us->watch && us->watch->spent)
+                us->watch->spent(us->watch->ctx, us->u[i].txid, us->u[i].vout,
+                                 us->u[i].value, us->u[i].spk, us->u[i].spklen,
+                                 height, by);
             us->total -= us->u[i].value;
             us->u[i] = us->u[us->count - 1];   /* swap-remove; order does not matter */
             us->count--;
@@ -145,6 +158,7 @@ struct apply_ctx {
     int          ninput;
     uint32_t     height;
     int          ok;
+    uint8_t      txid[32];        /* the transaction being walked, for the record */
 };
 
 static void on_input(void *vc, const uint8_t prev[32], uint32_t vout)
@@ -159,7 +173,7 @@ static void on_input(void *vc, const uint8_t prev[32], uint32_t vout)
     } else {
         c->coinbase = 0;
     }
-    utxo_remove(c->us, prev, vout);
+    utxo_remove(c->us, prev, vout, c->height, c->txid);
 }
 
 static void on_output(void *vc, const uint8_t txid[32], uint32_t index,
@@ -172,14 +186,22 @@ static void on_output(void *vc, const uint8_t txid[32], uint32_t index,
     /* marked before the add, and never cleared by a later spend: this is what
        "used" means to the gap rule */
     c->ws->w[at].seen = 1;
-    if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen, c->coinbase)) c->ok = 0;
+    if (!kw_utxoset_add(c->us, txid, index, value, c->height, spk, spklen, c->coinbase)) {
+        c->ok = 0;
+        return;
+    }
+    if (c->us->watch && c->us->watch->received)
+        c->us->watch->received(c->us->watch->ctx, txid, index, value, spk, spklen,
+                               c->height, c->coinbase);
 }
 
 int kw_utxoset_apply_tx(kw_utxoset *us, kw_watchset *ws,
                         const uint8_t *rawtx, size_t len, uint32_t height)
 {
-    struct apply_ctx c = { us, ws, 0, 0, height, 1 };
-    if (kw_tx_scan(rawtx, len, NULL, on_input, on_output, &c) == 0) return 0;
+    struct apply_ctx c = { us, ws, 0, 0, height, 1, { 0 } };
+    /* kw_tx_scan fills the txid before the callbacks fire, so an input can name
+       the transaction spending it */
+    if (kw_tx_scan(rawtx, len, c.txid, on_input, on_output, &c) == 0) return 0;
     return c.ok;
 }
 

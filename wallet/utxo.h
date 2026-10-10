@@ -62,7 +62,29 @@ int kw_utxo_mature(const kw_chainparams *cp, const kw_utxo *u, uint32_t tip_heig
    makes every subset a caller sums afterwards safe by construction. Dogecoin has no
    supply cap and its issued supply is already 81% of what a uint64 holds, so this is
    nearer than it reads. */
-typedef struct { kw_utxo *u; size_t count, cap; uint64_t total; } kw_utxoset;
+/* Told what each applied transaction did to the set, so a caller can keep the
+   record the set cannot: an output that is spent is removed, and the set then
+   has nothing left to say about it, which is why a restored wallet can show what
+   it holds and not what it has done. Both callbacks may be NULL.
+
+   (by) is the transaction doing the spending; (height) is the block it is in. */
+typedef struct {
+    void (*received)(void *ctx, const uint8_t txid[32], uint32_t vout, uint64_t value,
+                     const uint8_t *spk, size_t spklen, uint32_t height, int coinbase);
+    void (*spent)(void *ctx, const uint8_t txid[32], uint32_t vout, uint64_t value,
+                  const uint8_t *spk, size_t spklen, uint32_t height,
+                  const uint8_t by[32]);
+    void *ctx;
+} kw_utxo_watcher;
+
+typedef struct {
+    kw_utxo *u; size_t count, cap; uint64_t total;
+    const kw_utxo_watcher *watch;        /* NULL unless a caller is keeping a record */
+} kw_utxoset;
+
+/* Watch (us) for the life of a scan, or NULL to stop. The set keeps the pointer,
+   so (w) has to outlive the scan. */
+void kw_utxoset_observe(kw_utxoset *us, const kw_utxo_watcher *w);
 
 int      kw_utxoset_init(kw_utxoset *us);
 void     kw_utxoset_free(kw_utxoset *us);

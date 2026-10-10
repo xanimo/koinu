@@ -43,6 +43,10 @@ typedef struct { kw_journal_entry *e; size_t count, cap; } kw_journal;
 int  kw_journal_init(kw_journal *j);
 void kw_journal_free(kw_journal *j);
 
+/* Hold (e) in memory without writing it, so a caller appending many entries in
+   one pass can ask kw_journal_has about what it has already written. */
+int  kw_journal_add(kw_journal *j, const kw_journal_entry *e);
+
 /* <utxos>.journal. Returns (out). */
 char *kw_journal_path(const char *utxos, char *out, size_t cap);
 

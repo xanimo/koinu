@@ -992,6 +992,79 @@ static kw_scan_addr *derive_watch(const kw_chainparams *cp, const kw_bip32_key *
    arrived: once it is spent it is gone from the set with nothing left behind.
    Deriving the watched addresses once and matching gives each entry the address of
    ours that was paid. */
+
+/* The journal as a history, written while the scan walks. The utxo set answers
+   what is held now; a coin that was received and later spent leaves nothing in
+   it, so a wallet restored from its words could say what it holds and not what
+   it has done. The scan sees both: an output that pays a watched script, and one
+   of ours that an input consumes. Recorded here, with the height of the block
+   each is in, it is a history of the range scanned.
+
+   Entries dedup on (txid, vout, direction), so a rescan adds nothing twice, and
+   the scan rescans whenever the gap rule widens the window. */
+struct history_ctx {
+    const char          *jpath;
+    const kw_chainparams *cp;
+    const kw_scan_addr  *tbl;
+    int                  per_chain, watched;
+    kw_journal          *j;
+    int                  in, out, failed;
+};
+
+static void history_addr(const struct history_ctx *h, const uint8_t *spk, size_t spklen,
+                         char *out, size_t cap)
+{
+    snprintf(out, cap, "-");
+    for (int chg = 0; chg <= 1; chg++)
+        for (int q = 0; q < h->watched && q < h->per_chain; q++) {
+            const kw_scan_addr *a = &h->tbl[(size_t)chg * h->per_chain + q];
+            if (a->ok && spklen == 25 && memcmp(spk, a->spk, 25) == 0) {
+                snprintf(out, cap, "%s", a->addr);
+                return;
+            }
+        }
+}
+
+static void history_write(struct history_ctx *h, int dir, const uint8_t txid[32],
+                          uint32_t vout, uint64_t value, const uint8_t *spk,
+                          size_t spklen, uint32_t height)
+{
+    if (h->failed || kw_journal_has(h->j, txid, vout, dir)) return;
+    kw_journal_entry e;
+    memset(&e, 0, sizeof e);
+    e.when = (uint64_t)time(NULL);
+    e.dir = dir;
+    memcpy(e.txid, txid, 32);
+    e.vout = vout;
+    e.height = height;
+    e.amount = value;
+    history_addr(h, spk, spklen, e.addr, sizeof e.addr);
+    if (!kw_journal_append(h->jpath, &e)) { h->failed = 1; return; }
+    kw_journal_add(h->j, &e);    /* so the next block does not write it again */
+    if (dir == KW_JOURNAL_IN) h->in++; else h->out++;
+}
+
+static void history_received(void *ctx, const uint8_t txid[32], uint32_t vout,
+                             uint64_t value, const uint8_t *spk, size_t spklen,
+                             uint32_t height, int coinbase)
+{
+    (void)coinbase;
+    history_write((struct history_ctx *)ctx, KW_JOURNAL_IN, txid, vout, value,
+                  spk, spklen, height);
+}
+
+static void history_spent(void *ctx, const uint8_t txid[32], uint32_t vout,
+                          uint64_t value, const uint8_t *spk, size_t spklen,
+                          uint32_t height, const uint8_t by[32])
+{
+    (void)by;
+    /* the entry names the output being spent, which is what makes it the pair of
+       the receive that created it; the spending transaction is in the block at
+       (height) and the amount is what left */
+    history_write((struct history_ctx *)ctx, KW_JOURNAL_OUT, txid, vout, value,
+                  spk, spklen, height);
+}
+
 static void record_receives(const kw_chainparams *cp, const kw_scan_addr *tbl,
                             int per_chain, int watched, const kw_utxoset *us,
                             const char *utxos)
@@ -1113,9 +1186,37 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
         if (have_us) kw_utxoset_free(&us);
         kw_utxoset_init(&us); have_us = 1;
+
+        /* The history is written as the blocks go past, because a spend is only
+           visible there: the set that comes out the other end has nothing to say
+           about a coin that was received and spent inside the range. */
+        char jpath[4200];
+        kw_journal_path(utxos_path, jpath, sizeof jpath);
+        kw_journal hj;
+        struct history_ctx hc;
+        kw_utxo_watcher hw = { history_received, history_spent, &hc };
+        int history_ok = kw_journal_init(&hj) && kw_journal_load(&hj, jpath);
+        if (history_ok) {
+            hc.jpath = jpath; hc.cp = cp; hc.tbl = watch;
+            hc.per_chain = watch_cap; hc.watched = watched; hc.j = &hj;
+            hc.in = 0; hc.out = 0; hc.failed = 0;
+            kw_utxoset_observe(&us, &hw);
+        } else {
+            fprintf(stderr, "kw: %s is not readable as a journal, so this scan "
+                            "records no history\n", jpath);
+        }
+
         long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
                 : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
                 : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+
+        kw_utxoset_observe(&us, NULL);
+        if (history_ok) {
+            if (hc.failed) fprintf(stderr, "kw: could not append to %s\n", jpath);
+            else if (hc.in || hc.out)
+                printf("recorded %d receive(s) and %d spend(s) in %s\n", hc.in, hc.out, jpath);
+            kw_journal_free(&hj);
+        }
         /* The highest index ever paid, not the highest still holding a coin. An
            address paid and then spent from is absent from the unspent set and
            read as fresh, so the gap walk stopped short of coins handed out past
@@ -1149,6 +1250,8 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
     if (kw_utxoset_save(&us, utxos_path)) {
         kw_scanmeta_write(utxos_path, p.peer_feerate, watched, scanned_to);
+        /* the walk above records both directions; this catches a set loaded from
+           a file written before that existed */
         record_receives(cp, watch, watch_cap, watched, &us, utxos_path);
         uint64_t held = kw_utxoset_balance(&us);
         uint64_t spendable = kw_utxoset_spendable(cp, &us, scanned_to);

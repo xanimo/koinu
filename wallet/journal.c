@@ -43,6 +43,11 @@ static int push(kw_journal *j, const kw_journal_entry *e)
     return 1;
 }
 
+int kw_journal_add(kw_journal *j, const kw_journal_entry *e)
+{
+    return push(j, e);
+}
+
 int kw_journal_load(kw_journal *j, const char *path)
 {
     if (!j || !path) return 0;
