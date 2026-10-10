@@ -190,19 +190,20 @@ kwd answers with the same number in front of its reply line.
   for spending and refused by the node. The scan also recorded the headers it
   appended as the height it had reached, so a second scan with --headers made
   every coinbase read as immature.
-* kw: cosign only a script that cannot be spent with the signing key alone
-  Breaking: cosign requires --utxo now. A p2pk script names the signing key, so
-  --redeem set to the p2pk scriptPubKey of a coin that key holds turned a
-  co-signature into a complete spend of it.
+* kw: cosign only a script that names more than this key
+  Breaking: cosign requires --utxo now. A script naming one key spends with that
+  key alone however it is dressed up, so --redeem set to a p2pk or 1-of-1 script
+  over a coin that key holds turned a co-signature into a complete spend of it.
 * chainsel: bound the comparison by what the peers agree on, not the loudest
   One peer advertising 2^31-1 pushed the span past the cap and collapsed the
   multi-peer comparison to a single peer, which could be that one.
 * kw: do not ask a node that cannot answer, and bound what it may say instead
 * psbt: verify every signature a combine holds, not only the arriving ones
 * utxo: do not write the set through a symlink left at the temp path
-* tx: start the scriptCode at the separator that ran, not at the script
-  A separator executing before the CHECKSIG moves where the scriptCode starts,
-  so signatures over such a script were refused on chain.
+* tx: start the scriptCode at the separator its checksig executed after
+  A separator executing before the CHECKSIG moves where the scriptCode starts
+  and one after it does not, so signatures over such scripts were refused on
+  chain and psbt combine judged them by the same wrong digest.
 * cfstore: walk a cache longer than the chain back, rather than refusing it
 * net: bound a wait in time, which is what peer.h already claimed
 * kw: one spelling per outpoint, and a parsed key index
