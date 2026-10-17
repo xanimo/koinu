@@ -1042,6 +1042,11 @@ done:
     return rc;
 }
 
+/* defined below, beside the other display helpers */
+static void fmt_doge(uint64_t v, char *out, size_t cap);
+static int  spk_to_addr(const kw_chainparams *cp, const uint8_t *spk, size_t spklen,
+                        char *out, size_t cap);
+
 /* Signer. With --input, the operator names the outpoints (each owned by our key
    at m/44'/coin'/0'/0/INDEX). Without, inputs are chosen from the tracked utxo
    set written by scan, and each input's key is found by matching its script to
@@ -1296,6 +1301,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
 
     if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
     char caddr[80] = { 0 };                 /* recorded below, so the next spend rotates */
+    uint8_t change_spk[25]; size_t change_spklen = 0;   /* for the readback below */
     if (has_change) {
         uint8_t cspk[25]; size_t cl = 0;
         if (change_arg) {
@@ -1318,6 +1324,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             printf("change m/44'/%u'/0'/1/%u\n", cp->bip44_coin, ci);
         }
         if (!kw_tx_add_output(&tx, change, cspk, cl)) { fprintf(stderr, "kw: add change\n"); goto out; }
+        if (cl == 25) { memcpy(change_spk, cspk, 25); change_spklen = 25; }
     }
     /* with no change output, the remainder is left to the miner as fee */
 
@@ -1340,7 +1347,78 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
         printf("txid  %s\n", txidhex);
         printf("raw   %s\n", hex);
-        uint64_t paid = total_in - send_amt - (has_change ? change : 0);
+
+        /* Read back what was signed, rather than reporting what was asked for.
+           Everything above this point is the request; from here the numbers come
+           out of the serialized bytes, so a bug between the two is visible to the
+           operator instead of being papered over by the summary agreeing with
+           itself. The inputs are the one thing the bytes cannot carry, so the
+           fee is the selected total less the decoded outputs. */
+        uint64_t signed_out = 0;
+        int bad = 0;
+        {
+            kw_tx back;
+            size_t used = kw_tx_parse(raw, rn, &back);
+            if (used != rn) {
+                fprintf(stderr, "kw: the transaction just signed does not decode as "
+                                "one; refusing to report it as signed\n");
+                goto out;
+            }
+            /* By position, because the builder put them there: output 0 is the
+               destination and output 1 is the change. Matching by script instead
+               reads one output twice when a spend pays one of this wallet's own
+               change addresses, which is a thing people do. */
+            size_t want_outs = has_change ? 2 : 1;
+            if (back.nout != want_outs || back.nin != (size_t)nin) {
+                fprintf(stderr, "kw: signed %zu input(s) and %zu output(s), built %d "
+                                "and %zu\n", back.nin, back.nout, nin, want_outs);
+                bad = 1;
+            }
+            for (size_t o = 0; o < back.nout; o++) {
+                signed_out += back.vout[o].value;
+                int is_change = has_change && o == 1;
+                char addr[128], amt[32];
+                fmt_doge(back.vout[o].value, amt, sizeof amt);
+                if (!spk_to_addr(cp, back.vout[o].script, back.vout[o].scriptlen, addr, sizeof addr))
+                    snprintf(addr, sizeof addr, "an unrecognised script");
+                printf("out %zu %-7s %s DOGE to %s\n", o,
+                       is_change ? "change" : "pays", amt, addr);
+            }
+            if (!bad) {
+                if (back.vout[0].scriptlen != dl ||
+                    memcmp(back.vout[0].script, dspk, dl) != 0) {
+                    fprintf(stderr, "kw: the transaction does not pay the address asked "
+                                    "for\n");
+                    bad = 1;
+                }
+                if (back.vout[0].value != send_amt) {
+                    fprintf(stderr, "kw: it pays %llu koinu, not the %llu asked for\n",
+                            (unsigned long long)back.vout[0].value,
+                            (unsigned long long)send_amt);
+                    bad = 1;
+                }
+                if (has_change && change_spklen &&
+                    (back.vout[1].scriptlen != change_spklen ||
+                     memcmp(back.vout[1].script, change_spk, change_spklen) != 0)) {
+                    fprintf(stderr, "kw: the change output is not the address this "
+                                    "wallet derived for it\n");
+                    bad = 1;
+                }
+            }
+            if (signed_out > total_in) {
+                fprintf(stderr, "kw: the outputs are worth more than the inputs\n");
+                bad = 1;
+            }
+        }
+        /* Not an error: the coins stay this wallet's, so nothing is lost. It is
+           worth saying out loud, because the sender usually meant to pay someone
+           else and the transaction looks the same either way. */
+        if (change_spklen && dl == change_spklen && memcmp(dspk, change_spk, dl) == 0)
+            fprintf(stderr, "kw: the payment goes to this wallet's own change address, "
+                            "so it pays nobody but itself\n");
+        if (bad) { fprintf(stderr, "kw: not reporting this as signed\n"); goto out; }
+
+        uint64_t paid = total_in - signed_out;
         printf("fee   %llu koinu, %zu bytes\n", (unsigned long long)paid, rn);
 
         /* Recorded as signed, not as confirmed: the transaction has not been

@@ -288,6 +288,28 @@ fi
      --input "$INTXID:0:1000:0" --to "$ADDR1:5" >/dev/null \
     || { echo "FAIL: the agreeing amount was refused" >&2; exit 1; }
 
+# What sign reports is read back out of the bytes it signed, not out of the
+# request that built them: a signer that prints the request cannot show a
+# disagreement between the two. The outputs are printed by index, and the fee is
+# the selected inputs less the decoded outputs.
+BACK=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+       --utxos "$WORK/u4" --input "$INTXID:0:1000:0" --to "$ADDR1:5" 2>/dev/null)
+case "$BACK" in
+    *"out 0 pays    5.00000000 DOGE to $ADDR1"*) ;;
+    *) echo "FAIL: sign did not read back output 0 from the signed bytes" >&2
+       echo "$BACK" >&2; exit 1;;
+esac
+case "$BACK" in
+    *"out 1 change"*) ;;
+    *) echo "FAIL: sign did not read back the change output" >&2; exit 1;;
+esac
+# the fee is inputs less decoded outputs, so it is whatever is left of the 10
+case "$BACK" in
+    *"fee   "*) ;;
+    *) echo "FAIL: sign printed no fee" >&2; exit 1;;
+esac
+
+
 # cosign: two fixed keys (0x11.., 0x22..) co-sign a 2-of-2 P2SH spend. The
 # unsigned tx and redeem script match test_tx's fixtures; outputs are
 # deterministic (RFC 6979) so they are pinned.
