@@ -3,6 +3,36 @@
 What koinu defends against, what it does not, and what it takes on trust. This
 is the document the README deliberately does not try to be.
 
+## The boundary, in one place
+
+Read this part if you read nothing else.
+
+A compromised kwd cannot sign. It holds no keys, opens no keystore, and answers
+one question about one outpoint; the worst it can do is lie about a confirmation,
+which is why anything taking payment on a confirmation should run its own node and
+pass `--node` more than once.
+
+A compromised machine running kw can sign. The seed is on that machine and
+decrypts there, so a program running as your user while kw runs can take it. No
+wallet can be honest and claim otherwise. What koinu does is narrow the window:
+the seed is sealed at rest, mlock'd while in use, wiped after, never in argv, and
+the process that holds it never opens a socket. Key derivation is the one window
+where passphrase-derived bytes can reach swap, and the section below says why.
+
+koinu cannot save you from approving a payment you meant to approve. It decodes
+what it is about to broadcast and makes you confirm it, and it refuses a few
+shapes that are almost always mistakes, but a correct signature over a
+transaction you read and accepted is not something a wallet can undo.
+
+If you lose the seed and the wallet file, nobody can recover it. Not you, not us,
+not a service. The keystore holds the 64-byte seed, not the words, and the words
+cannot be derived back from it: `kw` has no export, and there is no account, no
+login, no recovery address and nothing of yours on any machine but your own. That
+is the point of the thing, and it is also the way it bites.
+
+What it will not grow: server-side recovery, a login, telemetry, or any
+convenience that needs the key process to talk to the network.
+
 ## Keys
 
 The seed is the only secret. It lives sealed in the keystore under argon2id and
