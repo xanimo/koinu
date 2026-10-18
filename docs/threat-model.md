@@ -35,6 +35,14 @@ convenience that needs the key process to talk to the network.
 
 ## Keys
 
+`kw backup verify` answers whether a phrase restores a wallet without putting the
+two in the same place: it derives the seed the typed words give, opens the
+keystore, and compares them in constant time, printing neither. A mismatch exits
+3. With no `--keystore` it prints the master fingerprint and first address, so a
+paper backup can be checked years later against an address already known, on a
+machine that holds no wallet at all. Checking a backup used to mean restoring it
+somewhere, which is how checking one becomes the thing that loses it.
+
 A BIP39 passphrase, `--seed-passphrase` on new and restore, goes into the seed
 rather than into the keystore: the words alone then restore a different wallet,
 so a phrase recovered from a drawer does not spend. What it costs is that there

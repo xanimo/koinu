@@ -68,6 +68,8 @@ static void usage(void)
       "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
       "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
       "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
+      "  backup verify [--keystore PATH] [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
+      "                                          [--seed-passphrase @FILE|-]\n"
       "  height   --node HOST [--port N] [--tor]\n"
       "  cfcheckpoints --node HOST [--port N] [--tor] [--headers PATH]\n"
       "           [--since SPACING]   (filter-header anchors, for a release)\n"
@@ -2431,6 +2433,99 @@ static int print_psbt(const kw_psbt *p)
 
 /* BIP174 roles over the command line, so a caller that shells out to kw gets
    the same psbt handling the library does. */
+/* kw backup verify: does this phrase restore this wallet?
+ *
+ * Most coins lost to key handling are lost to a backup nobody checked. Checking
+ * one usually means restoring it somewhere, which means the words and a wallet
+ * in the same place at the same time. This compares instead: derive the seed the
+ * typed words produce, open the keystore, and compare the two in constant time.
+ * Neither the stored seed nor the words are printed, and nothing is written.
+ *
+ * With no --keystore it prints what the words derive, the master fingerprint and
+ * the first address, so a paper backup can be checked against an address already
+ * known without a wallet file at all. */
+static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *path,
+                      const char *pass_arg, const char *seedpass_arg, const char *mnem_arg)
+{
+    if (!sub || strcmp(sub, "verify") != 0) { usage(); return 2; }
+
+    char *mnem = read_secret(mnem_arg, "mnemonic: ");
+    if (!mnem) { fprintf(stderr, "kw: no mnemonic\n"); return 1; }
+    if (!kw_bip39_check(mnem)) {
+        secret_free(mnem);
+        fprintf(stderr, "kw: those words are not a valid BIP39 mnemonic, so they are "
+                        "not a backup of anything\n");
+        return 1;
+    }
+
+    char *seedpass = NULL;
+    if (seedpass_arg) {
+        seedpass = read_secret(seedpass_arg, "seed passphrase (the 25th word): ");
+        if (!seedpass) { secret_free(mnem); return 1; }
+    }
+
+    uint8_t typed[64];
+    kw_secure_keep(typed, sizeof typed);
+    int ok = kw_bip39_to_seed(mnem, seedpass ? seedpass : "", typed);
+    secret_free(mnem);
+    if (seedpass) secret_free(seedpass);
+    if (!ok) {
+        kw_secure_forget(typed, sizeof typed);
+        fprintf(stderr, "kw: cannot derive a seed from those words\n");
+        return 1;
+    }
+
+    /* the master fingerprint, which is what other wallets show to identify one:
+       four bytes of hash160 over the master public key, and no part of a secret */
+    int rc = 1;
+    kw_bip32_key master;
+    kw_secure_keep(&master, sizeof master);
+    if (kw_bip32_from_seed(typed, 64, cp->bip32, &master)) {
+        uint8_t pub[33], h160[20];
+        if (kw_bip32_pubkey(&master, pub)) {
+            kw_hash160(pub, 33, h160);
+            printf("fingerprint %02x%02x%02x%02x\n", h160[0], h160[1], h160[2], h160[3]);
+        }
+        char addr[128];
+        if (derive_address(cp, typed, 0, 0, 0, addr, sizeof addr))
+            printf("first address  %s\n", addr);
+    }
+    kw_secure_forget(&master, sizeof master);
+
+    if (!path) {
+        /* nothing to compare against: the caller checks the address themselves */
+        printf("no --keystore given, so nothing was compared; check the address above "
+               "against one you know\n");
+        kw_secure_forget(typed, sizeof typed);
+        return 0;
+    }
+
+    uint8_t stored[64];
+    kw_secure_keep(stored, sizeof stored);
+    if (!open_seed(path, pass_arg, stored)) {
+        kw_secure_forget(stored, sizeof stored);
+        kw_secure_forget(typed, sizeof typed);
+        return 1;
+    }
+
+    /* constant time, because the answer is about a secret even though neither
+       side of it is printed */
+    if (kw_memcmp_ct(typed, stored, 64) == 0) {
+        printf("match: those words restore %s\n", path);
+        rc = 0;
+    } else {
+        printf("NO MATCH: those words do not restore %s\n", path);
+        if (!seedpass_arg)
+            fprintf(stderr, "kw: if that wallet was sealed with a seed passphrase, pass "
+                            "--seed-passphrase; without it\n    the same words derive a "
+                            "different wallet\n");
+        rc = 3;
+    }
+    kw_secure_forget(stored, sizeof stored);
+    kw_secure_forget(typed, sizeof typed);
+    return rc;
+}
+
 static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_arg,
                     const char *tx_arg, const char *redeem_arg, const char *utxo_arg,
                     const char *wif_arg, const char *script_arg,
@@ -2671,6 +2766,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
+    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }

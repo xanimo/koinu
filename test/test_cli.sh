@@ -266,6 +266,36 @@ if [ -e "$WORK/ksfull" ]; then
     echo "FAIL: a keystore was sealed whose mnemonic was never shown" >&2; exit 1
 fi
 
+# kw backup verify answers "do these words restore this wallet" without putting
+# the words and the wallet in the same place: it compares derived seeds in
+# constant time and prints neither. Most coins lost to key handling are lost to
+# a backup nobody checked, and checking one used to mean restoring it somewhere.
+BK=$(./kw --regtest new --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" --words 24 \
+      2>/dev/null | sed -n '2p' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+printf '%s\n' "$BK" > "$WORK/bkm"
+./kw --regtest backup verify --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/bkm" >/dev/null 2>&1 \
+    || { echo "FAIL: the right words did not verify" >&2; exit 1; }
+# a different wallet's words must not verify, and must say so with its own code
+OTHER=$(./kw --regtest new --keystore "$WORK/bk2.ks" --passphrase "@$WORK/pass" --words 24 \
+         2>/dev/null | sed -n '2p' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+printf '%s\n' "$OTHER" > "$WORK/bkm2"
+RCV=0
+./kw --regtest backup verify --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/bkm2" >/dev/null 2>&1 || RCV=$?
+[ "$RCV" = "3" ] || {
+    echo "FAIL: another wallet's words verified, or exited $RCV and not 3" >&2; exit 1; }
+# neither the words nor the seed may appear in the output
+VOUT=$(./kw --regtest backup verify --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+        --mnemonic "@$WORK/bkm" 2>&1)
+FIRSTWORD=$(printf '%s' "$BK" | cut -d' ' -f1)
+case "$VOUT" in
+    *"$FIRSTWORD"*) echo "FAIL: backup verify printed part of the mnemonic" >&2; exit 1;;
+esac
+# and with no keystore it reports what the words derive, for checking by hand
+./kw --regtest backup verify --mnemonic "@$WORK/bkm" 2>/dev/null | grep -q "^fingerprint" \
+    || { echo "FAIL: no fingerprint without a keystore" >&2; exit 1; }
+
 # A BIP39 passphrase goes into the seed, not the keystore, so the same words
 # with and without one are two different wallets. A stolen phrase alone then
 # does not spend, and there is nothing to check a wrong passphrase against: it
@@ -440,4 +470,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it"
