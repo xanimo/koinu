@@ -35,6 +35,14 @@ convenience that needs the key process to talk to the network.
 
 ## Keys
 
+A BIP39 passphrase, `--seed-passphrase` on new and restore, goes into the seed
+rather than into the keystore: the words alone then restore a different wallet,
+so a phrase recovered from a drawer does not spend. What it costs is that there
+is nothing to check it against. Every passphrase yields a valid wallet, so a
+wrong one restores an empty one rather than reporting a mistake, and a forgotten
+one is as final as a lost phrase. The first address printed at restore is the
+only check: compare it against one you have seen before.
+
 The seed is the only secret. It lives sealed in the keystore under argon2id and
 chacha20-poly1305, and in memory only for as long as a command needs it, mlock'd
 and wiped after. The mnemonic is printed once at creation and never stored, so a

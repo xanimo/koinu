@@ -55,7 +55,9 @@ static void usage(void)
       "usage: kw [--testnet|--regtest] <command> [options]\n"
       "\n"
       "  new      --keystore PATH [--passphrase @FILE|-] [--words 12|24]\n"
+      "                                          [--seed-passphrase @FILE|-]\n"
       "  restore  --keystore PATH [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
+      "                                          [--seed-passphrase @FILE|-]\n"
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "                                          [--index N] [--change] [--spk]\n"
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
@@ -104,6 +106,12 @@ static void usage(void)
       "  prints the signature for the counterparty; with --finish it combines\n"
       "  each --sig with its own, in redeem-script key order, and prints the\n"
       "  completed transaction ready for kw send.\n"
+      "\n"
+      "  --seed-passphrase is the BIP39 passphrase, a different secret from the\n"
+      "  one that seals the keystore: it goes into the seed, so the words alone no\n"
+      "  longer restore the wallet and a stolen phrase does not spend. There is no\n"
+      "  way to tell a wrong one from a different wallet, so it is one more thing\n"
+      "  to lose rather than a password that can be checked.\n"
       "\n"
       "  A passphrase or mnemonic is read from a file (@PATH), from stdin (-),\n"
       "  or prompted for; never from the command line, where ps could see it.\n"
@@ -699,7 +707,12 @@ static int seal_and_report(const kw_chainparams *cp, const char *path,
     return seal_with_pass(cp, path, pass, seed);
 }
 
-static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_arg, int words)
+/* (seedpass_arg) is the BIP39 passphrase, which is a different secret from the
+   one that seals the keystore: it goes into the seed itself, so the words alone
+   no longer restore the wallet. A wrong one is indistinguishable from a
+   different wallet, which is both the point and the hazard. */
+static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                   const char *seedpass_arg, int words)
 {
     if (!path) { usage(); return 2; }
     size_t entlen = (words == 24) ? 32 : 16;
@@ -708,14 +721,27 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
     if (!kw_bip39_generate(entlen, mnem, sizeof mnem)) { fprintf(stderr, "kw: generate failed\n"); return 1; }
 
     uint8_t seed[64];
+    char *seedpass = NULL;
+    if (seedpass_arg) {
+        seedpass = read_secret(seedpass_arg, "seed passphrase (the 25th word): ");
+        if (!seedpass) { kw_secure_zero(mnem, sizeof mnem); return 1; }
+    }
 
     kw_secure_keep(seed, sizeof seed);
     /* Checked: on a failure the buffer is whatever was on the stack, and sealing
        that under a mnemonic gives a keystore the mnemonic does not restore. */
-    if (!kw_bip39_to_seed(mnem, "", seed)) {
+    if (!kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed)) {
         kw_secure_forget(seed, sizeof seed);
+        if (seedpass) secret_free(seedpass);
+        kw_secure_zero(mnem, sizeof mnem);
         fprintf(stderr, "kw: cannot derive a seed from that mnemonic\n");
         return 1;
+    }
+    if (seedpass) {
+        secret_free(seedpass);
+        fprintf(stderr, "kw: sealed with a seed passphrase. The words alone will not "
+                        "restore this wallet,\n    and a wrong passphrase restores a "
+                        "different one rather than failing\n");
     }
 
     /* The passphrase first. Printing the mnemonic before asking meant a refused
@@ -753,7 +779,8 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
 }
 
 static int cmd_restore(const kw_chainparams *cp, const char *path,
-                       const char *pass_arg, const char *mnem_arg)
+                       const char *pass_arg, const char *seedpass_arg,
+                       const char *mnem_arg)
 {
     if (!path) { usage(); return 2; }
     char *mnem = read_secret(mnem_arg, "mnemonic: ");
@@ -761,14 +788,27 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     if (!kw_bip39_check(mnem)) { secret_free(mnem); fprintf(stderr, "kw: invalid mnemonic\n"); return 1; }
 
     uint8_t seed[64];
+    char *seedpass = NULL;
+    if (seedpass_arg) {
+        seedpass = read_secret(seedpass_arg, "seed passphrase (the 25th word): ");
+        if (!seedpass) { secret_free(mnem); return 1; }
+    }
 
     kw_secure_keep(seed, sizeof seed);
     /* Checked: on a failure the buffer is whatever was on the stack, and sealing
        that under a mnemonic gives a keystore the mnemonic does not restore. */
-    if (!kw_bip39_to_seed(mnem, "", seed)) {
+    if (!kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed)) {
         kw_secure_forget(seed, sizeof seed);
+        if (seedpass) secret_free(seedpass);
+        secret_free(mnem);
         fprintf(stderr, "kw: cannot derive a seed from that mnemonic\n");
         return 1;
+    }
+    if (seedpass) {
+        secret_free(seedpass);
+        fprintf(stderr, "kw: restored with a seed passphrase. A wrong one restores a "
+                        "different wallet\n    rather than failing, so check the first "
+                        "address below against one you know\n");
     }
     secret_free(mnem);
 
@@ -2517,7 +2557,7 @@ int main(int argc, char **argv)
     int assume_yes = 0;
     int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
-    const char *path = NULL, *pass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
+    const char *path = NULL, *pass_arg = NULL, *seedpass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *maxfee_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
@@ -2536,6 +2576,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--regtest")) net = 2;
         else if (!strcmp(a, "--keystore"))   path = NEXT();
         else if (!strcmp(a, "--passphrase")) pass_arg = NEXT();
+        else if (!strcmp(a, "--seed-passphrase")) seedpass_arg = NEXT();
         else if (!strcmp(a, "--mnemonic"))   mnem_arg = NEXT();
         else if (!strcmp(a, "--words"))    { if (!arg_int("--words", NEXT(), 12, 24, &words)) return 2; }
         else if (!strcmp(a, "--account"))  { if (!arg_u32("--account", NEXT(), KW_BIP32_HARDENED - 1, &account)) return 2; }
@@ -2620,8 +2661,8 @@ int main(int argc, char **argv)
         if (sn) node = sn;
     }
     int rc;
-    if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, words);
-    else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, mnem_arg);
+    if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, seedpass_arg, words);
+    else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, seedpass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);

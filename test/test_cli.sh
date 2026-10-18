@@ -266,6 +266,30 @@ if [ -e "$WORK/ksfull" ]; then
     echo "FAIL: a keystore was sealed whose mnemonic was never shown" >&2; exit 1
 fi
 
+# A BIP39 passphrase goes into the seed, not the keystore, so the same words
+# with and without one are two different wallets. A stolen phrase alone then
+# does not spend, and there is nothing to check a wrong passphrase against: it
+# restores another valid wallet rather than failing.
+printf 'correct horse\n' > "$WORK/seedpass"
+MN=$(./kw --regtest new --keystore "$WORK/sp1.ks" --passphrase "@$WORK/pass" --words 12 \
+      2>/dev/null | sed -n '2p' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+[ -n "$MN" ] || { echo "FAIL: no mnemonic to test the seed passphrase with" >&2; exit 1; }
+printf '%s\n' "$MN" > "$WORK/mn"
+A_PLAIN=$(./kw --regtest address --keystore "$WORK/sp1.ks" --passphrase "@$WORK/pass")
+./kw --regtest restore --keystore "$WORK/sp2.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/mn" --seed-passphrase "@$WORK/seedpass" >/dev/null 2>&1 \
+    || { echo "FAIL: restore with a seed passphrase failed" >&2; exit 1; }
+A_PASS=$(./kw --regtest address --keystore "$WORK/sp2.ks" --passphrase "@$WORK/pass")
+[ -n "$A_PLAIN" ] && [ -n "$A_PASS" ] || { echo "FAIL: no addresses to compare" >&2; exit 1; }
+[ "$A_PLAIN" != "$A_PASS" ] || {
+    echo "FAIL: a seed passphrase produced the same wallet as none" >&2; exit 1; }
+# and the same words with the same passphrase reproduce it
+./kw --regtest restore --keystore "$WORK/sp3.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/mn" --seed-passphrase "@$WORK/seedpass" >/dev/null 2>&1
+A_AGAIN=$(./kw --regtest address --keystore "$WORK/sp3.ks" --passphrase "@$WORK/pass")
+[ "$A_PASS" = "$A_AGAIN" ] || {
+    echo "FAIL: the same words and passphrase gave two wallets" >&2; exit 1; }
+
 # an empty passphrase seals a keystore that opens with nothing
 printf '\n' > "$WORK/emptypass"
 if ./kw --regtest new --keystore "$WORK/ksempty" --passphrase "@$WORK/emptypass" >/dev/null 2>&1; then
@@ -416,4 +440,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words"
