@@ -91,6 +91,22 @@ keystore and from `--seed-passphrase`, and it has the same shape of hazard: a
 wrong one combines to a different wallet rather than failing, since SLIP-39 has
 nothing to check it against by design.
 
+`--format codex32` writes the same split as BIP-93 strings instead, and what
+that changes is who can check the backup. The checksum is a BCH code over
+GF(32) and the Shamir arithmetic is over the same field, both small enough to
+compute with a pen and a printed table, so a share can be verified and a lost
+one recomputed without trusting the machine that reads it. Against SLIP-39 it
+gives up the passphrase, the digest over the reconstructed secret, and the
+two-level grouping: one flat threshold, no second secret, and a set of shares
+that are individually valid still reconstructs whatever polynomial they
+describe. Nothing in the format says that is the seed it came from, so the
+fingerprint is the check, which is why split prints one and combine prints the
+first address.
+
+What a single codex32 share leaks is its own threshold, identifier and index in
+clear, which is the shape of the backup rather than any of the seed. Below the
+threshold the payload is undetermined in the same way SLIP-39's is.
+
 A BIP39 passphrase, `--seed-passphrase` on new and restore, goes into the seed
 rather than into the keystore: the words alone then restore a different wallet,
 so a phrase recovered from a drawer does not spend. What it costs is that there

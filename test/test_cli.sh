@@ -356,6 +356,64 @@ if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pas
     echo "FAIL: split accepted a 1-of-3 threshold" >&2; exit 1
 fi
 
+# --format codex32 is the same split as BIP-93 strings. combine reads the format
+# off the shares rather than taking a flag that could disagree with the file.
+./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+     --format codex32 --groups 3of5 --id kw00 > "$WORK/cx.txt" 2>/dev/null \
+    || { echo "FAIL: codex32 split failed" >&2; exit 1; }
+NCX=$(grep -c '^  [0-9]  ' "$WORK/cx.txt")
+[ "$NCX" -eq 5 ] || { echo "FAIL: codex32 split wrote $NCX shares, wanted 5" >&2; exit 1; }
+# 127 characters for a 64-byte seed, which is the long codex32 form
+CXLEN=$(sed -n 's/^  1  //p' "$WORK/cx.txt" | tr -d '\n' | wc -c)
+[ "$CXLEN" -eq 127 ] || { echo "FAIL: a codex32 share is $CXLEN characters, wanted 127" >&2; exit 1; }
+grep -q '^  1  ms13kw00' "$WORK/cx.txt" \
+    || { echo "FAIL: codex32 share does not carry ms1, the threshold and the id" >&2; exit 1; }
+sed -n 's/^  [245]  //p' "$WORK/cx.txt" > "$WORK/cx.pick"
+A_CX=$(./kw --regtest backup combine --keystore "$WORK/cx.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/cx.pick" 2>/dev/null | awk '/first address/{print $3}')
+[ "$A_BK" = "$A_CX" ] || {
+    echo "FAIL: three codex32 shares restored $A_CX and not $A_BK" >&2; exit 1; }
+# two of five is under the threshold, four is a spare
+head -2 "$WORK/cx.pick" > "$WORK/cx.two"
+if ./kw --regtest backup combine --keystore "$WORK/cx2.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/cx.two" >/dev/null 2>&1; then
+    echo "FAIL: two codex32 shares of five combined" >&2; exit 1
+fi
+sed -n 's/^  [1245]  //p' "$WORK/cx.txt" > "$WORK/cx.four"
+if ./kw --regtest backup combine --keystore "$WORK/cx4.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/cx.four" >/dev/null 2>&1; then
+    echo "FAIL: a spare codex32 share was accepted" >&2; exit 1
+fi
+# one wrong character must be caught by the checksum, not worked around. The
+# replacement is chosen against what is there, since a share whose last
+# character already is the one substituted in would come out unaltered.
+LASTC=$(sed -n '1s/.*\(.\)$/\1/p' "$WORK/cx.pick")
+if [ "$LASTC" = "q" ]; then BADC=p; else BADC=q; fi
+sed "1s/.$/$BADC/" "$WORK/cx.pick" > "$WORK/cx.bad"
+./kw --regtest backup combine --keystore "$WORK/cx5.ks" --passphrase "@$WORK/pass" \
+     --shares "@$WORK/cx.bad" 2>&1 | grep -q "checksum" \
+    || { echo "FAIL: a mistyped codex32 share was not caught by its checksum" >&2; exit 1; }
+# codex32 has no passphrase, so being given one is an error rather than ignored
+if ./kw --regtest backup combine --keystore "$WORK/cx6.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/cx.pick" --backup-passphrase "@$WORK/bpass" >/dev/null 2>&1; then
+    echo "FAIL: codex32 combine took a backup passphrase" >&2; exit 1
+fi
+# and the things the format has no room for
+for BAD in 1of3 10of12 2of3,3of5; do
+    if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+            --format codex32 --groups "$BAD" >/dev/null 2>&1; then
+        echo "FAIL: codex32 split accepted --groups $BAD" >&2; exit 1
+    fi
+done
+if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+        --format codex32 --groups 2of3 --id koin >/dev/null 2>&1; then
+    echo "FAIL: codex32 split accepted a non-bech32 identifier" >&2; exit 1
+fi
+if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+        --format bech32 --groups 2of3 >/dev/null 2>&1; then
+    echo "FAIL: split accepted an unknown --format" >&2; exit 1
+fi
+
 # A BIP39 passphrase goes into the seed, not the keystore, so the same words
 # with and without one are two different wallets. A stolen phrase alone then
 # does not spend, and there is nothing to check a wrong passphrase against: it
@@ -530,4 +588,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32"

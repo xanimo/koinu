@@ -36,6 +36,7 @@
 /test/test_cf
 /test/test_cfstore
 /test/test_slip39
+/test/test_codex32
 /kw
 /kwd
 /kwui

@@ -9,6 +9,7 @@
 
 #include "chainparams.h"
 #include "bip39.h"
+#include "codex32.h"
 #include "slip39.h"
 #include "rng.h"
 #include "bip32.h"
@@ -76,6 +77,7 @@ static void usage(void)
       "                                          [--seed-passphrase @FILE|-]\n"
       "  backup split  --keystore PATH [--passphrase @FILE|-] --groups TofN[,TofN...]\n"
       "                [--group-threshold N] [--backup-passphrase @FILE|-]\n"
+      "                [--format slip39|codex32] [--id XXXX]\n"
       "  backup combine --keystore PATH [--passphrase @FILE|-] [--shares @FILE|-]\n"
       "                [--backup-passphrase @FILE|-]\n"
       "  height   --node HOST [--port N] [--tor]\n"
@@ -126,6 +128,14 @@ static void usage(void)
       "  passphrase and from --seed-passphrase, and a wrong one gives a different\n"
       "  wallet rather than an error. A 64-byte seed makes 59-word shares, which\n"
       "  other SLIP-39 software combines and Trezor firmware refuses to type.\n"
+      "\n"
+      "  --format codex32 writes BIP-93 strings instead, whose checksum and whose\n"
+      "  Shamir arithmetic are both small enough to check with a pen, so a backup\n"
+      "  can be verified without trusting the machine that reads it. It takes one\n"
+      "  --groups TofN with a threshold of 2 to 9 and up to 22 shares, --id names\n"
+      "  its 4-character identifier, and it has no passphrase, no grouping and no\n"
+      "  check that a set reconstructs the seed it came from: compare the\n"
+      "  fingerprint. combine reads the format off the shares.\n"
       "\n"
       "  --seed-passphrase is the BIP39 passphrase, a different secret from the\n"
       "  one that seals the keystore: it goes into the seed, so the words alone no\n"
@@ -2982,6 +2992,132 @@ out:
     return rc;
 }
 
+/* kw backup split --format codex32: the same seed as BIP-93 strings.
+ *
+ * What this buys over SLIP-39 is that the checksum and the Shamir arithmetic
+ * are both over GF(32), small enough to verify with a pen and a printed table,
+ * so a backup can be checked without trusting the machine that reads it. What
+ * it costs is the passphrase, the digest over the reconstructed secret, and the
+ * two-level grouping: one flat threshold, and a wrong set of otherwise valid
+ * shares gives a wrong seed rather than an error. */
+static int backup_split_codex32(const kw_chainparams *cp, const char *path,
+                                const char *pass_arg, const char *groups_arg,
+                                const char *id_arg)
+{
+    kw_slip39_group groups[KW_SLIP39_MAX_GROUPS];
+    uint8_t seed[64];
+    size_t ngroups = 0, nshares = 0, i, bufn;
+    kw_codex32_err err;
+    char *buf;
+    int rc = 1;
+
+    if (!path || !groups_arg) { usage(); return 2; }
+    if (!parse_groups(groups_arg, groups, KW_SLIP39_MAX_GROUPS, &ngroups)) return 2;
+    if (ngroups != 1) {
+        fprintf(stderr, "kw: codex32 is one flat threshold with no groups, so --groups "
+                        "takes a single TofN\n");
+        return 2;
+    }
+    /* BIP-93 has no threshold of 1: an unshared secret is the seed itself in
+       one string rather than a share of it. */
+    if (groups[0].threshold < 2 || groups[0].threshold > 9) {
+        fprintf(stderr, "kw: codex32 thresholds run from 2 to 9\n");
+        return 2;
+    }
+    if (groups[0].count > KW_CODEX32_MAX_SHARES) {
+        fprintf(stderr, "kw: codex32 share indices are bech32 letters, so at most %d "
+                        "shares\n", KW_CODEX32_MAX_SHARES);
+        return 2;
+    }
+    /* Checked here rather than left to the library so the message names the
+       field and the four letters bech32 leaves out. */
+    if (id_arg) {
+        size_t k;
+        if (strlen(id_arg) != 4) {
+            fprintf(stderr, "kw: --id is exactly 4 characters\n");
+            return 2;
+        }
+        for (k = 0; k < 4; k++) {
+            if (!strchr("qpzry9x8gf2tvdw0s3jn54khce6mua7l", id_arg[k])) {
+                fprintf(stderr, "kw: --id has no '%c': bech32 is lowercase and leaves "
+                                "out b, i, o and 1\n", id_arg[k]);
+                return 2;
+            }
+        }
+    }
+
+    bufn = (size_t)groups[0].count * KW_CODEX32_MAX_LEN;
+    buf = (char *)malloc(bufn);
+    if (!buf) { fprintf(stderr, "kw: out of memory\n"); return 1; }
+    kw_secure_keep(buf, bufn);
+
+    kw_secure_keep(seed, sizeof seed);
+    if (!open_seed(path, pass_arg, seed)) goto out;
+
+    err = kw_codex32_split(seed, sizeof seed, id_arg, groups[0].threshold,
+                           groups[0].count, buf, KW_CODEX32_MAX_LEN, &nshares);
+    if (err != KW_CODEX32_OK) {
+        fprintf(stderr, "kw: cannot split: %s\n", kw_codex32_strerror(err));
+        goto out;
+    }
+
+    {
+        char head[96];
+        int ok;
+
+        snprintf(head, sizeof head, "\ncodex32, any %u of these %zu shares:\n",
+                 groups[0].threshold, nshares);
+        ok = kw_write_secret(STDOUT_FILENO, head, strlen(head));
+
+        for (i = 0; i < nshares && ok; i++) {
+            const char *m = buf + i * KW_CODEX32_MAX_LEN;
+            char label[16];
+            snprintf(label, sizeof label, "  %u  ", (unsigned)(i + 1));
+            ok = kw_write_secret(STDOUT_FILENO, label, strlen(label)) &&
+                 kw_write_secret(STDOUT_FILENO, m, strlen(m)) &&
+                 kw_write_secret(STDOUT_FILENO, "\n", 1);
+        }
+
+        if (!ok) {
+            fprintf(stderr, "kw: could not write the shares, so stop here and run this "
+                            "again: a partial set\n    restores nothing\n");
+            goto out;
+        }
+    }
+
+    {
+        uint8_t h160[20], pub[33];
+        kw_bip32_key master;
+        kw_codex32 c;
+        char id[5] = "????";
+
+        if (kw_codex32_decode(buf, &c) == KW_CODEX32_OK) kw_codex32_id(&c, id);
+        kw_secure_zero(&c, sizeof c);
+
+        kw_secure_keep(&master, sizeof master);
+        if (kw_bip32_from_seed(seed, sizeof seed, cp->bip32, &master) &&
+            kw_bip32_pubkey(&master, pub)) {
+            kw_hash160(pub, 33, h160);
+            printf("\nfingerprint %02x%02x%02x%02x, identifier %s, %u of %zu needed\n",
+                   h160[0], h160[1], h160[2], h160[3], id, groups[0].threshold, nshares);
+        }
+        kw_secure_forget(&master, sizeof master);
+    }
+
+    fprintf(stderr, "\nkw: write each share down and keep them apart. Check them with\n"
+                    "    kw backup combine --keystore /tmp/check.ks before you rely on "
+                    "them,\n    and compare the fingerprint: codex32 carries no check "
+                    "of its own that\n    a set reconstructs the seed it came from.\n");
+    rc = 0;
+
+out:
+    kw_secure_zero(buf, bufn);
+    kw_secure_forget(buf, bufn);
+    free(buf);
+    kw_secure_forget(seed, sizeof seed);
+    return rc;
+}
+
 /* Shares come from a file or stdin, one per line and blank lines skipped, or
    from repeated prompts ended by a blank line. Each lands in its own locked
    allocation, since a share is a fraction of the seed. */
@@ -3044,7 +3180,7 @@ static int backup_combine(const kw_chainparams *cp, const char *path, const char
     size_t nl = 0, seedlen = 0, i;
     char *bpass = NULL;
     kw_slip39_err err;
-    int rc = 1;
+    int rc = 1, codex;
 
     if (!path) { usage(); return 2; }
 
@@ -3057,22 +3193,47 @@ static int backup_combine(const kw_chainparams *cp, const char *path, const char
         goto out;
     }
 
+    /* A codex32 string says what it is in its first three characters, so the
+       format is read off the shares rather than named again on the command
+       line: a flag that has to agree with the file is a flag that can disagree
+       with it. */
+    codex = strncmp(lines[0], "ms1", 3) == 0 || strncmp(lines[0], "MS1", 3) == 0;
+
+    if (codex && bpass_arg) {
+        fprintf(stderr, "kw: codex32 has no passphrase, so --backup-passphrase would "
+                        "be ignored\n");
+        goto out;
+    }
     if (bpass_arg) {
         bpass = read_secret(bpass_arg, "backup passphrase: ");
         if (!bpass) goto out;
     }
 
     kw_secure_keep(seed, sizeof seed);
-    err = kw_slip39_combine((const char *const *)lines, nl, bpass ? bpass : "",
-                            seed, sizeof seed, &seedlen);
-    if (err != KW_SLIP39_OK) {
-        fprintf(stderr, "kw: cannot combine those %zu shares: %s\n", nl,
-                kw_slip39_strerror(err));
-        if (err == KW_SLIP39_GROUPING)
-            fprintf(stderr, "kw: give exactly the threshold, no duplicates and no "
-                            "spares: as many groups as\n    the group threshold, and "
-                            "within each of those its own member threshold\n");
-        goto out;
+    if (codex) {
+        kw_codex32_err cerr = kw_codex32_combine((const char *const *)lines, nl,
+                                                 seed, sizeof seed, &seedlen);
+        if (cerr != KW_CODEX32_OK) {
+            fprintf(stderr, "kw: cannot combine those %zu codex32 shares: %s\n", nl,
+                    kw_codex32_strerror(cerr));
+            if (cerr == KW_CODEX32_GROUPING)
+                fprintf(stderr, "kw: give exactly the threshold the shares name, with "
+                                "distinct indices and\n    no spares, and none of them "
+                                "the \"s\" string, which is the seed itself\n");
+            goto out;
+        }
+    } else {
+        err = kw_slip39_combine((const char *const *)lines, nl, bpass ? bpass : "",
+                                seed, sizeof seed, &seedlen);
+        if (err != KW_SLIP39_OK) {
+            fprintf(stderr, "kw: cannot combine those %zu shares: %s\n", nl,
+                    kw_slip39_strerror(err));
+            if (err == KW_SLIP39_GROUPING)
+                fprintf(stderr, "kw: give exactly the threshold, no duplicates and no "
+                                "spares: as many groups as\n    the group threshold, "
+                                "and within each of those its own member threshold\n");
+            goto out;
+        }
     }
     if (seedlen != 64) {
         fprintf(stderr, "kw: those shares hold a %zu-byte secret, and a koinu keystore "
@@ -3080,7 +3241,11 @@ static int backup_combine(const kw_chainparams *cp, const char *path, const char
         goto out;
     }
 
-    if (!bpass_arg)
+    if (codex)
+        fprintf(stderr, "kw: codex32 carries no check that this is the seed the shares "
+                        "came from, so\n    compare the address below against one you "
+                        "know\n");
+    else if (!bpass_arg)
         fprintf(stderr, "kw: no backup passphrase given. If the shares were made with "
                         "one, this is a\n    different wallet rather than an error, so "
                         "check the address below\n");
@@ -3098,13 +3263,34 @@ out:
 static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *path,
                       const char *pass_arg, const char *seedpass_arg, const char *mnem_arg,
                       const char *groups_arg, int group_threshold,
-                      const char *bpass_arg, const char *shares_arg)
+                      const char *bpass_arg, const char *shares_arg,
+                      const char *format_arg, const char *id_arg)
 {
+    int codex = 0;
+
     if (!sub) { usage(); return 2; }
+
+    if (format_arg) {
+        if (!strcmp(format_arg, "codex32")) codex = 1;
+        else if (strcmp(format_arg, "slip39") != 0) {
+            fprintf(stderr, "kw: --format is slip39 or codex32\n");
+            return 2;
+        }
+    }
+
     if (!strcmp(sub, "verify"))
         return backup_verify(cp, path, pass_arg, seedpass_arg, mnem_arg);
-    if (!strcmp(sub, "split"))
+    if (!strcmp(sub, "split")) {
+        if (codex) return backup_split_codex32(cp, path, pass_arg, groups_arg, id_arg);
+        if (id_arg) {
+            fprintf(stderr, "kw: --id names a codex32 identifier, which SLIP-39 has "
+                            "no field for\n");
+            return 2;
+        }
         return backup_split(cp, path, pass_arg, groups_arg, group_threshold, bpass_arg);
+    }
+    /* combine reads the format off the shares, so --format there would be a
+       second place for it to be wrong. */
     if (!strcmp(sub, "combine"))
         return backup_combine(cp, path, pass_arg, shares_arg, bpass_arg);
     usage();
@@ -3246,6 +3432,7 @@ int main(int argc, char **argv)
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL, *utxo_arg = NULL;
     const char *psbt_arg = NULL, *script_arg = NULL, *sub = NULL, *psbts[8];
     const char *groups_arg = NULL, *bpass_arg = NULL, *shares_arg = NULL;
+    const char *format_arg = NULL, *id_arg = NULL;
     int group_threshold = -1;                  /* -1: every group given */
     int npsbt = 0;
     long since = -1;
@@ -3263,6 +3450,8 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--backup-passphrase")) bpass_arg = NEXT();
         else if (!strcmp(a, "--groups"))     groups_arg = NEXT();
         else if (!strcmp(a, "--shares"))     shares_arg = NEXT();
+        else if (!strcmp(a, "--format"))     format_arg = NEXT();
+        else if (!strcmp(a, "--id"))         id_arg = NEXT();
         else if (!strcmp(a, "--group-threshold")) {
             if (!arg_int("--group-threshold", NEXT(), 1, KW_SLIP39_MAX_GROUPS,
                          &group_threshold)) return 2; }
@@ -3361,7 +3550,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
-    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg);
+    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);
     else if (!strcmp(cmd, "export"))  rc = cmd_export(cp, sub, path, pass_arg, account);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);

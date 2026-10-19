@@ -12,6 +12,14 @@
   512-bit secret gives 59-word shares, which Trezor firmware will not type.
   All 45 official vectors pass, 30 of them refusals, each recovered secret
   checked against the vector's xprv.
+* codex32: the same split in base32, checkable with a pen
+  `--format codex32` writes BIP-93 strings, whose checksum and whose Shamir
+  arithmetic are both over GF(32) and small enough to compute by hand, so a
+  backup can be verified without trusting the machine that reads it. It gives
+  up the passphrase, the digest and the grouping for that: one flat threshold,
+  and nothing in the format says a set reconstructs the seed it came from.
+  `backup combine` reads the format off the shares. Every BIP-93 vector passes,
+  including all 55 that must be refused and every derived share byte for byte.
 
 ## [0.3.0] - 2026-10-10
 

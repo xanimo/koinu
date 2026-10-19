@@ -84,6 +84,15 @@ combines and trezor firmware will not accept.
 keystore and from --seed-passphrase, and a wrong one yields a different wallet
 rather than an error.
 
+    kw backup split --keystore w.ks --format codex32 --groups 3of5 --id kw00
+
+--format codex32 writes the same split as bip-93 strings, whose checksum and
+whose shamir arithmetic are both over gf(32) and small enough to check with a
+pen, so a backup can be verified without trusting the machine that reads it.
+one flat threshold of 2 to 9, up to 22 shares, no passphrase, no grouping, and
+no check that a set reconstructs the seed it came from: compare the
+fingerprint. combine reads the format off the shares.
+
 spending takes three commands. scan watches the first --gap receive and change
 addresses and writes the utxo set beside the keystore, extending the range
 automatically until enough unused addresses trail the highest used one. sign
