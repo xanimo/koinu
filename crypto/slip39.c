@@ -39,52 +39,79 @@ const char *kw_slip39_strerror(kw_slip39_err e)
     return "unknown error";
 }
 
-/* GF(256) with the AES field polynomial and x+1 as the generator, which is
-   what the spec's reference tables are. Built per call rather than kept in a
-   static, so nothing has to guard an initialisation. */
-typedef struct {
-    uint8_t exp[255];
-    uint8_t log[256];
-} gf_tables;
-
-static void gf_init(gf_tables *t)
+/* GF(256) with the AES field polynomial.
+ *
+ * Branchless and without tables, because the share bytes are the secret: the
+ * exp/log formulation the spec's reference uses indexes a table with a share
+ * byte and skips the multiply when that byte is zero, so both the cache line
+ * touched and the work done depend on the secret. The Lagrange weights are
+ * public, since they come from the share indices, but the bytes they multiply
+ * are not. */
+static uint8_t gf_mul(uint8_t a, uint8_t b)
 {
-    unsigned poly = 1;
+    uint8_t res = 0;
     int i;
 
-    memset(t->log, 0, sizeof t->log);
-    for (i = 0; i < 255; i++) {
-        t->exp[i] = (uint8_t)poly;
-        t->log[poly] = (uint8_t)i;
-        poly = (poly << 1) ^ poly;           /* times x + 1 */
-        if (poly & 0x100) poly ^= 0x11b;     /* mod x^8 + x^4 + x^3 + x + 1 */
+    for (i = 0; i < 8; i++) {
+        /* 0 or 0xff, so each partial product lands whole or not at all */
+        res ^= a & (uint8_t)-(int8_t)((b >> i) & 1);
+        a = (uint8_t)((a << 1) ^ (0x1b & (uint8_t)-(int8_t)(a >> 7)));
+    }
+    return res;
+}
+
+/* a^254, which is a^-1 for every a but zero, and zero for zero. The exponent is
+   fixed, so the sequence of multiplies does not depend on (a). */
+static uint8_t gf_inv(uint8_t a)
+{
+    uint8_t r = 1, p = a;
+    int i;
+
+    for (i = 1; i < 8; i++) {          /* 2 + 4 + ... + 128 = 254 */
+        p = gf_mul(p, p);
+        r = gf_mul(r, p);
+    }
+    return r;
+}
+
+/* The Lagrange weight for each of the m points at (x). Every value here comes
+   from a share index, which a share carries in clear, so the branch on i == j
+   and the divisions are over public data. */
+static void lagrange(const uint8_t *xs, size_t m, uint8_t x, uint8_t *w)
+{
+    size_t i, j;
+
+    for (i = 0; i < m; i++) {
+        uint8_t num = 1, den = 1;
+
+        for (j = 0; j < m; j++) {
+            if (j == i) continue;
+            num = gf_mul(num, (uint8_t)(x ^ xs[j]));
+            den = gf_mul(den, (uint8_t)(xs[i] ^ xs[j]));
+        }
+        w[i] = gf_mul(num, gf_inv(den));
     }
 }
 
 /* Lagrange interpolation at (x) of the m points (xs[i], ys[i]), each y being n
    bytes evaluated independently. The x values must be distinct; every caller
    here checks that first. */
-static void interpolate(const gf_tables *t, const uint8_t *xs,
-                        const uint8_t *const *ys, size_t m, size_t n,
-                        uint8_t x, uint8_t *out)
+static void interpolate(const uint8_t *xs, const uint8_t *const *ys,
+                        size_t m, size_t n, uint8_t x, uint8_t *out)
 {
-    int log_prod = 0;
-    size_t i, j, k;
+    uint8_t w[MAX_POINTS];
+    size_t i, k;
 
-    for (i = 0; i < m; i++) {
+    for (i = 0; i < m; i++)
         if (xs[i] == x) { memcpy(out, ys[i], n); return; }
-        log_prod += t->log[xs[i] ^ x];
-    }
 
-    memset(out, 0, n);
-    for (i = 0; i < m; i++) {
-        int eval = log_prod - t->log[xs[i] ^ x];
-        for (j = 0; j < m; j++) eval -= t->log[xs[i] ^ xs[j]];
-        eval = ((eval % 255) + 255) % 255;
-        for (k = 0; k < n; k++) {
-            if (ys[i][k]) out[k] ^= t->exp[(t->log[ys[i][k]] + eval) % 255];
-        }
+    lagrange(xs, m, x, w);
+    for (k = 0; k < n; k++) {
+        uint8_t v = 0;
+        for (i = 0; i < m; i++) v ^= gf_mul(w[i], ys[i][k]);
+        out[k] = v;
     }
+    kw_secure_zero(w, sizeof w);
 }
 
 static void digest_make(const uint8_t *r, size_t rlen,
@@ -108,7 +135,7 @@ static int distinct(const uint8_t *v, size_t n)
     return 1;
 }
 
-static kw_slip39_err split_secret(const gf_tables *t, uint8_t threshold, uint8_t count,
+static kw_slip39_err split_secret(uint8_t threshold, uint8_t count,
                                   const uint8_t *secret, size_t n,
                                   uint8_t shares[KW_SLIP39_MAX_SHARES][KW_SLIP39_MAX_SECRET])
 {
@@ -152,14 +179,14 @@ static kw_slip39_err split_secret(const gf_tables *t, uint8_t threshold, uint8_t
     ys[m] = secret;
     m++;
 
-    for (i = nrand; i < count; i++) interpolate(t, xs, ys, m, n, i, shares[i]);
+    for (i = nrand; i < count; i++) interpolate(xs, ys, m, n, i, shares[i]);
 
 out:
     kw_secure_zero(digest_share, sizeof digest_share);
     return err;
 }
 
-static kw_slip39_err recover_secret(const gf_tables *t, uint8_t threshold,
+static kw_slip39_err recover_secret(uint8_t threshold,
                                     const uint8_t *xs, const uint8_t *const *ys,
                                     size_t m, size_t n, uint8_t *out)
 {
@@ -174,8 +201,8 @@ static kw_slip39_err recover_secret(const gf_tables *t, uint8_t threshold,
         return KW_SLIP39_OK;
     }
 
-    interpolate(t, xs, ys, m, n, SECRET_INDEX, out);
-    interpolate(t, xs, ys, m, n, DIGEST_INDEX, d);
+    interpolate(xs, ys, m, n, SECRET_INDEX, out);
+    interpolate(xs, ys, m, n, DIGEST_INDEX, d);
     digest_make(d + DIGEST_LEN, n - DIGEST_LEN, out, n, want);
     if (kw_memcmp_ct(want, d, DIGEST_LEN) != 0) {
         kw_secure_zero(out, n);
@@ -499,7 +526,6 @@ kw_slip39_err kw_slip39_split(const uint8_t *ms, size_t mslen,
     uint8_t mshare[KW_SLIP39_MAX_SHARES][KW_SLIP39_MAX_SECRET];
     uint8_t ems[KW_SLIP39_MAX_SECRET];
     uint8_t idbytes[2];
-    gf_tables t;
     kw_slip39_err err = KW_SLIP39_OK;
     size_t passlen, g, i, written = 0;
     uint16_t id;
@@ -530,7 +556,6 @@ kw_slip39_err kw_slip39_split(const uint8_t *ms, size_t mslen,
     if (!kw_random_bytes(idbytes, sizeof idbytes)) return KW_SLIP39_RNG;
     id = (uint16_t)((((uint16_t)idbytes[0] << 8) | idbytes[1]) & 0x7fff);
 
-    gf_init(&t);
     kw_secure_keep(gshare, sizeof gshare);
     kw_secure_keep(mshare, sizeof mshare);
     kw_secure_keep(ems, sizeof ems);
@@ -539,12 +564,12 @@ kw_slip39_err kw_slip39_split(const uint8_t *ms, size_t mslen,
         err = KW_SLIP39_ARG;
         goto out;
     }
-    if ((err = split_secret(&t, group_threshold, (uint8_t)ngroups, ems, mslen, gshare))
+    if ((err = split_secret(group_threshold, (uint8_t)ngroups, ems, mslen, gshare))
         != KW_SLIP39_OK)
         goto out;
 
     for (g = 0; g < ngroups; g++) {
-        if ((err = split_secret(&t, groups[g].threshold, groups[g].count,
+        if ((err = split_secret(groups[g].threshold, groups[g].count,
                                 gshare[g], mslen, mshare)) != KW_SLIP39_OK)
             goto out;
 
@@ -595,7 +620,6 @@ kw_slip39_err kw_slip39_combine(const char *const *mnemonics, size_t nm,
     const uint8_t *gy[KW_SLIP39_MAX_GROUPS];
     uint8_t ems[KW_SLIP39_MAX_SECRET];
     kw_slip39_share *sh = NULL;
-    gf_tables t;
     kw_slip39_err err = KW_SLIP39_OK;
     size_t passlen, i, j, ngroups = 0, n;
 
@@ -623,7 +647,6 @@ kw_slip39_err kw_slip39_combine(const char *const *mnemonics, size_t nm,
     if (sh[0].group_count < sh[0].group_threshold) { err = KW_SLIP39_GROUPING; goto out; }
     if (n > outcap) { err = KW_SLIP39_ARG; goto out; }
 
-    gf_init(&t);
     kw_secure_keep(gshare, sizeof gshare);
     kw_secure_keep(ems, sizeof ems);
 
@@ -653,7 +676,7 @@ kw_slip39_err kw_slip39_combine(const char *const *mnemonics, size_t nm,
             m++;
         }
 
-        if ((err = recover_secret(&t, sh[i].member_threshold, xs, ys, m, n,
+        if ((err = recover_secret(sh[i].member_threshold, xs, ys, m, n,
                                   gshare[ngroups])) != KW_SLIP39_OK)
             goto out;
 
@@ -664,7 +687,7 @@ kw_slip39_err kw_slip39_combine(const char *const *mnemonics, size_t nm,
 
     if (ngroups != sh[0].group_threshold) { err = KW_SLIP39_GROUPING; goto out; }
 
-    if ((err = recover_secret(&t, sh[0].group_threshold, gx, gy, ngroups, n, ems))
+    if ((err = recover_secret(sh[0].group_threshold, gx, gy, ngroups, n, ems))
         != KW_SLIP39_OK)
         goto out;
 

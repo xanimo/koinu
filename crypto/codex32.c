@@ -145,16 +145,23 @@ static size_t create_checksum(uint8_t *data, size_t nsym)
     return nck;
 }
 
-/* GF(32) with x^5 + x^3 + 1, which is what BIP-93's bech32_mul is. */
+/* GF(32) with x^5 + x^3 + 1, which is what BIP-93's bech32_mul is.
+ *
+ * Branchless and without a table, because both operands are secret here: the
+ * Lagrange weights multiply share symbols, so a branch on a bit of one or an
+ * index derived from it leaks it to anything watching the branch predictor or
+ * the cache. The spec's reference is written for clarity and this is not. */
 static uint8_t gf_mul(uint8_t a, uint8_t b)
 {
     uint8_t res = 0;
     int i;
 
     for (i = 0; i < 5; i++) {
-        if ((b >> i) & 1) res ^= a;
+        /* 0 or 0xff, so the xor either lands whole or not at all */
+        res ^= a & (uint8_t)-(int8_t)((b >> i) & 1);
         a = (uint8_t)(a << 1);
-        if (a & 32) a ^= 41;
+        a ^= 41 & (uint8_t)-(int8_t)((a >> 5) & 1);
+        a &= 31;
     }
     return res;
 }
