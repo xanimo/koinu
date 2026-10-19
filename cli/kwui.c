@@ -516,7 +516,11 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
                       uint32_t scan_tip,
                       const kw_utxoset *us, const row *rows, int nrows)
 {
-    char to[128] = "", amt[64] = "";
+    /* 80 to match the journal's address field, which the change rotation reads
+       back: a destination too long for it would be recorded truncated, and a
+       truncated address is a wrong record rather than an error. Nothing
+       addr_to_spk accepts comes near the bound. */
+    char to[80] = "", amt[64] = "";
     if (!ask_line("\r\nto address: ", to, sizeof to) || !to[0]) return;
     uint8_t dspk[25]; size_t dl = 0;
     if (!addr_to_spk(cp, to, dspk, &dl)) {
