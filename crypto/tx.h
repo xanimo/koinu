@@ -15,6 +15,11 @@
 #define KW_TX_MAX_IN     32
 #define KW_TX_MAX_OUT    32
 #define KW_TX_SCRIPT_MAX 256      /* a scriptPubKey */
+/* The scriptCode a signature covers, which for a P2SH spend is the redeem
+   script and so takes the 520-byte consensus limit on a pushed element rather
+   than the bound on a scriptPubKey. A 1-of-8 multisig redeem script is 275
+   bytes: a psbt would hold it and the sighash refused to cover it. */
+#define KW_TX_SUBSCRIPT_MAX 520
 /* A scriptSig, which is far larger: redeeming an m-of-n P2SH costs about 74
    bytes a signature plus the redeem script, and 1650 is what a node relays. */
 #define KW_TX_SCRIPTSIG_MAX 1650

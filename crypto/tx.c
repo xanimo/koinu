@@ -210,7 +210,8 @@ int kw_tx_sighash(const kw_tx *tx, size_t index,
                   uint32_t hashtype, uint8_t out[32])
 {
     if (index >= tx->nin || hashtype != KW_SIGHASH_ALL) return 0;
-    uint8_t code[KW_TX_SCRIPT_MAX];
+    if (subscriptlen > KW_TX_SUBSCRIPT_MAX) return 0;
+    uint8_t code[KW_TX_SUBSCRIPT_MAX];
     size_t codelen = 0;
     if (subscriptlen) {
         /* The scriptCode runs from the last executed separator, and removing them
