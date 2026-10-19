@@ -168,12 +168,12 @@ int main(void)
         uint8_t ospk[64];
         int ospklen = kw_test_unhex(KW_AUXPOW_BLOCK_SPK, ospk);
 
-        kw_outpoint_status st = { 0, 0, 0 };
+        kw_outpoint_status st = { 0 };
         if (!kw_block_find_outpoint(blk, (size_t)blen, tint, 0, ospk, (size_t)ospklen, &st) ||
             !st.created || st.created_value != KW_AUXPOW_BLOCK_VALUE || st.spent) {
             fprintf(stderr, "FAIL: find_outpoint created\n"); return 1;
         }
-        kw_outpoint_status st2 = { 0, 0, 0 };            /* wrong vout: not created */
+        kw_outpoint_status st2 = { 0 };            /* wrong vout: not created */
         kw_block_find_outpoint(blk, (size_t)blen, tint, 9, ospk, (size_t)ospklen, &st2);
         if (st2.created || st2.spent) { fprintf(stderr, "FAIL: find_outpoint bogus vout\n"); return 1; }
 
@@ -183,12 +183,12 @@ int main(void)
         uint8_t other[64];
         memcpy(other, ospk, (size_t)ospklen);
         other[4] ^= 0xff;                                /* one byte of the hash160 */
-        kw_outpoint_status st3 = { 0, 0, 0 };
+        kw_outpoint_status st3 = { 0 };
         if (!kw_block_find_outpoint(blk, (size_t)blen, tint, 0, other, (size_t)ospklen, &st3) ||
             st3.created) {
             fprintf(stderr, "FAIL: an output paying another script was reported as ours\n"); return 1;
         }
-        kw_outpoint_status st4 = { 0, 0, 0 };            /* no script is not a question */
+        kw_outpoint_status st4 = { 0 };            /* no script is not a question */
         if (kw_block_find_outpoint(blk, (size_t)blen, tint, 0, NULL, 0, &st4)) {
             fprintf(stderr, "FAIL: find_outpoint answered without a script\n"); return 1;
         }

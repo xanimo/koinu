@@ -33,7 +33,10 @@ static size_t locked_bytes(void)
     char buf[8192];
     size_t total = 0, held = 0;
     ssize_t r;
-    while ((r = read(fd, buf + held, sizeof buf - held - 1)) > 0) {
+    /* held is bounded in the condition so the read length cannot underflow,
+       which -Wstringop-overflow could not otherwise rule out. */
+    while (held + 1 < sizeof buf &&
+           (r = read(fd, buf + held, sizeof buf - held - 1)) > 0) {
         held += (size_t)r;
         buf[held] = '\0';
         char *line = buf, *nl;
@@ -44,7 +47,10 @@ static size_t locked_bytes(void)
             line = nl + 1;
         }
         held = strlen(line);
-        memmove(buf, line, held);
+        /* A line longer than the whole buffer is not one of the short smaps
+           fields this reads, so drop it rather than stop reading. */
+        if (held + 1 >= sizeof buf) held = 0;
+        else memmove(buf, line, held);
     }
     close(fd);
     return total;
