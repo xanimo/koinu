@@ -513,9 +513,12 @@ kw_slip39_err kw_slip39_split(const uint8_t *ms, size_t mslen,
     if (group_threshold == 0 || group_threshold > ngroups) return KW_SLIP39_ARG;
     if (!pass_ok(passphrase, &passlen)) return KW_SLIP39_ARG;
 
-    /* A threshold of one over several shares hands out copies of the same
-       secret while naming a threshold, at either level. */
-    if (group_threshold == 1 && ngroups > 1) return KW_SLIP39_ARG;
+    /* A member threshold of one over several shares hands out copies of the same
+       share while naming a threshold, which is the spec's own refusal. A group
+       threshold of one over several groups is not the same thing: every group
+       receives the same group share and then splits it differently, so
+       "my share, or two of the family's" is a real layout and the one people
+       usually mean. */
     for (g = 0; g < ngroups; g++) {
         if (groups[g].count == 0 || groups[g].count > KW_SLIP39_MAX_SHARES)
             return KW_SLIP39_ARG;

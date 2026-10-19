@@ -249,18 +249,20 @@ static void rejections(void)
     /* Thresholds that are a threshold in name only. */
     {
         uint8_t seed[64];
-        kw_slip39_group g2[2] = { { 1, 2 }, { 1, 1 } };
         kw_slip39_group g1[1] = { { 1, 2 } };
-        char buf[2 * KW_SLIP39_MNEMONIC_MAX];
+        kw_slip39_group ok2[2] = { { 1, 1 }, { 2, 3 } };
+        char buf[KW_SLIP39_MAX_SHARES * KW_SLIP39_MNEMONIC_MAX];
         size_t n = 0;
 
         memset(seed, 0x11, sizeof seed);
         if (kw_slip39_split(seed, sizeof seed, "", 0, 1, g1, 1,
                             buf, KW_SLIP39_MNEMONIC_MAX, &n) != KW_SLIP39_ARG)
             fail("split accepted a 1-of-2 member threshold");
-        if (kw_slip39_split(seed, sizeof seed, "", 0, 1, g2, 2,
-                            buf, KW_SLIP39_MNEMONIC_MAX, &n) != KW_SLIP39_ARG)
-            fail("split accepted a 1-of-2 group threshold");
+        /* The group level has no such rule, and refusing it made the layout the
+           help text uses as its example unreachable. */
+        if (kw_slip39_split(seed, sizeof seed, "", 0, 1, ok2, 2,
+                            buf, KW_SLIP39_MNEMONIC_MAX, &n) != KW_SLIP39_OK)
+            fail("split refused a group threshold of 1 over two groups");
         if (kw_slip39_split(seed, 15, "", 0, 1, g1, 1,
                             buf, KW_SLIP39_MNEMONIC_MAX, &n) != KW_SLIP39_ARG)
             fail("split accepted a 15-byte secret");
@@ -360,6 +362,10 @@ int main(void)
         roundtrip("2-of-3 with a passphrase", seed, sizeof seed, "koinu", 0, 1, two, 1);
         roundtrip("5-of-16", seed, sizeof seed, "", 0, 1, five, 1);
         roundtrip("2 of 3 groups", seed, sizeof seed, "", 0, 2, multi, 3);
+        /* One group of several: every group holds the same group share and
+           splits it its own way, so this is "my own share, or two of the
+           family's" rather than a threshold that is a lie. */
+        roundtrip("any 1 of 3 groups", seed, sizeof seed, "", 0, 1, multi, 3);
         roundtrip("16 groups", seed, sizeof seed, "", 0, 16, big, 16);
         roundtrip("128-bit secret", seed, 16, "", 0, 1, two, 1);
         roundtrip("160-bit secret", seed, 20, "", 0, 1, two, 1);
