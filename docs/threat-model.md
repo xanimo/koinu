@@ -35,6 +35,25 @@ convenience that needs the key process to talk to the network.
 
 ## Keys
 
+Signing and broadcasting are already separate programs, so the machine that
+holds the seed need never have a network interface. `kw sign` writes a
+transaction to a file, something else carries the file across, and `kw send`
+decodes and broadcasts it. `kw export xpub` prints the account public key for
+the watching side, and `kw scan --xpub` tracks the wallet with no keystore, no
+passphrase and no secret in the process: it derives every address under
+m/44'/coin'/account' and no private key, because change and index are unhardened
+and a public parent can walk them.
+
+What the xpub costs is worth stating. It is not a secret in the way the seed is,
+and it is not public either: whoever holds it sees every address the account will
+ever use, before and after, and can tie them to each other. It cannot spend.
+
+What the file handoff does not protect against is a signer that shows one thing
+and signs another, which is why `kw sign` decodes the transaction it produced and
+reports from those bytes rather than from the request that built them, and why
+`kw send` decodes again before broadcasting. Both ends read the same
+serialization; neither trusts the summary that came with it.
+
 `kw backup verify` answers whether a phrase restores a wallet without putting the
 two in the same place: it derives the seed the typed words give, opens the
 keystore, and compares them in constant time, printing neither. A mismatch exits

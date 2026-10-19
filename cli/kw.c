@@ -62,6 +62,7 @@ static void usage(void)
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "                                          [--index N] [--change] [--spk]\n"
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
+      "           or --xpub XPUB (watch only, no keys on this machine)\n"
       "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH] [--validate-pow]\n"
       "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
@@ -69,6 +70,7 @@ static void usage(void)
       "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
       "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
       "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
+      "  export xpub --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "  backup verify [--keystore PATH] [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "                                          [--seed-passphrase @FILE|-]\n"
       "  height   --node HOST [--port N] [--tor]\n"
@@ -965,6 +967,33 @@ static int scan_watch_cap(int gap)
     return (int)cap;
 }
 
+/* The same addresses from an account public key, which is what a machine that
+   holds no keys can have: the account level is m/44'/coin'/account', so the two
+   steps below it, change and index, are both unhardened and a public parent can
+   walk them. */
+static kw_scan_addr *derive_watch_pub(const kw_chainparams *cp, const kw_bip32_key *acct,
+                                      int per_chain)
+{
+    kw_scan_addr *t = (kw_scan_addr *)calloc((size_t)per_chain * 2, sizeof *t);
+    if (!t) return NULL;
+    for (int chg = 0; chg <= 1; chg++) {
+        kw_bip32_key chain;
+        if (!kw_bip32_ckd_pub(acct, (uint32_t)chg, &chain)) continue;
+        for (int i = 0; i < per_chain; i++) {
+            kw_scan_addr *e = &t[(size_t)chg * per_chain + i];
+            kw_bip32_key k;
+            uint8_t pub[33];
+            if (kw_bip32_ckd_pub(&chain, (uint32_t)i, &k) && kw_bip32_pubkey(&k, pub)) {
+                kw_hash160(pub, 33, e->h160);
+                h160_to_spk(e->h160, e->spk);
+                kw_address_p2pkh(pub, cp->p2pkh, e->addr, sizeof e->addr);
+                e->ok = 1;
+            }
+        }
+    }
+    return t;
+}
+
 static kw_scan_addr *derive_watch(const kw_chainparams *cp, const kw_bip32_key *master,
                                   int per_chain)
 {
@@ -1112,35 +1141,65 @@ static void record_receives(const kw_chainparams *cp, const kw_scan_addr *tbl,
 /* Watch the first (gap) receive and change addresses, sync from (node), and
    write the tracked utxo set to (utxos_path) for a later sign. */
 static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                    const char *xpub_arg,
                     const char *node, int port, int tor, int use_cf, int gap,
                     const char *utxos_path, const char *headers_path, const char *filters_path,
                     int peers, int validate_pow)
 {
-    if (!path || !node) { usage(); return 2; }
+    if ((!path && !xpub_arg) || !node) { usage(); return 2; }
+    if (path && xpub_arg) {
+        fprintf(stderr, "kw: --xpub watches a wallet and --keystore holds one; give one\n");
+        return 2;
+    }
     if (port <= 0) port = cp->p2p_port;
     char defpath[4096];
-    if (!utxos_path) { snprintf(defpath, sizeof defpath, "%s.utxos", path); utxos_path = defpath; }
-
-    uint8_t seed[64];
-
-    kw_secure_keep(seed, sizeof seed);
-    if (!open_seed(path, pass_arg, seed)) return 1;
-    kw_bip32_key master;
-    kw_secure_keep(&master, sizeof master);
-    int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
-    kw_secure_forget(seed, sizeof seed);
-    if (!have_master) {
-        kw_secure_forget(&master, sizeof master);
-        fprintf(stderr, "kw: master derivation failed\n");
-        return 1;
+    if (!utxos_path) {
+        snprintf(defpath, sizeof defpath, "%s.utxos", path ? path : "watch");
+        utxos_path = defpath;
     }
 
-    /* Everything the key is needed for happens here, before a socket exists. The key
-       is wiped on the next line and the scan runs without it. */
     int watch_cap = scan_watch_cap(gap);
-    kw_scan_addr *watch = derive_watch(cp, &master, watch_cap);
-    kw_secure_forget(&master, sizeof master);
-    if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); return 1; }
+    kw_scan_addr *watch = NULL;
+
+    if (xpub_arg) {
+        /* Watch-only: no keystore, no passphrase, no secret anywhere in this
+           process. The account key walks change and index, which are unhardened,
+           so it derives every address this wallet will use and none of its keys. */
+        kw_bip32_key acct;
+        if (!kw_bip32_parse(xpub_arg, cp->bip32, &acct)) {
+            fprintf(stderr, "kw: --xpub is not an extended key for this network\n");
+            return 1;
+        }
+        if (acct.is_private) {
+            fprintf(stderr, "kw: that is an extended private key; --xpub wants the public "
+                            "one that kw export xpub prints\n");
+            kw_secure_zero(&acct, sizeof acct);
+            return 1;
+        }
+        watch = derive_watch_pub(cp, &acct, watch_cap);
+        kw_secure_zero(&acct, sizeof acct);
+        if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); return 1; }
+    } else {
+        uint8_t seed[64];
+
+        kw_secure_keep(seed, sizeof seed);
+        if (!open_seed(path, pass_arg, seed)) return 1;
+        kw_bip32_key master;
+        kw_secure_keep(&master, sizeof master);
+        int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
+        kw_secure_forget(seed, sizeof seed);
+        if (!have_master) {
+            kw_secure_forget(&master, sizeof master);
+            fprintf(stderr, "kw: master derivation failed\n");
+            return 1;
+        }
+
+        /* Everything the key is needed for happens here, before a socket exists. The key
+           is wiped on the next line and the scan runs without it. */
+        watch = derive_watch(cp, &master, watch_cap);
+        kw_secure_forget(&master, sizeof master);
+        if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); return 1; }
+    }
 
     kw_net_verbose = 1;
     /* The parallel fill writes the checkpointed range straight to the cache without
@@ -1269,7 +1328,6 @@ done:
     free(watch);
     if (have_us) kw_utxoset_free(&us);
     kw_peer_close(&p);
-    kw_secure_zero(&master, sizeof master);
     return rc;
 }
 
@@ -2622,6 +2680,53 @@ static int print_psbt(const kw_psbt *p)
 
 /* BIP174 roles over the command line, so a caller that shells out to kw gets
    the same psbt handling the library does. */
+/* kw export xpub: the account public key, for a machine that must not hold keys.
+ *
+ * The signer already runs where no socket is open; what was missing was anything
+ * for the other side to watch with. This prints the extended public key for
+ * m/44'/coin'/account', which derives every receive and change address under it
+ * and no private key at all.
+ *
+ * It is not a secret in the sense the seed is, and it is not public either: a
+ * holder learns every address this account will ever use, past and future, and
+ * can tie them to each other. Said here rather than left to be discovered. */
+static int cmd_export(const kw_chainparams *cp, const char *sub, const char *path,
+                      const char *pass_arg, uint32_t account)
+{
+    if (!sub || strcmp(sub, "xpub") != 0) { usage(); return 2; }
+    if (!path) { usage(); return 2; }
+
+    uint8_t seed[64];
+    kw_secure_keep(seed, sizeof seed);
+    if (!open_seed(path, pass_arg, seed)) { kw_secure_forget(seed, sizeof seed); return 1; }
+
+    kw_bip32_key master, acct, pub;
+    kw_secure_keep(&master, sizeof master);
+    kw_secure_keep(&acct, sizeof acct);
+    int rc = 1;
+    char apath[64];
+    snprintf(apath, sizeof apath, "m/44'/%u'/%u'", cp->bip44_coin, account);
+    if (kw_bip32_from_seed(seed, 64, cp->bip32, &master) &&
+        kw_bip32_derive_path(&master, apath, &acct) &&
+        kw_bip32_neuter(&acct, &pub)) {
+        char x[160];
+        if (kw_bip32_serialize(&pub, x, sizeof x)) {
+            printf("path  %s\n", apath);
+            printf("xpub  %s\n", x);
+            fprintf(stderr, "kw: this derives every address of that account, so whoever "
+                            "holds it can\n    watch the wallet and link its addresses. "
+                            "It cannot spend.\n");
+            rc = 0;
+        } else fprintf(stderr, "kw: cannot serialize the account key\n");
+    } else fprintf(stderr, "kw: cannot derive %s\n", apath);
+
+    kw_secure_forget(&acct, sizeof acct);
+    kw_secure_forget(&master, sizeof master);
+    kw_secure_forget(seed, sizeof seed);
+    kw_secure_zero(&pub, sizeof pub);
+    return rc;
+}
+
 /* kw backup verify: does this phrase restore this wallet?
  *
  * Most coins lost to key handling are lost to a backup nobody checked. Checking
@@ -2842,6 +2947,7 @@ int main(int argc, char **argv)
     int tor = 0, use_cf = 1, gap = 100, port = -1;
     uint32_t account = 0, index = 0;
     const char *path = NULL, *pass_arg = NULL, *seedpass_arg = NULL, *mnem_arg = NULL, *cmd = NULL;
+    const char *xpub_arg = NULL;
     const char *to_arg = NULL, *fee_arg = NULL, *feerate_arg = NULL, *change_arg = NULL;
     const char *maxfee_arg = NULL;
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
@@ -2861,6 +2967,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--keystore"))   path = NEXT();
         else if (!strcmp(a, "--passphrase")) pass_arg = NEXT();
         else if (!strcmp(a, "--seed-passphrase")) seedpass_arg = NEXT();
+        else if (!strcmp(a, "--xpub"))       xpub_arg = NEXT();
         else if (!strcmp(a, "--mnemonic"))   mnem_arg = NEXT();
         else if (!strcmp(a, "--words"))    { if (!arg_int("--words", NEXT(), 12, 24, &words)) return 2; }
         else if (!strcmp(a, "--account"))  { if (!arg_u32("--account", NEXT(), KW_BIP32_HARDENED - 1, &account)) return 2; }
@@ -2948,7 +3055,7 @@ int main(int argc, char **argv)
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, seedpass_arg, words);
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, seedpass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
-    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
+    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, xpub_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
@@ -2956,6 +3063,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg);
+    else if (!strcmp(cmd, "export"))  rc = cmd_export(cp, sub, path, pass_arg, account);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }

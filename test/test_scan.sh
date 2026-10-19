@@ -133,6 +133,34 @@ else
     echo "FAIL: could not sign a spend of the scanned coins" >&2; exit 1
 fi
 
+# Watch-only: the same wallet from its account xpub, on a machine that holds no
+# keystore, no passphrase and no key material at all. This is the online half of
+# an air-gapped setup, where the signer never opens a socket and the watcher
+# never holds a secret. It must find exactly what the keyed scan found.
+XPUB=$(./kw --regtest export xpub $K 2>/dev/null | awk '/^xpub/{print $2}')
+[ -n "$XPUB" ] || { echo "FAIL: export xpub printed nothing" >&2; exit 1; }
+case "$XPUB" in tpub*) ;; *) echo "FAIL: regtest xpub is $XPUB" >&2; exit 1;; esac
+
+./kw --regtest scan --xpub "$XPUB" --node "127.0.0.1:$P2P" --spv --gap 3 \
+     --utxos "$D/watch" >/dev/null 2>&1 \
+    || { echo "FAIL: the watch-only scan failed" >&2; exit 1; }
+WB=$(awk '!/^#/{s+=$3} END{print s+0}' "$D/watch")
+KB=$(awk '!/^#/{s+=$3} END{print s+0}' "$U")
+[ "$WB" = "$KB" ] || {
+    echo "FAIL: watch-only saw $WB, the keyed scan saw $KB" >&2; exit 1; }
+
+# an xprv must be refused where an xpub is wanted, since it is a secret and the
+# point of this path is that no secret is on the machine
+if ./kw --regtest scan --xpub "tprv8ZgxMBicQKsPd" --node "127.0.0.1:$P2P" --spv \
+       --utxos "$D/nope" >/dev/null 2>&1; then
+    echo "FAIL: a non-xpub was accepted" >&2; exit 1
+fi
+# and giving both a keystore and an xpub is a mistake worth naming
+if ./kw --regtest scan $K --xpub "$XPUB" --node "127.0.0.1:$P2P" --spv \
+       --utxos "$D/nope2" >/dev/null 2>&1; then
+    echo "FAIL: --keystore and --xpub together were accepted" >&2; exit 1
+fi
+
 # kw outpoint is what a payment backend calls, and it had no live test at all. It
 # must find the outpoint the scan already found, and it must check work while doing
 # it: until today it synced headers with no validator pool, so it checked none.
@@ -241,5 +269,6 @@ fi
 echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
 echo "  journaled with heights, a rescan adds nothing, a later payment appends, and"
 echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable,"
-echo "  a spent address still counts as used, an immature coinbase says so, and send"
+echo "  a spent address still counts as used, an immature coinbase says so, a"
+echo "  watch-only scan from the account xpub finds what the keyed scan finds, and send"
 echo "  tells a relayed transaction from one the node does not hold"
