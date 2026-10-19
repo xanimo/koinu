@@ -296,6 +296,66 @@ esac
 ./kw --regtest backup verify --mnemonic "@$WORK/bkm" 2>/dev/null | grep -q "^fingerprint" \
     || { echo "FAIL: no fingerprint without a keystore" >&2; exit 1; }
 
+# kw backup split/combine: a threshold of SLIP-39 shares restores the wallet and
+# fewer of them restore nothing. The shares are checked by sealing a second
+# keystore and comparing its first address, which is the check the help tells
+# the user to make.
+./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+     --groups 2of3 > "$WORK/sh.txt" 2>/dev/null \
+    || { echo "FAIL: backup split failed" >&2; exit 1; }
+# -eq rather than = throughout: BSD wc pads its count with spaces
+NSH=$(grep -c '^  [0-9]  ' "$WORK/sh.txt")
+[ "$NSH" -eq 3 ] || { echo "FAIL: split wrote $NSH shares, wanted 3" >&2; exit 1; }
+# 59 words for a 64-byte seed
+WORDS=$(sed -n 's/^  1  //p' "$WORK/sh.txt" | wc -w)
+[ "$WORDS" -eq 59 ] || { echo "FAIL: a share is $WORDS words, wanted 59" >&2; exit 1; }
+sed -n 's/^  [13]  //p' "$WORK/sh.txt" > "$WORK/sh.pick"
+A_BK=$(./kw --regtest address --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass")
+A_SH=$(./kw --regtest backup combine --keystore "$WORK/sh.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/sh.pick" 2>/dev/null | awk '/first address/{print $3}')
+[ "$A_BK" = "$A_SH" ] || {
+    echo "FAIL: two of three shares restored $A_SH and not $A_BK" >&2; exit 1; }
+# one share is under the threshold, and the keystore must not be written
+sed -n 's/^  1  //p' "$WORK/sh.txt" > "$WORK/sh.one"
+if ./kw --regtest backup combine --keystore "$WORK/sh1.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/sh.one" >/dev/null 2>&1; then
+    echo "FAIL: one share of three combined" >&2; exit 1
+fi
+[ ! -e "$WORK/sh1.ks" ] || { echo "FAIL: a refused combine wrote a keystore" >&2; exit 1; }
+# a backup passphrase makes a different wallet of the same shares, silently,
+# which is the hazard the help states
+printf 'a backup passphrase\n' > "$WORK/bpass"
+A_BP=$(./kw --regtest backup combine --keystore "$WORK/shbp.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/sh.pick" --backup-passphrase "@$WORK/bpass" 2>/dev/null \
+        | awk '/first address/{print $3}')
+[ -n "$A_BP" ] || { echo "FAIL: combine with a backup passphrase failed" >&2; exit 1; }
+[ "$A_BP" != "$A_SH" ] || {
+    echo "FAIL: a backup passphrase restored the same wallet" >&2; exit 1; }
+# and the shares it makes do restore that wallet
+./kw --regtest backup split --keystore "$WORK/shbp.ks" --passphrase "@$WORK/pass" \
+     --groups 1of1,2of3 --group-threshold 2 --backup-passphrase "@$WORK/bpass" \
+     > "$WORK/sh2.txt" 2>/dev/null \
+    || { echo "FAIL: split across two groups failed" >&2; exit 1; }
+NSH2=$(grep -c '^  [0-9]  ' "$WORK/sh2.txt")
+[ "$NSH2" -eq 4 ] || { echo "FAIL: two groups wrote $NSH2 shares, wanted 4" >&2; exit 1; }
+sed -n 's/^  [0-9]  //p' "$WORK/sh2.txt" | sed -n '1p;2p;3p' > "$WORK/sh2.pick"
+A_G=$(./kw --regtest backup combine --keystore "$WORK/sh2.ks" --passphrase "@$WORK/pass" \
+       --shares "@$WORK/sh2.pick" --backup-passphrase "@$WORK/bpass" 2>/dev/null \
+       | awk '/first address/{print $3}')
+[ "$A_G" = "$A_BP" ] || {
+    echo "FAIL: a group threshold restored $A_G and not $A_BP" >&2; exit 1; }
+# one group of the two is under the group threshold
+sed -n '1p' "$WORK/sh2.pick" > "$WORK/sh2.one"
+if ./kw --regtest backup combine --keystore "$WORK/sh2b.ks" --passphrase "@$WORK/pass" \
+        --shares "@$WORK/sh2.one" --backup-passphrase "@$WORK/bpass" >/dev/null 2>&1; then
+    echo "FAIL: one group of two combined" >&2; exit 1
+fi
+# a share must not be a threshold in name only
+if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+        --groups 1of3 >/dev/null 2>&1; then
+    echo "FAIL: split accepted a 1-of-3 threshold" >&2; exit 1
+fi
+
 # A BIP39 passphrase goes into the seed, not the keystore, so the same words
 # with and without one are two different wallets. A stolen phrase alone then
 # does not spend, and there is nothing to check a wrong passphrase against: it
@@ -470,4 +530,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing"

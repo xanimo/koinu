@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## What's Changed
+* slip39: split the seed into shares, and combine a threshold back
+  A written mnemonic is one copy, so losing the wallet and having it stolen are
+  the same number. `kw backup split` makes SLIP-39 shares of the 64-byte seed
+  and `kw backup combine` seals a keystore from a threshold of them, with the
+  two numbers set apart. The spec mandates the BIP32 master seed as the secret
+  to split, so a threshold restores the same wallet in any implementation; a
+  512-bit secret gives 59-word shares, which Trezor firmware will not type.
+  All 45 official vectors pass, 30 of them refusals, each recovered secret
+  checked against the vector's xprv.
+
 ## [0.3.0] - 2026-10-10
 
 ## Upgrading from 0.2.x

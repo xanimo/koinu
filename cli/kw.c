@@ -9,6 +9,7 @@
 
 #include "chainparams.h"
 #include "bip39.h"
+#include "slip39.h"
 #include "rng.h"
 #include "bip32.h"
 #include "bip44.h"
@@ -73,6 +74,10 @@ static void usage(void)
       "  export xpub --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "  backup verify [--keystore PATH] [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "                                          [--seed-passphrase @FILE|-]\n"
+      "  backup split  --keystore PATH [--passphrase @FILE|-] --groups TofN[,TofN...]\n"
+      "                [--group-threshold N] [--backup-passphrase @FILE|-]\n"
+      "  backup combine --keystore PATH [--passphrase @FILE|-] [--shares @FILE|-]\n"
+      "                [--backup-passphrase @FILE|-]\n"
       "  height   --node HOST [--port N] [--tor]\n"
       "  cfcheckpoints --node HOST [--port N] [--tor] [--headers PATH]\n"
       "           [--since SPACING]   (filter-header anchors, for a release)\n"
@@ -111,6 +116,16 @@ static void usage(void)
       "  prints the signature for the counterparty; with --finish it combines\n"
       "  each --sig with its own, in redeem-script key order, and prints the\n"
       "  completed transaction ready for kw send.\n"
+      "\n"
+      "  backup split prints the seed as SLIP-39 shares, any --groups TofN of which\n"
+      "  restores it and any fewer of which are nothing: 3of5 is five shares and a\n"
+      "  threshold of three, and 1of1,2of3 is two groups whose shares combine\n"
+      "  across the --group-threshold of them. backup combine takes a threshold\n"
+      "  back and seals a keystore with it rather than printing the seed. The\n"
+      "  --backup-passphrase is a third secret, separate from the keystore\n"
+      "  passphrase and from --seed-passphrase, and a wrong one gives a different\n"
+      "  wallet rather than an error. A 64-byte seed makes 59-word shares, which\n"
+      "  other SLIP-39 software combines and Trezor firmware refuses to type.\n"
       "\n"
       "  --seed-passphrase is the BIP39 passphrase, a different secret from the\n"
       "  one that seals the keystore: it goes into the seed, so the words alone no\n"
@@ -226,10 +241,11 @@ static void chomp(char *s)
 
 /* Read a secret line from @FILE, stdin ("-"), or a no-echo prompt. A bare value
    is refused: it would sit in argv. Caller frees with pc-style secret wipe. */
-/* The longest legitimate secret: a 24-word BIP39 mnemonic is 188 bytes for the
-   English list, and a passphrase has no standard bound, so this is generous and
-   anything past it is refused rather than grown into. */
-#define KW_SECRET_MAX 512
+/* The longest legitimate secret: a 59-word SLIP-39 share is 530 bytes, which is
+   longer than a 24-word BIP39 mnemonic's 188, and a passphrase has no standard
+   bound, so this is generous and anything past it is refused rather than grown
+   into. */
+#define KW_SECRET_MAX 576
 
 /* Wipes the whole allocation rather than up to the NUL: chomp moves the NUL back
    over the newline, and a shorter second read would leave the tail of a longer
@@ -2738,11 +2754,9 @@ static int cmd_export(const kw_chainparams *cp, const char *sub, const char *pat
  * With no --keystore it prints what the words derive, the master fingerprint and
  * the first address, so a paper backup can be checked against an address already
  * known without a wallet file at all. */
-static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *path,
-                      const char *pass_arg, const char *seedpass_arg, const char *mnem_arg)
+static int backup_verify(const kw_chainparams *cp, const char *path,
+                         const char *pass_arg, const char *seedpass_arg, const char *mnem_arg)
 {
-    if (!sub || strcmp(sub, "verify") != 0) { usage(); return 2; }
-
     char *mnem = read_secret(mnem_arg, "mnemonic: ");
     if (!mnem) { fprintf(stderr, "kw: no mnemonic\n"); return 1; }
     if (!kw_bip39_check(mnem)) {
@@ -2818,6 +2832,283 @@ static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *pat
     kw_secure_forget(stored, sizeof stored);
     kw_secure_forget(typed, sizeof typed);
     return rc;
+}
+
+/* "2of3", or "1of1,3of5,2of3" for one group per entry. */
+static int parse_groups(const char *spec, kw_slip39_group *g, size_t cap, size_t *nout)
+{
+    const char *p = spec;
+    size_t n = 0, len = strlen(spec);
+
+    /* A trailing comma is a group that was meant to be typed and was not, and
+       taking it as one group fewer is the wrong answer silently. */
+    if (!len || spec[len - 1] == ',') goto bad;
+
+    while (*p) {
+        long t, c;
+        char *end;
+
+        if (n == cap) { fprintf(stderr, "kw: at most %zu groups\n", cap); return 0; }
+        t = strtol(p, &end, 10);
+        if (end == p || strncmp(end, "of", 2) != 0) break;
+        p = end + 2;
+        c = strtol(p, &end, 10);
+        if (end == p) break;
+        p = end;
+        if (t < 1 || t > KW_SLIP39_MAX_SHARES || c < 1 || c > KW_SLIP39_MAX_SHARES) break;
+        g[n].threshold = (uint8_t)t;
+        g[n].count = (uint8_t)c;
+        n++;
+        if (*p == ',') p++;
+        else if (*p) break;
+    }
+
+    if (*p || !n) goto bad;
+    *nout = n;
+    return 1;
+
+bad:
+    fprintf(stderr, "kw: --groups wants TofN, comma separated for several groups: "
+                    "3of5, or 1of1,2of3\n");
+    return 0;
+}
+
+/* kw backup split: the seed as SLIP-39 shares, any threshold of which restores
+ * it and any fewer of which are nothing.
+ *
+ * A single written phrase is one fire, one flood or one person away from gone,
+ * and a copy in a second place doubles what has to be stolen only once. Shares
+ * break that trade: the threshold is what it takes to lose the wallet and the
+ * threshold is what it takes to steal it, set separately. */
+static int backup_split(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                        const char *groups_arg, int group_threshold, const char *bpass_arg)
+{
+    kw_slip39_group groups[KW_SLIP39_MAX_GROUPS];
+    uint8_t seed[64];
+    size_t ngroups = 0, nshares = 0, i, g, base = 0, bufn = 0;
+    char *bpass = NULL, *buf;
+    kw_slip39_err err;
+    int rc = 1;
+
+    if (!path || !groups_arg) { usage(); return 2; }
+    if (!parse_groups(groups_arg, groups, KW_SLIP39_MAX_GROUPS, &ngroups)) return 2;
+    if (group_threshold < 0) group_threshold = (int)ngroups;
+    if (group_threshold < 1 || (size_t)group_threshold > ngroups) {
+        fprintf(stderr, "kw: --group-threshold must be between 1 and the %zu groups "
+                        "given\n", ngroups);
+        return 2;
+    }
+
+    if (bpass_arg) {
+        bpass = read_secret(bpass_arg, "backup passphrase: ");
+        if (!bpass) return 1;
+    }
+
+    /* One stride per share across every group, rather than the maximum: these
+       pages are locked, and a 256-share buffer is 34 of them for a 3-share
+       backup. */
+    for (g = 0; g < ngroups; g++) bufn += groups[g].count;
+    bufn *= KW_SLIP39_MNEMONIC_MAX;
+    buf = (char *)malloc(bufn);
+    if (!buf) { if (bpass) secret_free(bpass); fprintf(stderr, "kw: out of memory\n"); return 1; }
+    kw_secure_keep(buf, bufn);
+
+    kw_secure_keep(seed, sizeof seed);
+    if (!open_seed(path, pass_arg, seed)) goto out;
+
+    err = kw_slip39_split(seed, sizeof seed, bpass ? bpass : "", 0,
+                          (uint8_t)group_threshold, groups, ngroups,
+                          buf, KW_SLIP39_MNEMONIC_MAX, &nshares);
+    if (err != KW_SLIP39_OK) {
+        fprintf(stderr, "kw: cannot split: %s\n", kw_slip39_strerror(err));
+        goto out;
+    }
+
+    /* Written to the descriptor rather than printf for the reason kw new does
+       it: stdio's buffer is malloc'd once, wiped by nothing, and outlives every
+       forget in the process. */
+    for (g = 0; g < ngroups; g++) {
+        char head[96];
+        int ok = 1;
+
+        snprintf(head, sizeof head, "\ngroup %zu, any %u of its %u shares:\n",
+                 g + 1, groups[g].threshold, groups[g].count);
+        ok = kw_write_secret(STDOUT_FILENO, head, strlen(head));
+
+        for (i = 0; i < groups[g].count && ok; i++) {
+            const char *m = buf + (base + i) * KW_SLIP39_MNEMONIC_MAX;
+            char label[16];
+            snprintf(label, sizeof label, "  %zu  ", i + 1);
+            ok = kw_write_secret(STDOUT_FILENO, label, strlen(label)) &&
+                 kw_write_secret(STDOUT_FILENO, m, strlen(m)) &&
+                 kw_write_secret(STDOUT_FILENO, "\n", 1);
+        }
+        base += groups[g].count;
+
+        if (!ok) {
+            fprintf(stderr, "kw: could not write the shares, so stop here and run this "
+                            "again: a partial set\n    restores nothing\n");
+            goto out;
+        }
+    }
+
+    {
+        uint8_t h160[20], pub[33];
+        kw_bip32_key master;
+
+        kw_secure_keep(&master, sizeof master);
+        if (kw_bip32_from_seed(seed, sizeof seed, cp->bip32, &master) &&
+            kw_bip32_pubkey(&master, pub)) {
+            kw_hash160(pub, 33, h160);
+            printf("\nfingerprint %02x%02x%02x%02x, %zu shares, %d of the %zu groups "
+                   "needed\n", h160[0], h160[1], h160[2], h160[3], nshares,
+                   group_threshold, ngroups);
+        }
+        kw_secure_forget(&master, sizeof master);
+    }
+
+    fprintf(stderr, "\nkw: write each share down and keep them apart. Check them with\n"
+                    "    kw backup combine --keystore /tmp/check.ks before you rely on "
+                    "them,\n    and compare the fingerprint. kw has no way to tell a "
+                    "wrong backup\n    passphrase from a different wallet.\n");
+    rc = 0;
+
+out:
+    kw_secure_zero(buf, bufn);
+    kw_secure_forget(buf, bufn);
+    free(buf);
+    kw_secure_forget(seed, sizeof seed);
+    if (bpass) secret_free(bpass);
+    return rc;
+}
+
+/* Shares come from a file or stdin, one per line and blank lines skipped, or
+   from repeated prompts ended by a blank line. Each lands in its own locked
+   allocation, since a share is a fraction of the seed. */
+static size_t read_shares(const char *arg, char **out, size_t cap)
+{
+    int fd = -1, close_it = 0;
+    size_t n = 0;
+
+    if (arg && arg[0] == '@') {
+        fd = open(arg + 1, O_RDONLY);
+        if (fd < 0) { fprintf(stderr, "kw: cannot open %s\n", arg + 1); return 0; }
+        close_it = 1;
+    } else if (arg && !strcmp(arg, "-")) {
+        fd = STDIN_FILENO;
+    } else if (arg) {
+        fprintf(stderr, "kw: pass the shares via @FILE or - , not on the command line\n");
+        return 0;
+    }
+
+    while (n < cap) {
+        char *line;
+
+        if (fd >= 0) {
+            ssize_t r;
+            line = (char *)malloc(KW_SECRET_MAX);
+            if (!line) break;
+            kw_secure_keep(line, KW_SECRET_MAX);
+            r = read_line_fd(fd, line, KW_SECRET_MAX);
+            if (r < 0) { secret_free(line); break; }
+            chomp(line);
+        } else {
+            char prompt[48];
+            snprintf(prompt, sizeof prompt, "share %zu (blank when done): ", n + 1);
+            line = read_secret(NULL, prompt);
+            if (!line) break;
+        }
+
+        if (!line[0]) {
+            secret_free(line);
+            if (fd >= 0) continue;          /* a blank line in a file is spacing */
+            break;                          /* at a prompt it is the end */
+        }
+        out[n++] = line;
+    }
+
+    if (close_it) close(fd);
+    return n;
+}
+
+/* kw backup combine: a threshold of shares back into a keystore.
+ *
+ * It writes a wallet rather than printing the seed, which is the same rule the
+ * mnemonic follows: there is no export. Point it at a scratch path to check a
+ * set of shares, and compare the fingerprint it prints. */
+static int backup_combine(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                          const char *shares_arg, const char *bpass_arg)
+{
+    char *lines[KW_SLIP39_MAX_TOTAL + 1];
+    uint8_t seed[KW_SLIP39_MAX_SECRET];
+    size_t nl = 0, seedlen = 0, i;
+    char *bpass = NULL;
+    kw_slip39_err err;
+    int rc = 1;
+
+    if (!path) { usage(); return 2; }
+
+    /* One over the cap, so a longer list is refused rather than cut short: a
+       truncated set would be reported as not a threshold. */
+    nl = read_shares(shares_arg, lines, KW_SLIP39_MAX_TOTAL + 1);
+    if (nl == 0) { fprintf(stderr, "kw: no shares\n"); return 1; }
+    if (nl > KW_SLIP39_MAX_TOTAL) {
+        fprintf(stderr, "kw: at most %d shares\n", KW_SLIP39_MAX_TOTAL);
+        goto out;
+    }
+
+    if (bpass_arg) {
+        bpass = read_secret(bpass_arg, "backup passphrase: ");
+        if (!bpass) goto out;
+    }
+
+    kw_secure_keep(seed, sizeof seed);
+    err = kw_slip39_combine((const char *const *)lines, nl, bpass ? bpass : "",
+                            seed, sizeof seed, &seedlen);
+    if (err != KW_SLIP39_OK) {
+        fprintf(stderr, "kw: cannot combine those %zu shares: %s\n", nl,
+                kw_slip39_strerror(err));
+        if (err == KW_SLIP39_GROUPING)
+            fprintf(stderr, "kw: give exactly the threshold, no duplicates and no "
+                            "spares: as many groups as\n    the group threshold, and "
+                            "within each of those its own member threshold\n");
+        goto out;
+    }
+    if (seedlen != 64) {
+        fprintf(stderr, "kw: those shares hold a %zu-byte secret, and a koinu keystore "
+                        "holds a 64-byte seed\n", seedlen);
+        goto out;
+    }
+
+    if (!bpass_arg)
+        fprintf(stderr, "kw: no backup passphrase given. If the shares were made with "
+                        "one, this is a\n    different wallet rather than an error, so "
+                        "check the address below\n");
+
+    rc = seal_and_report(cp, path, pass_arg, seed);
+
+out:
+    kw_secure_zero(seed, sizeof seed);
+    kw_secure_forget(seed, sizeof seed);
+    for (i = 0; i < nl; i++) secret_free(lines[i]);
+    if (bpass) secret_free(bpass);
+    return rc;
+}
+
+static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *path,
+                      const char *pass_arg, const char *seedpass_arg, const char *mnem_arg,
+                      const char *groups_arg, int group_threshold,
+                      const char *bpass_arg, const char *shares_arg)
+{
+    if (!sub) { usage(); return 2; }
+    if (!strcmp(sub, "verify"))
+        return backup_verify(cp, path, pass_arg, seedpass_arg, mnem_arg);
+    if (!strcmp(sub, "split"))
+        return backup_split(cp, path, pass_arg, groups_arg, group_threshold, bpass_arg);
+    if (!strcmp(sub, "combine"))
+        return backup_combine(cp, path, pass_arg, shares_arg, bpass_arg);
+    usage();
+    return 2;
 }
 
 static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_arg,
@@ -2954,6 +3245,8 @@ int main(int argc, char **argv)
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL, *utxo_arg = NULL;
     const char *psbt_arg = NULL, *script_arg = NULL, *sub = NULL, *psbts[8];
+    const char *groups_arg = NULL, *bpass_arg = NULL, *shares_arg = NULL;
+    int group_threshold = -1;                  /* -1: every group given */
     int npsbt = 0;
     long since = -1;
     int vin = -1, nsigs = 0, finish = 0, peers = 1;   /* -1: every input */
@@ -2967,6 +3260,12 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--keystore"))   path = NEXT();
         else if (!strcmp(a, "--passphrase")) pass_arg = NEXT();
         else if (!strcmp(a, "--seed-passphrase")) seedpass_arg = NEXT();
+        else if (!strcmp(a, "--backup-passphrase")) bpass_arg = NEXT();
+        else if (!strcmp(a, "--groups"))     groups_arg = NEXT();
+        else if (!strcmp(a, "--shares"))     shares_arg = NEXT();
+        else if (!strcmp(a, "--group-threshold")) {
+            if (!arg_int("--group-threshold", NEXT(), 1, KW_SLIP39_MAX_GROUPS,
+                         &group_threshold)) return 2; }
         else if (!strcmp(a, "--xpub"))       xpub_arg = NEXT();
         else if (!strcmp(a, "--mnemonic"))   mnem_arg = NEXT();
         else if (!strcmp(a, "--words"))    { if (!arg_int("--words", NEXT(), 12, 24, &words)) return 2; }
@@ -3062,7 +3361,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
-    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg);
+    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg);
     else if (!strcmp(cmd, "export"))  rc = cmd_export(cp, sub, path, pass_arg, account);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);

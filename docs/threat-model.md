@@ -28,7 +28,9 @@ If you lose the seed and the wallet file, nobody can recover it. Not you, not us
 not a service. The keystore holds the 64-byte seed, not the words, and the words
 cannot be derived back from it: `kw` has no export, and there is no account, no
 login, no recovery address and nothing of yours on any machine but your own. That
-is the point of the thing, and it is also the way it bites.
+is the point of the thing, and it is also the way it bites. `kw backup split`
+spreads that risk over several shares rather than removing it, and a threshold
+of them is still the wallet.
 
 What it will not grow: server-side recovery, a login, telemetry, or any
 convenience that needs the key process to talk to the network.
@@ -61,6 +63,33 @@ keystore, and compares them in constant time, printing neither. A mismatch exits
 paper backup can be checked years later against an address already known, on a
 machine that holds no wallet at all. Checking a backup used to mean restoring it
 somewhere, which is how checking one becomes the thing that loses it.
+
+`kw backup split` turns the seed into SLIP-39 shares and `kw backup combine`
+turns a threshold of them back into a keystore, which separates the two numbers
+a single written phrase conflates: one copy is lost to one fire and two copies
+are stolen from either. With a threshold, losing the wallet takes more than the
+count minus the threshold and stealing it takes the threshold, set apart from
+each other. What is split is the 64-byte seed, which is what SLIP-39 names as
+the master secret, so a threshold restores the same wallet anywhere the standard
+is implemented. The shares go to stdout rather than to files, through write(2)
+for the reason the mnemonic does.
+
+Each share is useless alone and this is arithmetic rather than a claim: below
+the threshold the shared polynomial is undetermined and every secret of that
+length remains equally possible. What it does leak is the backup's shape, since
+a share names its own group, its thresholds and the group count in clear.
+
+Combine refuses a set that is not exactly a threshold rather than working with
+a spare, because a set that reconstructs with one share left over does not say
+what it reconstructed. It also seals a keystore rather than printing the seed,
+which is the same rule the mnemonic follows: there is no export. The cost is
+that checking a set of shares means writing a keystore somewhere, so the check
+is to point it at a scratch path and compare the fingerprint.
+
+`--backup-passphrase` is a third secret, separate from the one sealing the
+keystore and from `--seed-passphrase`, and it has the same shape of hazard: a
+wrong one combines to a different wallet rather than failing, since SLIP-39 has
+nothing to check it against by design.
 
 A BIP39 passphrase, `--seed-passphrase` on new and restore, goes into the seed
 rather than into the keystore: the words alone then restore a different wallet,

@@ -60,6 +60,30 @@ backup.
     kw restore --keystore w.ks --mnemonic -  seal an existing mnemonic
     kw address --keystore w.ks               derive m/44'/coin'/0'/0/index
 
+new asks for four of the twenty-four words back before it writes anything, and
+backup verify answers later whether a written phrase restores a wallet by
+comparing derived seeds in constant time, printing neither. with no --keystore
+it prints the master fingerprint and first address instead, so a phrase can be
+checked years later against an address already known on a machine holding no
+wallet at all.
+
+    kw backup verify  --keystore w.ks --mnemonic @phrase.txt
+    kw backup split   --keystore w.ks --groups 2of3
+    kw backup combine --keystore new.ks --shares @shares.txt
+    kw export xpub    --keystore w.ks        the account public key
+
+split prints the seed as slip-39 shares, any threshold of which restores it and
+any fewer of which are nothing: 2of3 is three shares needing two, and
+1of1,3of5 is two groups combined across --group-threshold of them. combine
+seals a keystore from a threshold rather than printing the seed, so checking a
+set of shares means pointing it at a scratch path and comparing the
+fingerprint. a 64-byte seed makes 59-word shares, which other slip-39 software
+combines and trezor firmware will not accept.
+
+--backup-passphrase is a third secret, separate from the one sealing the
+keystore and from --seed-passphrase, and a wrong one yields a different wallet
+rather than an error.
+
 spending takes three commands. scan watches the first --gap receive and change
 addresses and writes the utxo set beside the keystore, extending the range
 automatically until enough unused addresses trail the highest used one. sign
