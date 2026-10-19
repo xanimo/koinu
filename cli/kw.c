@@ -9,6 +9,7 @@
 
 #include "chainparams.h"
 #include "bip39.h"
+#include "rng.h"
 #include "bip32.h"
 #include "bip44.h"
 #include "address.h"
@@ -709,6 +710,78 @@ static int seal_and_report(const kw_chainparams *cp, const char *path,
     return seal_with_pass(cp, path, pass, seed);
 }
 
+/* The nth word of a space-separated mnemonic into (out). Returns 0 if there is
+   no such word. */
+static int nth_word(const char *mnem, int n, char *out, size_t cap)
+{
+    const char *p = mnem;
+    for (int i = 0; i < n; i++) {
+        p = strchr(p, ' ');
+        if (!p) return 0;
+        p++;
+    }
+    const char *end = strchr(p, ' ');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    if (!len || len >= cap) return 0;
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return 1;
+}
+
+/* Ask for a few of the words back before the keystore exists.
+ *
+ * A backup nobody checked is where coins go, and the cheapest moment to check
+ * one is while it is still on the screen. Four positions out of 24, three out of
+ * 12: enough that a phrase written down wrong is caught, few enough to be worth
+ * doing. Three attempts, then nothing is sealed, because a wallet whose only
+ * backup was never confirmed is worse than no wallet.
+ *
+ * Skipped when stdin is not a terminal, which is every script, and said out loud
+ * rather than silently: kw backup verify is the same check later. */
+static int confirm_words(const char *mnem, int words)
+{
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "kw: stdin is not a terminal, so the words were not confirmed. "
+                        "Run\n    kw backup verify --mnemonic @FILE\n    against what you "
+                        "wrote down, before this wallet holds anything\n");
+        return 1;
+    }
+
+    int ask = words >= 24 ? 4 : 3;
+    int pos[8];
+    for (int i = 0; i < ask; i++) {
+        for (;;) {
+            uint8_t r;
+            if (!kw_random_bytes(&r, 1)) return 0;
+            int p2 = (int)(r % (unsigned)words);
+            int dup = 0;
+            for (int k = 0; k < i; k++) if (pos[k] == p2) dup = 1;
+            if (!dup) { pos[i] = p2; break; }
+        }
+    }
+
+    fprintf(stderr, "\nconfirm the backup: %d of the %d words, by position\n", ask, words);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        int all = 1;
+        for (int i = 0; i < ask && all; i++) {
+            char want[32];
+            if (!nth_word(mnem, pos[i], want, sizeof want)) return 0;
+            char prompt[64];
+            snprintf(prompt, sizeof prompt, "word %d: ", pos[i] + 1);
+            char *got = read_secret(NULL, prompt);
+            if (!got) return 0;
+            if (strcmp(got, want) != 0) all = 0;
+            secret_free(got);
+        }
+        if (all) { fprintf(stderr, "confirmed\n"); return 1; }
+        if (attempt < 2) fprintf(stderr, "that does not match; try again\n");
+    }
+    fprintf(stderr, "kw: the words were not confirmed, so no keystore was written. "
+                    "Nothing is lost:\n    run kw new again when you have somewhere to "
+                    "write them down\n");
+    return 0;
+}
+
 /* (seedpass_arg) is the BIP39 passphrase, which is a different secret from the
    one that seals the keystore: it goes into the seed itself, so the words alone
    no longer restore the wallet. A wrong one is indistinguishable from a
@@ -763,17 +836,30 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
        write failed and kw still sealed a keystore and exited 0, so the wallet
        existed and its only backup had been written nowhere. */
     const char *lead = "mnemonic (write this down, it is your only backup):\n  ";
+    char mnem_copy[KW_BIP39_MNEMONIC_MAX];
+    kw_secure_keep(mnem_copy, sizeof mnem_copy);
+    snprintf(mnem_copy, sizeof mnem_copy, "%s", mnem);
+
     int shown = kw_write_secret(STDOUT_FILENO, lead, strlen(lead)) &&
                 kw_write_secret(STDOUT_FILENO, mnem, strlen(mnem)) &&
                 kw_write_secret(STDOUT_FILENO, "\n\n", 2);
     kw_secure_zero(mnem, sizeof mnem);
     if (!shown) {
+        kw_secure_zero(mnem_copy, sizeof mnem_copy);
         secret_free(pass);
         kw_secure_forget(seed, sizeof seed);
         fprintf(stderr, "kw: could not write the mnemonic, so no keystore was made: "
                         "it is the only backup\n");
         return 1;
     }
+
+    if (!confirm_words(mnem_copy, words)) {
+        kw_secure_zero(mnem_copy, sizeof mnem_copy);
+        secret_free(pass);
+        kw_secure_forget(seed, sizeof seed);
+        return 1;
+    }
+    kw_secure_zero(mnem_copy, sizeof mnem_copy);
 
     int rc = seal_with_pass(cp, path, pass, seed);
     kw_secure_forget(seed, sizeof seed);
