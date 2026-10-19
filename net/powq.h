@@ -35,9 +35,12 @@ typedef struct kw_powq kw_powq;
    below zero means one per core, which is the right number: the work is issue-bound
    and hyperthreads add nothing.
 
-   (strict_chain_id) is core's fStrictChainId: with it set an auxpow parent may
-   not carry this chain's id. Testnet turns it off. Returns NULL on failure. */
-kw_powq *kw_powq_start(int nthreads, size_t depth, int strict_chain_id);
+   (chain_id) is core's nAuxpowChainId, the id a proof must commit to, and
+   (strict_chain_id) is fStrictChainId: with it set an auxpow parent may not
+   carry this chain's id. Testnet turns the latter off. Both come from the chain
+   parameters, so a queue cannot be checking one chain's proofs against
+   another's id. Returns NULL on failure. */
+kw_powq *kw_powq_start(int nthreads, size_t depth, int32_t chain_id, int strict_chain_id);
 
 /* Hand over a header to check. (aux) is its AuxPoW blob, or NULL for a header that
    proves its own work; both are copied, so the caller's buffer is free immediately.

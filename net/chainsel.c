@@ -146,7 +146,7 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
             if (!tail) return -1;
             memcpy(tail, s->h + floor1, ntail * sizeof *tail);
         }
-        kw_powq *q = kw_powq_start(0, 4096, cp->strict_chain_id);
+        kw_powq *q = kw_powq_start(0, 4096, cp->auxpow_chain_id, cp->strict_chain_id);
         if (!q) { free(tail); return -1; }
         r.threads = kw_powq_threads(q);
         long n = kw_sync_headers_checked(peers[0], s, cp, q, pow_from);
@@ -265,7 +265,7 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
         }
 
         kw_headerstore_truncate(s, (size_t)at);
-        kw_powq *q = kw_powq_start(0, 4096, cp->strict_chain_id);
+        kw_powq *q = kw_powq_start(0, 4096, cp->auxpow_chain_id, cp->strict_chain_id);
         if (!q) { free(save); free(best); return -1; }
         r.threads = kw_powq_threads(q);
         long n = kw_sync_headers_checked(peers[i], s, cp, q, pow_from);

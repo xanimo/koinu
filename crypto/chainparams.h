@@ -41,6 +41,11 @@ typedef struct {
     uint32_t         bip66_height;     /* base version 3 from here, DER signatures */
     uint32_t         bip65_height;     /* base version 4 from here, CHECKLOCKTIMEVERIFY */
     int              strict_chain_id;  /* core's fStrictChainId: off on testnet */
+    /* core's nAuxpowChainId, the id a merged-mining proof must commit to. The
+       same 0x0062 on all three dogecoin networks, carried here rather than
+       read from a constant so the value has one home and a network that
+       chose another would not need the auxpow code edited. */
+    int32_t          auxpow_chain_id;
     uint32_t         maturity_switch;  /* the height nCoinbaseMaturity changes at */
     uint32_t         maturity_below;   /* confirmations a coinbase below it needs */
     uint32_t         maturity_from;    /* and from it on */

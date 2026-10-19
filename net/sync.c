@@ -122,7 +122,7 @@ int kw_sync_version_ok(const kw_chainparams *cp, uint32_t height, uint32_t versi
 
     /* legacy is version 1, or 2, which carries no chain id */
     if (version == 1 || version == 2) return 0;
-    return (int32_t)(version >> 16) == KW_AUXPOW_CHAIN_ID;
+    return (int32_t)(version >> 16) == cp->auxpow_chain_id;
 }
 
 int kw_sync_time_ok(const kw_headerstore *s, const kw_chainparams *cp,
