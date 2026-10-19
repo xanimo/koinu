@@ -1,0 +1,12 @@
+. */
+
+#ifndef KOINU_SLIP39_VECTORS_H
+#define KOINU_SLIP39_VECTORS_H
+
+#define KW_SLIP39_VECTOR_MAX_SHARES 5
+
+typedef struct {
+    const char *name;
+    const char *mnemonics[KW_SLIP39_VECTOR_MAX_SHARES];
+    size_t      nmnemonics;
+    const char *secret;   /* hex, or 

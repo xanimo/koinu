@@ -1,0 +1,19 @@
+. */
+
+#ifndef KOINU_SLIP39_VECTORS_H
+#define KOINU_SLIP39_VECTORS_H
+
+#define KW_SLIP39_VECTOR_MAX_SHARES 5
+
+typedef struct {
+    const char *name;
+    const char *mnemonics[KW_SLIP39_VECTOR_MAX_SHARES];
+    size_t      nmnemonics;
+    const char *secret;   /* hex, or 
+ when the set must be refused */
+    const char *xprv;
+} kw_slip39_vector;
+
+static const kw_slip39_vector KW_SLIP39_VECTORS[45] = {
+    { 
+duckling enlarge academic academic agency result length solution fridge kidney coal piece deal husband erode duke ajar critical decision keyboard
