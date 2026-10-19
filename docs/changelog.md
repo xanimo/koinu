@@ -2,7 +2,31 @@
 
 ## [Unreleased]
 
+## Upgrading
+
+`kw sweep` is two commands. A single run that took `--wif` and `--node` together
+held the key in the process that opened the socket, so the networked half and
+the signing half are separate invocations now:
+
+    kw sweep --watch ADDR --utxos F --node HOST   finds the coins, reads no key
+    kw sweep --wif @FILE --to ADDR --utxos F      signs them, opens no socket
+    kw send  --tx @FILE --node HOST               broadcasts
+
+Passing `--watch` and `--wif` in one run is refused. A caller doing the old
+one-shot form has to split it and pass `--utxos`.
+
 ## What's Changed
+* sweep: two commands, so the run that holds the key opens no socket
+  The threat model said the process holding a key never opens a socket, and
+  sweep enforced something weaker: it wiped the WIF before connecting and read
+  it again after closing the peer, so no secret was resident while a socket was
+  open, but the p2p parser and the signer were one process and a corruption
+  reached during the sync ran code in the process that read the key next.
+  `--watch` now finds the coins and reads no key; `--wif --utxos` signs and
+  opens no socket. The signing step also refuses any output in the file that is
+  not locked to the key it holds, which the single run could not get wrong and
+  so never checked. The threat model says what is enforced per command and what
+  separate executables would make structural.
 * slip39: split the seed into shares, and combine a threshold back
   A written mnemonic is one copy, so losing the wallet and having it stolen are
   the same number. `kw backup split` makes SLIP-39 shares of the 64-byte seed

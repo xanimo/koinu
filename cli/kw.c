@@ -70,8 +70,10 @@ static void usage(void)
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
       "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
-      "  sweep    --wif @FILE|- --to ADDR --node HOST [--port N] [--tor]\n"
-      "           [--cf|--spv] [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
+      "  sweep    --watch ADDR --utxos PATH --node HOST [--port N] [--tor]\n"
+      "           [--cf|--spv] [--headers PATH] [--filters PATH]   (finds the coins)\n"
+      "  sweep    --wif @FILE|- --to ADDR --utxos PATH   (signs them, no network)\n"
+      "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "  export xpub --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "  backup verify [--keystore PATH] [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "                                          [--seed-passphrase @FILE|-]\n"
@@ -136,6 +138,11 @@ static void usage(void)
       "  its 4-character identifier, and it has no passphrase, no grouping and no\n"
       "  check that a set reconstructs the seed it came from: compare the\n"
       "  fingerprint. combine reads the format off the shares.\n"
+      "\n"
+      "  sweep is two commands so the run that holds the key opens no socket: the\n"
+      "  first takes an address and writes the utxo set, the second reads that\n"
+      "  file and signs. kw send broadcasts what it prints. Giving --watch and\n"
+      "  --wif in one run is refused rather than done.\n"
       "\n"
       "  --seed-passphrase is the BIP39 passphrase, a different secret from the\n"
       "  one that seals the keystore: it goes into the seed, so the words alone no\n"
@@ -1806,129 +1813,285 @@ static int wif_decode(const kw_chainparams *cp, const char *wif_arg, uint8_t sk[
     return 1;
 }
 
-static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
-                     const char *node, int port, int tor, int use_cf,
-                     const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
-                     int validate_pow)
+/* kw sweep, in two runs.
+ *
+ * The threat model says the process holding a key never opens a socket. One run
+ * used to do both: decode the WIF for its address, wipe it, sync the chain,
+ * close the peer, read the WIF again. No secret was resident while a socket was
+ * open, but the p2p parser and the signer were still one process, so a memory
+ * corruption reached during the sync ran code in the process that read the key a
+ * few hundred lines later. The ordering made the window small and did not close
+ * it.
+ *
+ * Now it is the shape scan/sign/send already had: a networked run that reads no
+ * key and writes the utxo set to a file, and a signing run that opens no socket.
+ * Both halves in one run is refused rather than allowed. */
+
+/* The networked half. Takes an address or scriptPubKey rather than a key,
+   because an address is all the search ever needed. */
+static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
+                      const char *node, int port, int tor, int use_cf,
+                      const char *utxos_arg, const char *headers_path,
+                      const char *filters_path, int peers, int validate_pow)
 {
-    if (!to_arg || !node) { usage(); return 2; }
+    uint8_t spk[64];
+    size_t spklen = 0;
+    kw_watchset ws;
+    kw_utxoset us;
+    kw_peer p;
+    int rc = 1, have_us = 0, conn;
+    uint32_t tip = 0;
+
+    if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
 
-    uint8_t sk[32]; int comp = 0;
-    kw_secure_keep(sk, sizeof sk);
-    if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); return 1; }
-
-    uint8_t pub[65], h[20], spk[25];
-    size_t publen = comp ? 33 : 65;
-    int okpub = comp ? kw_ec_pubkey(sk, pub) : kw_ec_pubkey_uncompressed(sk, pub);
-    if (!okpub) { fprintf(stderr, "kw: bad key\n"); kw_secure_zero(sk, sizeof sk); return 1; }
-    kw_hash160(pub, publen, h); h160_to_spk(h, spk);
-    /* The address is all the network phase needs. The key goes now and comes back
-       after the socket is closed, so it is never resident while a peer is connected,
-       which is what the threat model claims of every path that holds one. */
-    kw_secure_zero(sk, sizeof sk);
-
-    uint8_t dspk[25]; size_t dl = 0;
-    char tob[160]; snprintf(tob, sizeof tob, "%s", to_arg);
-    char *daddr = strtok(tob, ":");
-    if (!daddr || !addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); kw_secure_zero(sk, sizeof sk); return 1; }
-
-    kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, 25);
-    kw_net_verbose = 1;
-    kw_peer p;
-    int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
-                   : kw_peer_connect(&p, cp, node, port, 15);
-    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); kw_secure_zero(sk, sizeof sk); return 1; }
-
-    int rc = 1, peer_open = 1;
-    kw_utxoset us; int have_us = 0;
-    uint32_t sweep_tip = 0;
-    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
-    {
-        kw_headerstore s; kw_headerstore_init(&s);
-        long nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, NULL, 0);
-        if (nh < 0) { fprintf(stderr, "kw: header sync failed\n"); kw_headerstore_free(&s); goto out; }
-        kw_utxoset_init(&us); have_us = 1;
-        long nb = use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
-        sweep_tip = (uint32_t)s.count;
-        kw_headerstore_free(&s);
-        if (nb < 0) { fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block"); goto out; }
+    if (addr_to_spk(cp, watch_arg, spk, &spklen)) { /* an address */ }
+    else {
+        size_t hl = strlen(watch_arg);
+        if (hl < 2 || hl > 128 || hl % 2 || !kw_hex_decode(watch_arg, hl, spk, hl / 2)) {
+            fprintf(stderr, "kw: --watch must be an address or scriptPubKey hex\n");
+            return 1;
+        }
+        spklen = hl / 2;
     }
-    if (kw_utxoset_count(&us) == 0) { fprintf(stderr, "kw: nothing to sweep at that address\n"); goto out; }
+
+    kw_watchset_init(&ws);
+    kw_watchset_add(&ws, spk, spklen);
+    kw_net_verbose = 1;
+    node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
+
+    conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
+               : kw_peer_connect(&p, cp, node, port, 15);
+    if (!conn) {
+        fprintf(stderr, "kw: connect to %s:%d failed\n", node, port);
+        kw_watchset_free(&ws);
+        return 1;
+    }
+    if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
     {
-        uint64_t rate = KW_MIN_RELAY_FEE_PER_KB;
-        if (feerate_arg && !kw_parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
-        if (!feerate_arg) rate = peer_rate(rate, p.peer_feerate);
-        int have_fixed = (fee_arg != NULL); uint64_t fixed = 0;
-        if (have_fixed && !kw_parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+        kw_headerstore s;
+        long nh, nb;
 
-        /* The scan is done and nothing else needs the peer, so the socket closes
-           before the key comes back. Reading it again is why --wif wants a file: a
-           key piped in on stdin was consumed by the first read, and holding it across
-           the network phase is the thing this ordering exists to avoid. */
-        kw_peer_close(&p);
-        peer_open = 0;
-        if (!wif_decode(cp, wif_arg, sk, &comp)) {
-            fprintf(stderr, "kw: the key could not be read again after the scan; "
-                            "pass --wif @FILE so it can be read once the peer is gone\n");
+        headers_open(&s, cp, headers_path, validate_pow);
+        nh = headers_sync(&s, cp, &p, node, port, tor, validate_pow, headers_path, 0);
+        if (nh < 0) {
+            fprintf(stderr, "kw: header sync failed\n");
+            kw_headerstore_free(&s);
             goto out;
         }
 
-        kw_tx tx; kw_tx_init(&tx);
-        uint8_t prevspk[KW_TX_MAX_IN][25];
-        int nin = 0; uint64_t total_in = 0;
-        int sweep_immature = 0;
-        for (size_t u = 0; u < us.count && nin < KW_TX_MAX_IN; u++) {
-            const kw_utxo *e = &us.u[u];
-            if (e->spklen != 25) continue;
-            /* The node refuses a premature coinbase spend, and sweeping one in
-               with the rest takes the whole transaction down with it. */
-            if (!kw_utxo_mature(cp, e, sweep_tip)) { sweep_immature++; continue; }
-            char disphex[65]; uint8_t disp[32];
-            for (int b = 0; b < 32; b++) disp[b] = e->txid[31 - b];
-            kw_hex_encode(disp, 32, disphex, sizeof disphex);
-            if (!kw_tx_add_input(&tx, disphex, e->vout)) break;
-            memcpy(prevspk[nin], e->spk, 25);
-            total_in += e->value; nin++;
+        kw_utxoset_init(&us);
+        have_us = 1;
+        nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
+           : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
+           : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        tip = (uint32_t)s.count;
+        kw_headerstore_free(&s);
+        if (nb < 0) {
+            fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
+            goto out;
         }
-        if (sweep_immature)
-            fprintf(stderr, "kw: leaving %d coinbase output(s) the chain has not released yet\n",
-                    sweep_immature);
-        if ((size_t)nin + (size_t)sweep_immature < us.count)
-            fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
+    }
 
-        /* an uncompressed pubkey adds 32 bytes to each input's scriptSig */
-        uint64_t fee = have_fixed ? fixed : est_fee(nin, 1, rate) + (comp ? 0 : (32ULL * (uint64_t)nin * rate + 999) / 1000);
-        if (!fee_ok(fee, 10 + (comp ? 148 : 180) * (size_t)nin + 34, maxfee_arg)) goto out;
-        if (total_in <= fee || total_in - fee < KOINU_DUST) { fprintf(stderr, "kw: balance too small to sweep\n"); goto out; }
-        uint64_t out_amt = total_in - fee;
-        if (!kw_tx_add_output(&tx, out_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
-        for (int i = 0; i < nin; i++) {
-            int oks = comp ? kw_tx_sign_p2pkh(&tx, (size_t)i, sk, prevspk[i], 25)
-                           : kw_tx_sign_p2pkh_uncompressed(&tx, (size_t)i, sk, prevspk[i], 25);
-            if (!oks) { fprintf(stderr, "kw: sign failed\n"); goto out; }
-        }
+    if (!kw_utxoset_save(&us, utxos_arg)) {
+        fprintf(stderr, "kw: cannot write %s\n", utxos_arg);
+        goto out;
+    }
+    /* The peer's advertised feerate and the tip, so the signing run needs no
+       peer to price the transaction or to judge coinbase maturity. */
+    kw_scanmeta_write(utxos_arg, p.peer_feerate, 1, tip);
 
-        uint8_t raw[16384];
+    {
+        uint64_t total = 0;
+        size_t u;
+
+        for (u = 0; u < us.count; u++) total += us.u[u].value;
+        printf("found %zu utxos, %llu koinu, at height %u\n", kw_utxoset_count(&us),
+               (unsigned long long)total, tip);
+        printf("utxos %s\n", utxos_arg);
+        if (us.count == 0)
+            fprintf(stderr, "kw: nothing at that address, so there is nothing to sign\n");
+        else
+            fprintf(stderr, "kw: sign it where the key is and the network is not:\n"
+                            "    kw sweep --wif @FILE --to ADDR --utxos %s\n", utxos_arg);
+    }
+    rc = 0;
+
+out:
+    if (have_us) kw_utxoset_free(&us);
+    kw_peer_close(&p);
+    kw_watchset_free(&ws);
+    return rc;
+}
+
+/* The signing half. Opens no socket: what it needs of the chain is the utxo set
+   and its metadata sidecar. */
+static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
+                      const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
+                      const char *utxos_arg)
+{
+    uint8_t sk[32], pub[65], h[20], spk[25], dspk[25];
+    uint8_t prevspk[KW_TX_MAX_IN][25];
+    size_t dl = 0, publen, u;
+    char tob[160], *daddr;
+    kw_utxoset us;
+    kw_tx tx;
+    int rc = 1, comp = 0, nin = 0, foreign = 0, immature = 0, have_us = 0, i;
+    uint64_t total_in = 0, rate = KW_MIN_RELAY_FEE_PER_KB, fee, out_amt, fixed = 0;
+    int have_fixed = (fee_arg != NULL), meta_extent = 0;
+    int64_t meta_rate = -1;
+    uint32_t tip = 0;
+
+    if (!to_arg) { usage(); return 2; }
+
+    snprintf(tob, sizeof tob, "%s", to_arg);
+    daddr = strtok(tob, ":");
+    if (!daddr || !addr_to_spk(cp, daddr, dspk, &dl)) {
+        fprintf(stderr, "kw: bad --to address\n");
+        return 1;
+    }
+
+    kw_utxoset_init(&us);
+    have_us = 1;
+    if (!kw_utxoset_load(&us, utxos_arg)) {
+        fprintf(stderr, "kw: cannot read %s; run the --watch step against a node "
+                        "first\n", utxos_arg);
+        goto out;
+    }
+    kw_scanmeta_read(utxos_arg, &meta_rate, &meta_extent, &tip);
+
+    kw_secure_keep(sk, sizeof sk);
+    if (!wif_decode(cp, wif_arg, sk, &comp)) goto out;
+
+    publen = comp ? 33 : 65;
+    if (!(comp ? kw_ec_pubkey(sk, pub) : kw_ec_pubkey_uncompressed(sk, pub))) {
+        fprintf(stderr, "kw: bad key\n");
+        goto out;
+    }
+    kw_hash160(pub, publen, h);
+    h160_to_spk(h, spk);
+
+    if (feerate_arg) {
+        if (!kw_parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
+    } else {
+        rate = peer_rate(rate, meta_rate);
+    }
+    if (have_fixed && !kw_parse_doge(fee_arg, &fixed)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+
+    kw_tx_init(&tx);
+    for (u = 0; u < us.count && nin < KW_TX_MAX_IN; u++) {
+        const kw_utxo *e = &us.u[u];
+        char disphex[65];
+        uint8_t disp[32];
+        int b;
+
+        /* The set is a file now, so it need not be this key's. Signing an input
+           the key cannot spend builds a transaction every node rejects, and the
+           one-shot sweep could not get this wrong because it derived the very
+           address it searched for. */
+        if (e->spklen != 25 || memcmp(e->spk, spk, 25) != 0) { foreign++; continue; }
+        /* The node refuses a premature coinbase spend, and sweeping one in with
+           the rest takes the whole transaction down with it. */
+        if (!kw_utxo_mature(cp, e, tip)) { immature++; continue; }
+
+        for (b = 0; b < 32; b++) disp[b] = e->txid[31 - b];
+        kw_hex_encode(disp, 32, disphex, sizeof disphex);
+        if (!kw_tx_add_input(&tx, disphex, e->vout)) break;
+        memcpy(prevspk[nin], e->spk, 25);
+        total_in += e->value;
+        nin++;
+    }
+
+    if (foreign) {
+        /* Naming the address this key derives rather than guessing why the set
+           holds another one: a WIF's compression flag changes its address, and
+           so does scanning the wrong address in the first place. */
+        char keyaddr[64];
+        uint8_t pay[21];
+
+        pay[0] = cp->p2pkh;
+        memcpy(pay + 1, h, 20);
+        if (!kw_base58check_encode(pay, 21, keyaddr, sizeof keyaddr))
+            snprintf(keyaddr, sizeof keyaddr, "(unencodable)");
+        fprintf(stderr, "kw: %d of %zu utxos in %s are not locked to this key, so they "
+                        "are left out.\n    This key spends %s, which is the address the "
+                        "--watch step wanted\n", foreign, us.count, utxos_arg, keyaddr);
+    }
+    if (immature)
+        fprintf(stderr, "kw: leaving %d coinbase output(s) the chain has not released "
+                        "yet\n", immature);
+    if (nin == 0) { fprintf(stderr, "kw: nothing to sweep\n"); goto out; }
+    if ((size_t)nin + (size_t)immature + (size_t)foreign < us.count)
+        fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
+
+    /* an uncompressed pubkey adds 32 bytes to each input's scriptSig */
+    fee = have_fixed ? fixed
+                     : est_fee(nin, 1, rate) +
+                       (comp ? 0 : (32ULL * (uint64_t)nin * rate + 999) / 1000);
+    if (!fee_ok(fee, 10 + (comp ? 148 : 180) * (size_t)nin + 34, maxfee_arg)) goto out;
+    if (total_in <= fee || total_in - fee < KOINU_DUST) {
+        fprintf(stderr, "kw: balance too small to sweep\n");
+        goto out;
+    }
+    out_amt = total_in - fee;
+    if (!kw_tx_add_output(&tx, out_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+    for (i = 0; i < nin; i++) {
+        int oks = comp ? kw_tx_sign_p2pkh(&tx, (size_t)i, sk, prevspk[i], 25)
+                       : kw_tx_sign_p2pkh_uncompressed(&tx, (size_t)i, sk, prevspk[i], 25);
+        if (!oks) { fprintf(stderr, "kw: sign failed\n"); goto out; }
+    }
+
+    {
+        uint8_t raw[16384], txid[32], d[32];
+        char hex[32770], txidhex[65];
         size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);
+
         if (!rn) { fprintf(stderr, "kw: serialize failed\n"); goto out; }
-        char hex[32770]; kw_hex_encode(raw, rn, hex, sizeof hex);
-        uint8_t txid[32], d[32]; kw_tx_txid(&tx, txid);
-        for (int i = 0; i < 32; i++) d[i] = txid[31 - i];
-        char txidhex[65]; kw_hex_encode(d, 32, txidhex, sizeof txidhex);
+        kw_hex_encode(raw, rn, hex, sizeof hex);
+        kw_tx_txid(&tx, txid);
+        for (i = 0; i < 32; i++) d[i] = txid[31 - i];
+        kw_hex_encode(d, 32, txidhex, sizeof txidhex);
         printf("swept %d utxos, %llu koinu to %s\n", nin, (unsigned long long)out_amt, daddr);
         printf("txid  %s\n", txidhex);
         printf("raw   %s\n", hex);
         printf("fee   %llu koinu, %zu bytes\n", (unsigned long long)fee, rn);
-        rc = 0;
     }
+    rc = 0;
+
 out:
     if (have_us) kw_utxoset_free(&us);
-    if (peer_open) kw_peer_close(&p);
-    kw_watchset_free(&ws);
     kw_secure_forget(sk, sizeof sk);
     return rc;
+}
+
+static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *to_arg,
+                     const char *watch_arg, const char *node, int port, int tor, int use_cf,
+                     const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
+                     const char *utxos_arg, const char *headers_arg, const char *filters_arg,
+                     int peers, int validate_pow)
+{
+    /* Both halves in one run puts the key back in the process that opens the
+       socket, which is the whole of what the split is for. */
+    if (watch_arg && wif_arg) {
+        fprintf(stderr, "kw: --watch is the networked step and --wif the signing step. "
+                        "Both in one run puts\n    the key in the process that opens the "
+                        "socket, which is what two steps avoid\n");
+        return 2;
+    }
+    if (!utxos_arg) {
+        fprintf(stderr, "kw: sweep is two steps, so the run holding the key opens no "
+                        "socket:\n"
+                        "    kw sweep --watch ADDR --utxos F --node HOST   finds the coins\n"
+                        "    kw sweep --wif @FILE --to ADDR --utxos F      signs them\n"
+                        "    kw send  --tx @FILE --node HOST               broadcasts\n");
+        return 2;
+    }
+    if (watch_arg)
+        return sweep_scan(cp, watch_arg, node, port, tor, use_cf, utxos_arg,
+                          headers_arg, filters_arg, peers, validate_pow);
+    if (!wif_arg) { usage(); return 2; }
+    return sweep_sign(cp, wif_arg, to_arg, fee_arg, feerate_arg, maxfee_arg, utxos_arg);
 }
 
 /* Print the peer's tip height and hash. Header sync only; no keystore. The store
@@ -3545,7 +3708,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, xpub_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
-    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, validate_pow);
+    else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, watch_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);

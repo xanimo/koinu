@@ -29,7 +29,38 @@ $C sendtoaddress "$ADDR" 501 >/dev/null
 $C generatetoaddress 3 "$MINE" >/dev/null
 DEST=$($C getnewaddress)
 
-SWEEP="./kw --regtest sweep --wif @$D/wif --to $DEST --node 127.0.0.1 --port 18444 --spv"
+# step one is the networked half and reads no key: an address, a node, a file
+./kw --regtest sweep --watch "$ADDR" --utxos "$D/u" --node 127.0.0.1 --port 18444 --spv \
+     >/dev/null 2>&1 || { echo "FAIL: the --watch step failed" >&2; exit 1; }
+[ -f "$D/u" ] || { echo "FAIL: the --watch step wrote no utxo set" >&2; exit 1; }
+[ -f "$D/u.meta" ] || { echo "FAIL: the --watch step wrote no metadata" >&2; exit 1; }
+
+# step two signs from that file and opens no socket, so no --node is given
+SWEEP="./kw --regtest sweep --wif @$D/wif --to $DEST --utxos $D/u"
+
+# the halves must not be combinable, which is the whole point of the split
+if ./kw --regtest sweep --watch "$ADDR" --wif "@$D/wif" --to "$DEST" --utxos "$D/u" \
+        --node 127.0.0.1 --port 18444 >/dev/null 2>&1; then
+    echo "FAIL: --watch and --wif were accepted in one run" >&2; exit 1
+fi
+# and a sign step with no file to read must say so rather than reach for a peer
+if ./kw --regtest sweep --wif "@$D/wif" --to "$DEST" --utxos "$D/nosuch" \
+        >/dev/null 2>&1; then
+    echo "FAIL: signing with no utxo set succeeded" >&2; exit 1
+fi
+
+# a set of someone else's coins is left out rather than signed into a
+# transaction the network refuses
+OTHER=$($C getnewaddress)
+./kw --regtest sweep --watch "$OTHER" --utxos "$D/other" --node 127.0.0.1 --port 18444 --spv \
+     >/dev/null 2>&1 || { echo "FAIL: the --watch step for another address failed" >&2; exit 1; }
+$C sendtoaddress "$OTHER" 7 >/dev/null
+$C generatetoaddress 3 "$MINE" >/dev/null
+./kw --regtest sweep --watch "$OTHER" --utxos "$D/other" --node 127.0.0.1 --port 18444 --spv \
+     >/dev/null 2>&1
+if ./kw --regtest sweep --wif "@$D/wif" --to "$DEST" --utxos "$D/other" >/dev/null 2>&1; then
+    echo "FAIL: swept a utxo set holding no coins of this key" >&2; exit 1
+fi
 
 # 500 DOGE on a ~191 byte transaction is six orders of magnitude over the rate.
 # Before the bound this signed, sending 1 DOGE and paying the other 500.
@@ -53,4 +84,5 @@ SWEPT=$(echo "$OUT" | awk '/^swept/{print $4}')
 [ "$((SWEPT + FEE))" -eq 50100000000 ] || \
     { echo "FAIL: swept $SWEPT + fee $FEE does not account for 501 DOGE" >&2; exit 1; }
 
-echo "sweep ok: 500 DOGE fee refused, --maxfee permits it, default fee $FEE koinu accounts for the balance"
+echo "sweep ok: two steps, the halves refused in one run, another key's set refused,"
+echo "  500 DOGE fee refused, --maxfee permits it, default fee $FEE koinu accounts for the balance"

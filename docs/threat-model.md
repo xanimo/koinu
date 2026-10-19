@@ -16,8 +16,17 @@ A compromised machine running kw can sign. The seed is on that machine and
 decrypts there, so a program running as your user while kw runs can take it. No
 wallet can be honest and claim otherwise. What koinu does is narrow the window:
 the seed is sealed at rest, mlock'd while in use, wiped after, never in argv, and
-the process that holds it never opens a socket. Key derivation is the one window
+no run of kw that holds a secret opens a socket. Key derivation is the one window
 where passphrase-derived bytes can reach swap, and the section below says why.
+
+That last claim is about a run of the program and not about what the binary
+contains. kw is one executable and libkw.a puts the p2p parsers in it, so the
+code that reads a peer's bytes is linked into the process that signs; what is
+enforced is that no single invocation does both. `new`, `restore`, `address`,
+`sign`, `backup` and `export` never open a socket, `scan` forgets the seed and
+the master key before it connects, and `sweep` is two commands for this reason
+rather than one that orders them. Separating the two into separate executables
+would make it structural instead of per-command, and that is not done.
 
 koinu cannot save you from approving a payment you meant to approve. It decodes
 what it is about to broadcast and makes you confirm it, and it refuses a few
@@ -37,10 +46,23 @@ convenience that needs the key process to talk to the network.
 
 ## Keys
 
-Signing and broadcasting are already separate programs, so the machine that
+Signing and broadcasting are already separate commands, so the machine that
 holds the seed need never have a network interface. `kw sign` writes a
 transaction to a file, something else carries the file across, and `kw send`
-decodes and broadcasts it. `kw export xpub` prints the account public key for
+decodes and broadcasts it.
+
+`kw sweep` follows the same split. It used to be one run that decoded a WIF for
+its address, wiped it, synced the chain, closed the peer and read the WIF again:
+no secret was resident while a socket was open, which is a weaker property than
+the one above, since the p2p parser and the signer were the same process and a
+memory corruption reached during the sync ran code in the process that would
+read the key afterwards. Now `--watch ADDR --utxos F --node HOST` finds the
+coins and reads no key, and `--wif @k --to ADDR --utxos F` signs from that file
+and opens no socket. Passing both in one run is refused. The split also buys a
+check the single run could not get wrong and so never made: the signing step
+refuses any output in the file that is not locked to the key it holds, since a
+file can hold another address's coins and a signature over one of those is a
+transaction every node rejects. `kw export xpub` prints the account public key for
 the watching side, and `kw scan --xpub` tracks the wallet with no keystore, no
 passphrase and no secret in the process: it derives every address under
 m/44'/coin'/account' and no private key, because change and index are unhardened

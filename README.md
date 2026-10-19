@@ -118,8 +118,17 @@ goes to the fee instead of an output.
 
     kw height   --headers h                  the tip height and hash
     kw outpoint --watch ADDR --outpoint TXID:VOUT --since HEIGHT
-    kw sweep    --wif @k --to DEST           spend an external key's balance
     kw cosign   --tx HEX --redeem HEX --wif @k
+
+sweep spends an external key's whole balance, in two commands so the run that
+holds the key opens no socket. the first takes an address and writes the utxo
+set; the second reads that file and signs, with no --node to give. giving both
+halves in one run is refused, and the signing step leaves out any output in the
+file that is not locked to the key it holds.
+
+    kw sweep --watch ADDR --utxos u --node NODE --spv
+    kw sweep --wif @k --to DEST --utxos u
+    kw send  --tx @tx.hex --node NODE
 
 outpoint answers whether a funding output is confirmed, to what depth, and
 whether it has been spent. --since bounds the search to a height range so a
