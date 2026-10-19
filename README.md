@@ -37,6 +37,10 @@ vendored from a named upstream at a named commit or written here, and frozen.
     make check      # builds libkw.a and kw, runs the tests
     make asan       # the same under address and undefined-behaviour sanitizers
 
+--recursive is not optional. libsecp256k1 is a submodule, so a plain clone has
+an empty depends/secp256k1 and the build stops on a missing secp256k1.h; run
+git submodule update --init in one you already have.
+
 the tests cover every primitive against published vectors where they exist:
 sha2, ripemd160, hmac, pbkdf2, base58, secp256k1, bip32, bip39, argon2id,
 chacha20-poly1305, bip158 filters, and the transaction signer byte-for-byte
