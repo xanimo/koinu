@@ -48,11 +48,21 @@ against libdogecoin's.
 
 ## layout
 
-a library core (libkw.a) with a thin cli on top: the core owns the crypto, the
-keys and the wallet state, and the cli stays dumb. crypto/ is the frozen
-primitives, net/ the p2p and chain sync, wallet/ the utxo tracking.
-docs/PROVENANCE.md records the secp256k1 pin and where every vendored primitive
-came from.
+a library core with a thin cli on top: the core owns the crypto, the keys and
+the wallet state, and the cli stays dumb. crypto/ is the frozen primitives,
+net/ the p2p and chain sync, wallet/ the utxo tracking. docs/PROVENANCE.md
+records the secp256k1 pin and where every vendored primitive came from.
+
+the core builds as two archives as well as one. libkoinu-sign.a is the keys,
+the derivations, the share formats, the keystore, the transaction builder, the
+psbt code and the utxo tracking, and references no function that can open a
+connection; libkoinu-chain.a is the peers, headers, auxpow and filters, and
+depends on the signing half rather than the reverse. make check links a signer
+against the signing half alone and fails on any socket symbol in it.
+
+    make split          # libkoinu-sign.a and libkoinu-chain.a
+
+libkw.a is both together, which is what kw, kwd and kwui link.
 
 ## kw
 

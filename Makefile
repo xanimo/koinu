@@ -56,6 +56,16 @@ CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c cry
            crypto/vendor/argon2/thread.c crypto/vendor/argon2/blake2/blake2b.c
 CORE_OBJ = $(CORE_SRC:.c=.o)
 
+# The boundary the threat model describes, as two archives. crypto/ and wallet/
+# reference no socket call and net/ is where every one of them lives, so a
+# consumer that only signs can link the first and never have the p2p parsers in
+# its process at all. libkw.a stays as both together, which is what kw, kwd and
+# kwui link: the split is a property of the archives, not yet of the binaries.
+SIGN_SRC  = $(filter crypto/% wallet/%,$(CORE_SRC))
+CHAIN_SRC = $(filter net/%,$(CORE_SRC))
+SIGN_LIB  = libkoinu-sign.a
+CHAIN_LIB = libkoinu-chain.a
+
 LIB   = libkw.a
 TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
         test/test_pbkdf2 test/test_slip39 test/test_codex32 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
@@ -67,6 +77,21 @@ all: $(LIB) kw kwd kwui
 
 $(LIB): $(CORE_OBJ)
 	$(AR) rcs $@ $^
+
+$(SIGN_LIB): $(SIGN_SRC:.c=.o)
+	$(AR) rcs $@ $^
+
+$(CHAIN_LIB): $(CHAIN_SRC:.c=.o)
+	$(AR) rcs $@ $^
+
+# libkoinu-chain.a depends on libkoinu-sign.a, not the other way round: link
+# them in that order.
+split: $(SIGN_LIB) $(CHAIN_LIB)
+
+# Linked against the signing half alone, so a dependency from crypto/ or
+# wallet/ onto net/ becomes a link error here.
+test/signonly: test/signonly.o $(SIGN_LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/signonly.o $(SIGN_LIB) $(SECP_LIB)
 
 kw: cli/kw.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ cli/kw.o $(LIB) $(SECP_LIB)
@@ -271,7 +296,7 @@ net_tor: test/net_tor.o $(LIB)
 # clang for libFuzzer; `make fuzz-run CORPUS=dir` replays a corpus with any
 # compiler, so CI can check the known inputs without clang.
 FUZZ_CC ?= clang
-.PHONY: fuzz fuzz-net fuzz-run fuzz-asan
+.PHONY: split fuzz fuzz-net fuzz-run fuzz-asan
 
 # The stateful harnesses: a fake peer on a socketpair writing a scripted byte
 # stream in fuzzer-chosen chunks, so a whole exchange is the input rather than one
@@ -319,7 +344,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 # fails at runtime looking like a logic bug rather than at the build.
 -include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
-check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos
+check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly
 	./test/test_cpu
 	./test/test_rng
 	./test/test_sha2
@@ -360,6 +385,7 @@ check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos
 	./test/test_gcs
 	./test/test_cf
 	./test/test_cfstore
+	./test/test_split.sh
 	./test/test_cli.sh
 	./test/test_sweep.sh
 	./test/test_scan.sh
@@ -395,7 +421,7 @@ asan:
 # ThreadSanitizer over the threaded code: the validator pool and the parallel
 # header download. It cannot be combined with address sanitizer, so it is its own
 # target, and some kernels map it somewhere it will not tolerate, hence setarch.
-.PHONY: tsan
+.PHONY: split tsan
 tsan:
 	$(MAKE) clean
 	$(MAKE) test/test_powq test/test_psync CFLAGS="-std=gnu11 -O1 -g -Wall -Wextra \
@@ -424,11 +450,11 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(CORE_OBJ) $(TESTS) test/mkutxos test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
 distclean: clean
 	-cd $(SECP_DIR) && $(MAKE) distclean
 
-.PHONY: all check asan clean distclean
+.PHONY: split all check asan clean distclean

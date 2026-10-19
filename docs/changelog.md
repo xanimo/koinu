@@ -32,6 +32,18 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* build: the signing half as its own archive, with a gate on it
+  The threat model's boundary is enforced per invocation because kw links the
+  p2p parsers whether a command uses them or not. The core now builds as
+  libkoinu-sign.a and libkoinu-chain.a as well as libkw.a: the signing half is
+  the keys, derivations, share formats, keystore, transaction builder, psbt and
+  utxo tracking, and references no function that can open a connection.
+  test/test_split.sh reads the archive's undefined symbols, requires the chain
+  half to reference some so the pattern is known to match, and links a signer
+  against the signing half alone. Putting net/peer.c in the signing half fails
+  it on connect, setsockopt and socket.
+* powq: take the auxpow chain id from the chain, not from a constant
+* kwui: pin the key the send flow signs with
 * utxo: bind every amount to the transaction that created it
   Legacy sighash does not commit to input amounts, so a signer reading a utxo
   set believed whatever value the file stated and paid the difference to the

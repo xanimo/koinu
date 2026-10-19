@@ -25,8 +25,24 @@ code that reads a peer's bytes is linked into the process that signs; what is
 enforced is that no single invocation does both. `new`, `restore`, `address`,
 `sign`, `backup` and `export` never open a socket, `scan` forgets the seed and
 the master key before it connects, and `sweep` is two commands for this reason
-rather than one that orders them. Separating the two into separate executables
-would make it structural instead of per-command, and that is not done.
+rather than one that orders them.
+
+For anyone linking the library rather than running kw, the boundary is a link
+boundary. `libkoinu-sign.a` holds the keys, the derivations, the share formats,
+the keystore, the transaction builder, the psbt code and the utxo tracking, and
+references no function that can open a connection; `libkoinu-chain.a` holds the
+peers, the headers, the auxpow and difficulty checks and the filters, and
+depends on the signing half rather than the reverse. `make check` runs
+`test/test_split.sh`, which reads the undefined symbols out of the signing
+archive and fails on any socket call, requires the chain archive to reference
+some so the pattern is known to match, and links a signer against the signing
+half alone. Putting net/peer.c into the signing half fails it on connect,
+setsockopt and socket.
+
+What that does not yet give is a kw with the p2p code absent from the signing
+process. kw links both archives, so the per-invocation rule above is still what
+holds for the program; the link boundary is what holds for a consumer of the
+library.
 
 koinu cannot save you from approving a payment you meant to approve. It decodes
 what it is about to broadcast and makes you confirm it, and it refuses a few
