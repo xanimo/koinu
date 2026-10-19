@@ -70,3 +70,19 @@
 /leak-*
 /timeout-*
 /oom-*
+
+# Wallet data never belongs in the repo. These live outside it by default, so
+# this is a backstop against a stray `git add -A` rather than a rule anything
+# relies on: keystores, the sets and journals a scan writes, exported history,
+# and any phrase a file ever held.
+*.ks
+*.utxos
+*.utxos.meta
+*.journal
+*.kwh
+*.cff
+*.cff.fh
+*.cff.idx
+*history*.csv
+seed*.txt
+xpub*.txt
