@@ -666,10 +666,20 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         for (int r = 0; r < nrows; r++)
             if (memcmp(rows[r].spk, u->spk, 25) == 0) { ri = r; break; }
         if (ri < 0) { ok = 0; break; }
+        /* Kept, not just zeroed: this holds a private key for as long as the
+           signature takes, and an unpinned page can reach swap before the wipe.
+           The derivation at the top of the browse loop has always pinned its
+           key; this one did not. */
         kw_bip32_key key;
-        if (!kw_bip44_derive(&master, cp->bip44_coin, 0, rows[ri].change, rows[ri].index, &key)) { ok = 0; break; }
+        kw_secure_keep(&key, sizeof key);
+        if (!kw_bip44_derive(&master, cp->bip44_coin, 0, rows[ri].change, rows[ri].index, &key)) {
+            kw_secure_forget(&key, sizeof key);
+            ok = 0;
+            break;
+        }
         ok = kw_tx_sign_p2pkh(&tx, (size_t)i, key.key + 1, u->spk, 25);   /* 0x00 || d */
         kw_secure_zero(&key, sizeof key);
+        kw_secure_forget(&key, sizeof key);
     }
     kw_secure_forget(&master, sizeof master);
     kw_secure_forget(seed, sizeof seed);
