@@ -31,4 +31,13 @@ uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
                          const kw_utxoset *us, const char *journal, int n,
                          int *exhausted);
 
+/* The same answer from the account public key, for a front end that has no
+   seed: change and index are unhardened, so m/44'/coin'/account' is as far up
+   as the derivation needs a secret. Same rule, same rotation, so an air-gapped
+   build and a keyed one do not put change on the same address at different
+   times. */
+uint32_t kw_change_index_pub(const kw_bip32_key *account, const kw_chainparams *cp,
+                             const kw_utxoset *us, const char *journal, int n,
+                             int *exhausted);
+
 #endif /* KOINU_CHANGE_H */

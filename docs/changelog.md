@@ -32,6 +32,25 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* psbt: an ordinary spend crosses as a psbt, built without a key and signed
+  without a socket
+  kw psbt build takes the account public key and the utxo set, chooses the
+  coins, picks the change index by the rule a keyed build uses, settles the fee
+  and prints a psbt carrying the transaction behind every input. kw psbt sign
+  --keystore holds the seed, signs and finalizes the inputs whose funding
+  output pays an address the wallet derives, and opens no socket. kw psbt
+  extract then feeds kw send.
+
+  kw_psbt_sign refused an input with no redeem script, so only a co-signature
+  could cross as a psbt and a wallet's own p2pkh spend could not. It now takes
+  the scriptCode from the previous transaction for either shape, and for p2pkh
+  requires the funding output to pay the key being used, which is what stops a
+  psbt naming another party's coin and collecting a signature over it.
+
+  kw_change_index_pub answers the change question from the account public key
+  over the same rule as the keyed path, since two front ends rotating
+  differently put change on one address at two times. test_change requires the
+  two to agree for every gap from 0 to 8.
 * build: the signing half as its own archive, with a gate on it
   The threat model's boundary is enforced per invocation because kw links the
   p2p parsers whether a command uses them or not. The core now builds as

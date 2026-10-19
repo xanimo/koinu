@@ -12,39 +12,41 @@
 
 #include <string.h>
 
-uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
-                         const kw_utxoset *us, const char *journal, int n,
-                         int *exhausted)
+/* The rule itself, over whichever derivation the caller can do: the lowest
+   index under (n) that holds nothing and appears nowhere in the journal. Both
+   entry points come through here so there is one policy rather than two that
+   agree today. */
+static uint32_t change_pick(const kw_chainparams *cp, const kw_utxoset *us,
+                            const char *journal, int n, int *exhausted,
+                            int (*derive)(void *ctx, uint32_t index, uint8_t pub[33]),
+                            void *ctx)
 {
+    kw_journal j;
+    uint32_t pick = 0;
+    int have_j, found = 0, i;
+
     if (exhausted) *exhausted = 0;
-    if (!master || !cp) return 0;
+    if (!cp) return 0;
 
     /* Initialised before anything can skip it: the journal is optional, and a
        short-circuit that left this struct untouched would hand kw_journal_free
        whatever the stack held. */
-    kw_journal j;
     kw_journal_init(&j);
-    int have_j = journal && kw_journal_load(&j, journal);
+    have_j = journal && kw_journal_load(&j, journal);
 
-    uint32_t pick = 0;
-    int found = 0;
-    for (int i = 0; i < n; i++) {
-        kw_bip32_key ck;
-        if (!kw_bip44_derive(master, cp->bip44_coin, 0, 1, (uint32_t)i, &ck)) continue;
+    for (i = 0; i < n; i++) {
         uint8_t pub[33], h[20];
         char addr[64];
-        if (!kw_bip32_pubkey(&ck, pub)) {   /* else h and addr are whatever the stack held */
-            kw_secure_zero(&ck, sizeof ck);
-            continue;
-        }
-        kw_hash160(pub, 33, h);
-        size_t al = kw_address_p2pkh(pub, cp->p2pkh, addr, sizeof addr);
-        kw_secure_zero(&ck, sizeof ck);
-
+        size_t al, u, e;
         int used = 0;
-        for (size_t u = 0; us && u < us->count && !used; u++)
+
+        if (!derive(ctx, (uint32_t)i, pub)) continue;
+        kw_hash160(pub, 33, h);
+        al = kw_address_p2pkh(pub, cp->p2pkh, addr, sizeof addr);
+
+        for (u = 0; us && u < us->count && !used; u++)
             if (us->u[u].spklen == 25 && memcmp(us->u[u].spk + 3, h, 20) == 0) used = 1;
-        for (size_t e = 0; have_j && al && e < j.count && !used; e++)
+        for (e = 0; have_j && al && e < j.count && !used; e++)
             if (strcmp(j.e[e].addr, addr) == 0) used = 1;
 
         if (!used) { pick = (uint32_t)i; found = 1; break; }
@@ -53,4 +55,53 @@ uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
     if (exhausted) *exhausted = !found;
     kw_journal_free(&j);
     return pick;
+}
+
+struct priv_ctx { const kw_bip32_key *master; const kw_chainparams *cp; };
+
+static int derive_priv(void *vc, uint32_t index, uint8_t pub[33])
+{
+    struct priv_ctx *c = (struct priv_ctx *)vc;
+    kw_bip32_key ck;
+    int ok;
+
+    if (!kw_bip44_derive(c->master, c->cp->bip44_coin, 0, 1, index, &ck)) return 0;
+    ok = kw_bip32_pubkey(&ck, pub);
+    kw_secure_zero(&ck, sizeof ck);
+    return ok;
+}
+
+uint32_t kw_change_index(const kw_bip32_key *master, const kw_chainparams *cp,
+                         const kw_utxoset *us, const char *journal, int n,
+                         int *exhausted)
+{
+    struct priv_ctx c;
+
+    if (!master || !cp) { if (exhausted) *exhausted = 0; return 0; }
+    c.master = master;
+    c.cp = cp;
+    return change_pick(cp, us, journal, n, exhausted, derive_priv, &c);
+}
+
+/* The change branch of the account key, derived once: m/.../1 is unhardened, so
+   a public parent walks it. */
+static int derive_pub(void *vc, uint32_t index, uint8_t pub[33])
+{
+    const kw_bip32_key *chain = (const kw_bip32_key *)vc;
+    kw_bip32_key ck;
+
+    if (!kw_bip32_ckd_pub(chain, index, &ck)) return 0;
+    return kw_bip32_pubkey(&ck, pub);
+}
+
+uint32_t kw_change_index_pub(const kw_bip32_key *account, const kw_chainparams *cp,
+                             const kw_utxoset *us, const char *journal, int n,
+                             int *exhausted)
+{
+    kw_bip32_key chain;
+
+    if (exhausted) *exhausted = 0;
+    if (!account || !cp) return 0;
+    if (!kw_bip32_ckd_pub(account, 1, &chain)) return 0;
+    return change_pick(cp, us, journal, n, exhausted, derive_pub, &chain);
 }

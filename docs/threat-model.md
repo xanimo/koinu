@@ -67,6 +67,21 @@ holds the seed need never have a network interface. `kw sign` writes a
 transaction to a file, something else carries the file across, and `kw send`
 decodes and broadcasts it.
 
+An ordinary spend crosses as a psbt. `kw psbt build` takes the account public
+key and the utxo set, chooses the coins, picks the change index by the same rule
+a keyed build uses, settles the fee and prints a psbt carrying the transaction
+behind every input; it holds nothing that could sign. `kw psbt sign --keystore`
+holds the seed, signs the inputs whose funding output pays an address the wallet
+derives, finalizes them and opens no socket. `kw psbt extract` then hands `kw
+send` a transaction.
+
+What the psbt carries is the point of it. The signer takes the script and the
+amount for each input out of the previous transaction in the psbt, after
+requiring those bytes to hash to the outpoint being spent, so nothing the
+building side asserts about an amount is believed. Signing a p2pkh input also
+requires the funding output to pay the very key being used, which is what stops
+a psbt naming somebody else's coin and collecting a signature over it.
+
 `kw sweep` follows the same split. It used to be one run that decoded a WIF for
 its address, wiped it, synced the chain, closed the peer and read the WIF again:
 no secret was resident while a socket was open, which is a weaker property than

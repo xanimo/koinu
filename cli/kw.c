@@ -89,6 +89,12 @@ static void usage(void)
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor] [--yes]\n"
+      "  psbt     build --utxos PATH --to ADDR:AMOUNT --xpub XPUB (watch only)\n"
+      "           or --keystore PATH [--passphrase @FILE|-]\n"
+      "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
+      "           [--change-to ADDR] [--gap N]\n"
+      "  psbt     sign --psbt HEX|@FILE|- --keystore PATH [--passphrase @FILE|-]\n"
+      "           [--gap N]      (signs this wallet's own inputs, no network)\n"
       "  psbt     create --tx HEX [--utxo HEX|@FILE|- --vin N] | tx --psbt HEX\n"
       "           sigs --psbt HEX [--vin N]\n"
       "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--utxo HEX] [--vin N]\n"
@@ -138,6 +144,14 @@ static void usage(void)
       "  its 4-character identifier, and it has no passphrase, no grouping and no\n"
       "  check that a set reconstructs the seed it came from: compare the\n"
       "  fingerprint. combine reads the format off the shares.\n"
+      "\n"
+      "  psbt build and psbt sign are the same split for an ordinary spend: the\n"
+      "  first takes the account public key and the utxo set, chooses the coins,\n"
+      "  settles the fee and prints a psbt carrying the transaction behind every\n"
+      "  input; the second holds the seed, signs the inputs it has keys for and\n"
+      "  opens no socket. psbt extract then gives kw send its transaction. The\n"
+      "  signer takes each amount from bytes that hash to the outpoint being\n"
+      "  spent, so nothing the building side says about them is believed.\n"
       "\n"
       "  sweep is two commands so the run that holds the key opens no socket: the\n"
       "  first takes an address and writes the utxo set, the second reads that\n"
@@ -3480,12 +3494,428 @@ static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *pat
     return 2;
 }
 
+/* kw psbt build: the spend a watching machine can compose but not sign.
+ *
+ * This is the crossing the threat model wants. A machine with the account
+ * public key and the utxo set scan wrote can choose the coins, pick the change
+ * index, settle the fee and say exactly what the transaction pays, and it holds
+ * nothing that could sign it. The psbt it prints carries the previous
+ * transaction for every input, so the machine that does hold the seed takes the
+ * amount and the script from bytes that hash to the outpoint rather than from
+ * anything this side asserted.
+ *
+ * --xpub is the point of it. --keystore is accepted because a single-machine
+ * wallet should not have to export an xpub to use the same path, and it buys no
+ * boundary. */
+static int psbt_build(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                      const char *xpub_arg, const char *utxos_arg, const char *to_arg,
+                      const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
+                      const char *change_arg, int gap)
+{
+    kw_bip32_key acct;
+    kw_utxoset us;
+    kw_tx tx;
+    kw_psbt p;
+    kw_scan_addr *watch = NULL;
+    uint8_t dspk[25], chspk[25];
+    uint8_t seed[64];
+    char tob[256], chaddr[64] = "";
+    char jpath[4200], defpath[4100];
+    const char *up = utxos_arg;
+    uint64_t send_amt = 0, total_in = 0, rate = KW_MIN_RELAY_FEE_PER_KB, fee = 0, change = 0;
+    size_t dl = 0, chl = 0;
+    int rc = 1, have_us = 0, have_psbt = 0, nin = 0, derive_n, fixed_fee = (fee_arg != NULL);
+    int immature = 0, exhausted = 0, with_change = 1;
+    uint32_t scan_tip = 0, chidx = 0;
+    int64_t hint = 0;
+    int extent = 0;
+    kw_utxoset_err uw = KW_UTXOSET_OK;
+    char *f[2];
+
+    if ((!path && !xpub_arg) || !to_arg) { usage(); return 2; }
+    if (path && xpub_arg) {
+        fprintf(stderr, "kw: --keystore and --xpub name two different wallets; pass one\n");
+        return 2;
+    }
+
+    if ((size_t)snprintf(tob, sizeof tob, "%s", to_arg) >= sizeof tob) {
+        fprintf(stderr, "kw: --to is too long\n");
+        return 2;
+    }
+    if (!split_fields(tob, f, 2) || !addr_to_spk(cp, f[0], dspk, &dl)) {
+        fprintf(stderr, "kw: --to wants ADDR:AMOUNT\n");
+        return 1;
+    }
+    if (!kw_parse_doge(f[1], &send_amt) || send_amt < KOINU_DUST) {
+        fprintf(stderr, "kw: --to amount is not a number, or below the dust limit\n");
+        return 1;
+    }
+
+    if (!up) {
+        if (!path) {
+            fprintf(stderr, "kw: --xpub has no keystore to sit beside, so name the set "
+                            "with --utxos\n");
+            return 2;
+        }
+        snprintf(defpath, sizeof defpath, "%s.utxos", path);
+        up = defpath;
+    }
+    snprintf(jpath, sizeof jpath, "%s.journal", up);
+
+    kw_utxoset_init(&us);
+    have_us = 1;
+    if (!kw_utxoset_load(&us, up, &uw)) {
+        if (uw == KW_UTXOSET_NOFILE)
+            fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up);
+        else
+            fprintf(stderr, "kw: %s: %s\n", up, kw_utxoset_strerror(uw));
+        goto out;
+    }
+    kw_scanmeta_read(up, &hint, &extent, &scan_tip);
+    if (!feerate_arg) rate = peer_rate(rate, hint);
+    else if (!kw_parse_doge(feerate_arg, &rate)) { fprintf(stderr, "kw: bad --feerate\n"); goto out; }
+    if (fixed_fee && !kw_parse_doge(fee_arg, &fee)) { fprintf(stderr, "kw: bad --fee\n"); goto out; }
+
+    derive_n = gap;
+    if (extent > derive_n) derive_n = extent;
+
+    /* The account public key, however it was reached. With --xpub nothing in
+       this process ever holds a secret; with --keystore the seed goes as soon as
+       the account key is out of it, since nothing below needs a private key. */
+    if (xpub_arg) {
+        if (!kw_bip32_parse(xpub_arg, cp->bip32, &acct)) {
+            fprintf(stderr, "kw: --xpub is not an extended key for this network\n");
+            goto out;
+        }
+        if (acct.is_private) {
+            fprintf(stderr, "kw: that is an extended private key; --xpub wants the public "
+                            "one that kw export xpub prints\n");
+            kw_secure_zero(&acct, sizeof acct);
+            goto out;
+        }
+    } else {
+        kw_bip32_key master, prv;
+        char apath[64];
+
+        kw_secure_keep(seed, sizeof seed);
+        if (!open_seed(path, pass_arg, seed)) { kw_secure_forget(seed, sizeof seed); goto out; }
+        kw_secure_keep(&master, sizeof master);
+        kw_secure_keep(&prv, sizeof prv);
+        snprintf(apath, sizeof apath, "m/44'/%u'/0'", cp->bip44_coin);
+        if (!kw_bip32_from_seed(seed, sizeof seed, cp->bip32, &master) ||
+            !kw_bip32_derive_path(&master, apath, &prv) ||
+            !kw_bip32_neuter(&prv, &acct)) {
+            fprintf(stderr, "kw: cannot derive the account key\n");
+            kw_secure_forget(&prv, sizeof prv);
+            kw_secure_forget(&master, sizeof master);
+            kw_secure_forget(seed, sizeof seed);
+            goto out;
+        }
+        kw_secure_zero(&prv, sizeof prv);
+        kw_secure_zero(&master, sizeof master);
+        kw_secure_forget(&prv, sizeof prv);
+        kw_secure_forget(&master, sizeof master);
+        kw_secure_zero(seed, sizeof seed);
+        kw_secure_forget(seed, sizeof seed);
+    }
+
+    watch = derive_watch_pub(cp, &acct, derive_n);
+    if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); goto out; }
+
+    /* The change address, by the same rule a keyed build uses. */
+    if (change_arg) {
+        if (!addr_to_spk(cp, change_arg, chspk, &chl)) {
+            fprintf(stderr, "kw: bad --change-to address\n");
+            goto out;
+        }
+        snprintf(chaddr, sizeof chaddr, "%s", change_arg);
+    } else {
+        chidx = kw_change_index_pub(&acct, cp, &us, jpath, derive_n, &exhausted);
+        if (exhausted)
+            fprintf(stderr, "kw: every change address within %d is used, so this one "
+                            "repeats\n", derive_n);
+        {
+            const kw_scan_addr *a = &watch[(size_t)derive_n + chidx];
+            if (!a->ok) { fprintf(stderr, "kw: no change address at index %u\n", chidx); goto out; }
+            memcpy(chspk, a->spk, 25);
+            chl = 25;
+            snprintf(chaddr, sizeof chaddr, "%s", a->addr);
+        }
+    }
+
+    kw_tx_init(&tx);
+    for (size_t u = 0; u < us.count; u++) {
+        const kw_utxo *e = &us.u[u];
+        char disphex[65];
+        uint8_t disp[32];
+        int j = -1, b;
+
+        if (total_in >= send_amt + (fixed_fee ? fee : est_fee(nin, 2, rate))) break;
+        if (e->spklen != 25 || e->spk[0] != 0x76 || e->spk[1] != 0xa9 || e->spk[2] != 0x14 ||
+            e->spk[23] != 0x88 || e->spk[24] != 0xac) continue;
+        if (!kw_utxo_mature(cp, e, scan_tip)) {
+            if (!immature++)
+                fprintf(stderr, "kw: skipping coinbase outputs that are not %u "
+                                "confirmations deep yet\n",
+                        kw_coinbase_maturity(cp, e->height));
+            continue;
+        }
+        for (int t = 0; t < 2 * derive_n; t++)
+            if (watch[t].ok && memcmp(watch[t].h160, e->spk + 3, 20) == 0) { j = t; break; }
+        if (j < 0) continue;                       /* not this wallet's within the gap */
+        if (nin >= KW_TX_MAX_IN) { fprintf(stderr, "kw: too many inputs, consolidate first\n"); goto out; }
+        for (b = 0; b < 32; b++) disp[b] = e->txid[31 - b];
+        kw_hex_encode(disp, 32, disphex, sizeof disphex);
+        if (!kw_tx_add_input(&tx, disphex, e->vout)) { fprintf(stderr, "kw: add input\n"); goto out; }
+        total_in += e->value;
+        nin++;
+    }
+    if (nin == 0) { fprintf(stderr, "kw: no inputs\n"); goto out; }
+
+    if (!fixed_fee) fee = est_fee(nin, 2, rate);
+    if (total_in < send_amt + fee) {
+        fprintf(stderr, "kw: insufficient funds: have %llu, need %llu koinu\n",
+                (unsigned long long)total_in, (unsigned long long)(send_amt + fee));
+        goto out;
+    }
+    change = total_in - send_amt - fee;
+    if (change < KOINU_DUST) {
+        /* change below the dust limit goes to the fee rather than to an output
+           the network will not relay */
+        if (!fixed_fee) {
+            uint64_t fee1 = est_fee(nin, 1, rate);
+            if (total_in >= send_amt + fee1) fee = total_in - send_amt;
+        } else {
+            fee = total_in - send_amt;
+        }
+        change = 0;
+        with_change = 0;
+    }
+    if (!fee_ok(fee, 10 + 148 * (size_t)nin + 34 * (with_change ? 2 : 1), maxfee_arg)) goto out;
+
+    if (!kw_tx_add_output(&tx, send_amt, dspk, dl)) { fprintf(stderr, "kw: add output\n"); goto out; }
+    if (with_change && !kw_tx_add_output(&tx, change, chspk, chl)) {
+        fprintf(stderr, "kw: add change output\n");
+        goto out;
+    }
+
+    if (!kw_psbt_create(&p, &tx)) { fprintf(stderr, "kw: cannot wrap the transaction\n"); goto out; }
+    have_psbt = 1;
+    /* Every input carries the transaction that funded it. Without this the
+       signer has nothing to check the amount against, which is the whole of why
+       the utxo set keeps them. */
+    for (int i = 0; i < nin; i++) {
+        const kw_utxo *e = NULL;
+        for (size_t u = 0; u < us.count; u++) {
+            if (us.u[u].vout == tx.vin[i].vout &&
+                memcmp(us.u[u].txid, tx.vin[i].prevout, 32) == 0) { e = &us.u[u]; break; }
+        }
+        if (!e || !e->prevtx) { fprintf(stderr, "kw: input %d has no transaction behind it\n", i); goto out; }
+        if (!kw_psbt_set_utxo(&p, (size_t)i, e->prevtx, e->prevtxlen)) {
+            fprintf(stderr, "kw: input %d: the set's transaction is not the one being spent\n", i);
+            goto out;
+        }
+    }
+
+    {
+        uint8_t raw[32768];
+        size_t n = kw_psbt_serialize(&p, raw, sizeof raw);
+        char *hex;
+
+        if (!n) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
+        hex = (char *)malloc(2 * n + 1);
+        if (!hex) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+        kw_hex_encode(raw, n, hex, 2 * n + 1);
+        char amt[32];
+
+        fmt_doge(send_amt, amt, sizeof amt);
+        printf("pays    %s DOGE to %s\n", amt, f[0]);
+        if (with_change) {
+            fmt_doge(change, amt, sizeof amt);
+            printf("change  %s DOGE to %s\n", amt, chaddr);
+        } else {
+            printf("change  none, it would have been dust\n");
+        }
+        fmt_doge(fee, amt, sizeof amt);
+        printf("fee     %s DOGE over %d input(s)\n", amt, nin);
+        printf("psbt    %s\n", hex);
+        free(hex);
+    }
+    fprintf(stderr, "kw: nothing here can sign it. Carry it to the wallet and run\n"
+                    "    kw psbt sign --psbt @FILE --keystore w.ks\n");
+    rc = 0;
+
+out:
+    if (have_psbt) kw_psbt_free(&p);
+    if (have_us) kw_utxoset_free(&us);
+    free(watch);
+    kw_secure_zero(&acct, sizeof acct);
+    return rc;
+}
+
+/* kw psbt sign: the other half, which opens no socket and reads no utxo set.
+ *
+ * It signs every input whose funding output pays an address this wallet derives
+ * within (gap), taking the script and the amount from the transaction the psbt
+ * carries. An input it has no key for is left alone and reported, since a psbt
+ * is a thing several parties sign. */
+static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
+                              const char *pass_arg, const char *psbt_arg, int gap)
+{
+    uint8_t raw[32768], seed[64];
+    kw_bip32_key master, *keys = NULL;
+    uint8_t (*h160)[20] = NULL;
+    kw_psbt p;
+    size_t n;
+    int rc = 1, have_psbt = 0, nkeys = 0, signed_n = 0, skipped = 0, m = 0;
+
+    if (!path || !psbt_arg) { usage(); return 2; }
+    n = read_hex_arg(psbt_arg, "--psbt", raw, sizeof raw);
+    if (!n) return 1;
+    if (!kw_psbt_parse(raw, n, &p)) { fprintf(stderr, "kw: --psbt does not parse\n"); return 1; }
+    have_psbt = 1;
+
+    kw_secure_keep(seed, sizeof seed);
+    if (!open_seed(path, pass_arg, seed)) goto out;
+    kw_secure_keep(&master, sizeof master);
+    if (!kw_bip32_from_seed(seed, sizeof seed, cp->bip32, &master)) {
+        fprintf(stderr, "kw: cannot derive the master key\n");
+        goto out;
+    }
+
+    nkeys = 2 * gap;
+    keys = (kw_bip32_key *)malloc((size_t)nkeys * sizeof *keys);
+    h160 = malloc((size_t)nkeys * 20);
+    if (!keys || !h160) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+    kw_secure_keep(keys, (size_t)nkeys * sizeof *keys);
+    for (int chg = 0; chg <= 1; chg++)
+        for (int i = 0; i < gap; i++) {
+            uint8_t pub[33];
+            if (!kw_bip44_derive(&master, cp->bip44_coin, 0, (uint32_t)chg, (uint32_t)i, &keys[m]))
+                continue;
+            if (!kw_bip32_pubkey(&keys[m], pub)) continue;
+            kw_hash160(pub, 33, h160[m]);
+            m++;
+        }
+
+    for (size_t i = 0; i < p.tx.nin; i++) {
+        kw_tx prev;
+        const uint8_t *u = NULL;
+        size_t ulen = 0, used;
+        int j = -1;
+
+        u = p.in[i].utxo;
+        ulen = p.in[i].utxolen;
+        if (!u || !ulen) {
+            fprintf(stderr, "kw: input %zu carries no transaction, so its amount cannot "
+                            "be checked and it is not signed\n", i);
+            skipped++;
+            continue;
+        }
+        used = kw_tx_parse(u, ulen, &prev);
+        if (!used || used != ulen || p.tx.vin[i].vout >= prev.nout) { skipped++; continue; }
+        {
+            const uint8_t *sc = prev.vout[p.tx.vin[i].vout].script;
+            size_t sl = prev.vout[p.tx.vin[i].vout].scriptlen;
+            if (sl != 25) { skipped++; continue; }
+            for (int t = 0; t < m; t++)
+                if (memcmp(h160[t], sc + 3, 20) == 0) { j = t; break; }
+        }
+        if (j < 0) { skipped++; continue; }
+        /* kw_psbt_sign checks the transaction hashes to the outpoint and that
+           the output pays this key before it signs. */
+        if (kw_psbt_sign(&p, i, keys[j].key + 1, KW_SIGHASH_ALL) != 1) {
+            fprintf(stderr, "kw: input %zu would not sign\n", i);
+            goto out;
+        }
+        /* A p2pkh input has one standard spelling, push the signature then the
+           key, so this side finalizes it rather than leaving a psbt that needs
+           a scriptSig handed to it. kw psbt finalize stays for the scripts that
+           do not classify, which is what it exists for. */
+        {
+            uint8_t pub[33], sig[KW_EC_SIG_DER_MAX + 1], ss[KW_TX_SCRIPTSIG_MAX];
+            size_t siglen = sizeof sig, sl = 0;
+
+            if (!kw_psbt_get_sig(&p, i, 0, pub, sig, &siglen)) {
+                fprintf(stderr, "kw: input %zu signed and then had no signature\n", i);
+                goto out;
+            }
+            if (siglen > 0xfc || 1 + siglen + 1 + 33 > sizeof ss) {
+                fprintf(stderr, "kw: input %zu signature does not fit a scriptSig\n", i);
+                goto out;
+            }
+            ss[sl++] = (uint8_t)siglen;
+            memcpy(ss + sl, sig, siglen);
+            sl += siglen;
+            ss[sl++] = 33;
+            memcpy(ss + sl, pub, 33);
+            sl += 33;
+            if (!kw_psbt_finalize(&p, i, ss, sl)) {
+                fprintf(stderr, "kw: input %zu would not finalize\n", i);
+                goto out;
+            }
+        }
+        signed_n++;
+    }
+
+    if (signed_n == 0) {
+        fprintf(stderr, "kw: no input here pays an address this wallet derives within "
+                        "%d; nothing signed\n", gap);
+        goto out;
+    }
+
+    {
+        uint8_t out_raw[32768];
+        size_t on = kw_psbt_serialize(&p, out_raw, sizeof out_raw);
+        char *hex;
+
+        if (!on) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
+        hex = (char *)malloc(2 * on + 1);
+        if (!hex) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+        kw_hex_encode(out_raw, on, hex, 2 * on + 1);
+        printf("signed  %d of %zu input(s)", signed_n, p.tx.nin);
+        if (skipped) printf(", %d left for another signer", skipped);
+        printf("\n");
+        printf("psbt    %s\n", hex);
+        free(hex);
+    }
+    rc = 0;
+
+out:
+    if (keys) {
+        kw_secure_zero(keys, (size_t)nkeys * sizeof *keys);
+        kw_secure_forget(keys, (size_t)nkeys * sizeof *keys);
+        free(keys);
+    }
+    free(h160);
+    kw_secure_zero(&master, sizeof master);
+    kw_secure_forget(&master, sizeof master);
+    kw_secure_forget(seed, sizeof seed);
+    if (have_psbt) kw_psbt_free(&p);
+    return rc;
+}
+
 static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_arg,
                     const char *tx_arg, const char *redeem_arg, const char *utxo_arg,
                     const char *wif_arg, const char *script_arg,
-                    const char *const *extra, int nextra, int vin)
+                    const char *const *extra, int nextra, int vin,
+                    const char *path, const char *pass_arg, const char *xpub_arg,
+                    const char *utxos_arg, const char *to_arg, const char *fee_arg,
+                    const char *feerate_arg, const char *maxfee_arg,
+                    const char *change_arg, int gap)
 {
     if (!sub) { usage(); return 2; }
+
+    /* The two halves of a spend that never share a process. build chooses the
+       coins and says what they pay; sign holds the seed and nothing else. */
+    if (!strcmp(sub, "build"))
+        return psbt_build(cp, path, pass_arg, xpub_arg, utxos_arg, to_arg,
+                          fee_arg, feerate_arg, maxfee_arg, change_arg, gap);
+    /* sign with a keystore is a wallet signing its own inputs; sign with a wif
+       is the co-signing path, which names one input and its redeem script. */
+    if (!strcmp(sub, "sign") && path && !wif_arg)
+        return psbt_sign_keystore(cp, path, pass_arg, psbt_arg, gap);
+
     uint8_t raw[32768];
     kw_psbt p;
 
@@ -3735,7 +4165,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);
     else if (!strcmp(cmd, "export"))  rc = cmd_export(cp, sub, path, pass_arg, account);
-    else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin);
+    else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin, path, pass_arg, xpub_arg, utxos_arg, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, gap);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);
     else { usage(); rc = 2; }
     kw_ec_stop();

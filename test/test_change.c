@@ -6,6 +6,7 @@
  * agree and neither may crash on the arguments its signature says it takes. */
 
 #include "change.h"
+#include "mem.h"
 #include "ec.h"
 #include "address.h"
 #include "bip32.h"
@@ -113,10 +114,39 @@ int main(void)
         { fprintf(stderr, "FAIL: index 1 free, want 1\n"); return 1; }
     if (cx) { fprintf(stderr, "FAIL: reported exhausted with a free index\n"); return 1; }
 
+    /* The watch-only answer has to be the keyed answer. Two front ends rotating
+       by different rules put change on one address at two different times,
+       which links the spends each was avoiding linking, and an air-gapped build
+       is a second front end by construction. */
+    {
+        kw_bip32_key acct, acct_pub;
+        char path[64];
+        int i;
+
+        snprintf(path, sizeof path, "m/44'/%u'/0'", cp->bip44_coin);
+        if (!kw_bip32_derive_path(&master, path, &acct) ||
+            !kw_bip32_neuter(&acct, &acct_pub)) {
+            fprintf(stderr, "FAIL: account key\n"); return 1;
+        }
+        for (i = 0; i <= 8; i++) {
+            int ea = -1, eb = -1;
+            uint32_t a = kw_change_index(&master, cp, &empty, jp, i, &ea);
+            uint32_t b = kw_change_index_pub(&acct_pub, cp, &empty, jp, i, &eb);
+            if (a != b || ea != eb) {
+                fprintf(stderr, "FAIL: with %d in reach the keyed path picked %u "
+                                "(exhausted %d) and the watch-only path %u (%d)\n",
+                        i, a, ea, b, eb);
+                return 1;
+            }
+        }
+        kw_secure_zero(&acct, sizeof acct);
+    }
+
     kw_utxoset_free(&empty);
     remove(jp);
     kw_ec_stop();
     printf("change ok: null journal and null utxo set, held index skipped, "
-           "journaled index skipped,\n  both together, and a reported fallback when every one in reach is used\n");
+           "journaled index skipped,\n  both together, a reported fallback when every one in reach is used,\n"
+           "  and the watch-only answer equal to the keyed one\n");
     return 0;
 }

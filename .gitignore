@@ -38,6 +38,7 @@
 /test/test_slip39
 /test/test_codex32
 /test/mkutxos
+/test/signonly
 /kw
 /kwd
 /kwui

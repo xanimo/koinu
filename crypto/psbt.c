@@ -5,6 +5,7 @@
 #include "psbt.h"
 #include "ec.h"
 #include "mem.h"
+#include "ripemd160.h"
 #include "sha2.h"
 
 #include <stdlib.h>
@@ -70,40 +71,78 @@ int kw_psbt_set_utxo(kw_psbt *p, size_t index, const uint8_t *rawtx, size_t len)
     return 1;
 }
 
-/* The redeem script a psbt supplies has to be the one the coin being spent is
-   locked to, or it is just a script the counterparty would like signed. Without
-   this, "sign vin 1 of our 2-of-2" can name one of the signer's own p2pkh coins
-   with its scriptPubKey as the redeem script, and the signature that comes back
-   spends that coin. BIP174 requires a signer to check the utxo it is given;
-   this is that check, which is also why NON_WITNESS_UTXO is now mandatory. */
-static int redeem_matches_prevout(const kw_psbt *p, size_t index)
+/* The script a signature covers, copied out of the transaction being spent.
+ *
+ * A redeem script a psbt supplies has to be the one the coin being spent is
+ * locked to, or it is just a script the counterparty would like signed. Without
+ * that, "sign vin 1 of our 2-of-2" can name one of the signer's own p2pkh coins
+ * with its scriptPubKey as the redeem script, and the signature that comes back
+ * spends that coin. BIP174 requires a signer to check the utxo it is given, and
+ * this is that check, which is why NON_WITNESS_UTXO is mandatory.
+ *
+ * For a p2pkh spend there is no redeem script and the scriptCode is the
+ * prevout's own script, which is where a wallet's own coins live: this signer
+ * refused that case, so an ordinary spend could not cross as a psbt at all and
+ * the only path that could was a co-signature. There the prevout has to pay the
+ * very key being used, which is the same guard in the shape that case needs.
+ *
+ * Either way the script and the value come out of bytes that hash to the txid
+ * being spent, which is the whole reason a psbt carries the previous
+ * transaction: legacy sighash commits to neither. */
+static int prevout_code(const kw_psbt *p, size_t index, const uint8_t pub[33],
+                        uint8_t *code, size_t cap, size_t *codelen)
 {
     const kw_psbt_in *in = &p->in[index];
-    if (!in->utxo || !in->utxolen) return 0;
-
     kw_tx prev;
-    size_t used = kw_tx_parse(in->utxo, in->utxolen, &prev);
+    size_t used, n;
+    uint8_t pid[32];
+
+    if (!in->utxo || !in->utxolen) return 0;
+    used = kw_tx_parse(in->utxo, in->utxolen, &prev);
     if (!used || used != in->utxolen) return 0;  /* trailing bytes are not the txid's */
 
-    uint8_t pid[32];
     kw_hash256(in->utxo, in->utxolen, pid);
     if (memcmp(pid, p->tx.vin[index].prevout, 32) != 0) return 0;
 
-    uint32_t n = p->tx.vin[index].vout;
+    n = p->tx.vin[index].vout;
     if (n >= prev.nout) return 0;
 
-    uint8_t want[23];
-    size_t wl = kw_script_p2sh(in->redeem, in->redeemlen, want);
-    if (!wl) return 0;
-    return prev.vout[n].scriptlen == wl && memcmp(prev.vout[n].script, want, wl) == 0;
+    if (in->redeemlen) {
+        uint8_t want[23];
+        size_t wl = kw_script_p2sh(in->redeem, in->redeemlen, want);
+
+        if (!wl || in->redeemlen > cap) return 0;
+        if (prev.vout[n].scriptlen != wl ||
+            memcmp(prev.vout[n].script, want, wl) != 0) return 0;
+        memcpy(code, in->redeem, in->redeemlen);
+        *codelen = in->redeemlen;
+        return 1;
+    }
+
+    /* No redeem script, so the prevout must be a p2pkh paying this very key.
+       Without that check a psbt could name somebody else's coin and collect a
+       signature over it, which is the shape of the bug that made --utxo
+       mandatory for cosign. */
+    {
+        const uint8_t *sc = prev.vout[n].script;
+        size_t sl = prev.vout[n].scriptlen;
+        uint8_t h[20];
+
+        if (sl != 25 || sl > cap) return 0;
+        if (sc[0] != 0x76 || sc[1] != 0xa9 || sc[2] != 0x14 ||
+            sc[23] != 0x88 || sc[24] != 0xac) return 0;
+        kw_hash160(pub, 33, h);
+        if (memcmp(sc + 3, h, 20) != 0) return 0;
+        memcpy(code, sc, sl);
+        *codelen = sl;
+        return 1;
+    }
 }
 
 int kw_psbt_sign(kw_psbt *p, size_t index, const uint8_t sk[32], uint32_t hashtype)
 {
     if (index >= p->tx.nin) return 0;
     kw_psbt_in *in = &p->in[index];
-    if (!in->redeemlen) return 0;                /* nothing to hash against */
-    if (!redeem_matches_prevout(p, index)) return 0;
     /* A psbt can declare the sighash it wants signed. Signing with a different
        one and then overwriting the field turns a request this signer cannot meet
        into one it appears to have met: the psbt comes back claiming it asked for
@@ -116,8 +155,15 @@ int kw_psbt_sign(kw_psbt *p, size_t index, const uint8_t sk[32], uint32_t hashty
     uint8_t pub[33];
     if (!kw_ec_pubkey(sk, pub)) return 0;
 
+    /* The scriptCode comes from the previous transaction, not from the request:
+       whichever of the two shapes this input is, the bytes signed over are the
+       ones that hash to the outpoint being spent. */
+    uint8_t code[KW_PSBT_SCRIPT_MAX];
+    size_t codelen = 0;
+    if (!prevout_code(p, index, pub, code, sizeof code, &codelen)) return 0;
+
     uint8_t sig[KW_EC_SIG_DER_MAX + 1]; size_t siglen = sizeof sig;
-    if (!kw_tx_signature(&p->tx, index, sk, in->redeem, in->redeemlen,
+    if (!kw_tx_signature(&p->tx, index, sk, code, codelen,
                          hashtype, sig, &siglen)) return 0;
 
     size_t slot = in->nsigs;

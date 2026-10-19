@@ -412,6 +412,78 @@ if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pas
     echo "FAIL: split accepted an unknown --format" >&2; exit 1
 fi
 
+# The psbt crossing: a machine with the account public key composes the spend
+# and cannot sign it, and a machine with the keystore signs it and opens no
+# socket. No node is needed here because mkutxos builds a set whose amounts are
+# bound the same way a scan's are.
+PX=$(./kw --regtest export xpub --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+      2>/dev/null | grep -oE '[tx]pub[1-9A-HJ-NP-Za-km-z]+')
+[ -n "$PX" ] || { echo "FAIL: no xpub to build from" >&2; exit 1; }
+SPKR=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 0 --spk)
+./test/mkutxos "$WORK/pb.utxos" "$SPKR" 50000000000 10 \
+    || { echo "FAIL: mkutxos for the psbt flow" >&2; exit 1; }
+
+BOUT=$(./kw --regtest psbt build --xpub "$PX" --utxos "$WORK/pb.utxos" \
+        --to "$ADDR1:100" --gap 5 2>/dev/null)
+PSBT=$(echo "$BOUT" | awk '/^psbt/{print $2}')
+[ -n "$PSBT" ] || { echo "FAIL: psbt build printed no psbt" >&2; exit 1; }
+echo "$BOUT" | grep -q "^pays    100.00000000 DOGE to $ADDR1" \
+    || { echo "FAIL: build did not say what it pays" >&2; echo "$BOUT" >&2; exit 1; }
+echo "$BOUT" | grep -q "^change" || { echo "FAIL: build named no change" >&2; exit 1; }
+
+# the build must not have opened the keystore at all
+if command -v strace >/dev/null 2>&1; then
+    NK=$(strace -f -e trace=openat ./kw --regtest psbt build --xpub "$PX" \
+          --utxos "$WORK/pb.utxos" --to "$ADDR1:100" --gap 5 2>&1 >/dev/null \
+          | grep -c '^openat.*\.ks' || true)
+    [ "$NK" -eq 0 ] || { echo "FAIL: psbt build opened a keystore $NK times" >&2; exit 1; }
+fi
+
+printf '%s\n' "$PSBT" > "$WORK/pb.hex"
+SOUT=$(./kw --regtest psbt sign --psbt "@$WORK/pb.hex" --keystore "$WORK/ks" \
+        --passphrase "@$WORK/pass" --gap 5 2>/dev/null)
+echo "$SOUT" | grep -q "^signed  1 of 1" \
+    || { echo "FAIL: psbt sign did not sign the input" >&2; echo "$SOUT" >&2; exit 1; }
+printf '%s\n' "$(echo "$SOUT" | awk '/^psbt/{print $2}')" > "$WORK/pbs.hex"
+
+# and the signing run must open no socket
+if command -v strace >/dev/null 2>&1; then
+    NS=$(strace -f -e trace=socket,connect ./kw --regtest psbt sign --psbt "@$WORK/pb.hex" \
+          --keystore "$WORK/ks" --passphrase "@$WORK/pass" --gap 5 2>&1 >/dev/null \
+          | grep -cE '^(socket|connect)\(' || true)
+    [ "$NS" -eq 0 ] || { echo "FAIL: psbt sign opened $NS socket(s)" >&2; exit 1; }
+fi
+
+# extract has to give a transaction, and it has to pay what build said
+PRAW=$(./kw --regtest psbt extract --psbt "@$WORK/pbs.hex" 2>/dev/null | awk '{print $NF}')
+case "$PRAW" in 01000000*00000000) ;; *) echo "FAIL: extract gave no transaction" >&2; exit 1;; esac
+PSHOWN=$(echo "$PRAW" > "$WORK/pbtx.hex"; ./kw --regtest send --tx "@$WORK/pbtx.hex" \
+          --node 127.0.0.1 --port 1 2>/dev/null | awk '/^pays/{print $NF; exit}')
+[ "$PSHOWN" = "$ADDR1" ] || { echo "FAIL: the psbt paid $PSHOWN, not $ADDR1" >&2; exit 1; }
+
+# the two halves name two different wallets if both are given
+if ./kw --regtest psbt build --xpub "$PX" --keystore "$WORK/ks" \
+        --utxos "$WORK/pb.utxos" --to "$ADDR1:100" >/dev/null 2>&1; then
+    echo "FAIL: psbt build took --xpub and --keystore together" >&2; exit 1
+fi
+# a string that is not an extended key is not an xpub
+if ./kw --regtest psbt build --xpub "notanxpub" --utxos "$WORK/pb.utxos" \
+        --to "$ADDR1:100" >/dev/null 2>&1; then
+    echo "FAIL: psbt build took a string that is not an extended key" >&2; exit 1
+fi
+# a psbt whose input this wallet has no key for must not be signed
+OTHERSPK=$(./kw --regtest address --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" --index 0 --spk)
+./test/mkutxos "$WORK/pbo.utxos" "$OTHERSPK" 50000000000 10 >/dev/null 2>&1
+OPX=$(./kw --regtest export xpub --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
+       2>/dev/null | grep -oE '[tx]pub[1-9A-HJ-NP-Za-km-z]+')
+OPSBT=$(./kw --regtest psbt build --xpub "$OPX" --utxos "$WORK/pbo.utxos" \
+         --to "$ADDR1:100" --gap 5 2>/dev/null | awk '/^psbt/{print $2}')
+printf '%s\n' "$OPSBT" > "$WORK/pbo.hex"
+if ./kw --regtest psbt sign --psbt "@$WORK/pbo.hex" --keystore "$WORK/ks" \
+        --passphrase "@$WORK/pass" --gap 5 >/dev/null 2>&1; then
+    echo "FAIL: signed a psbt holding another wallet's input" >&2; exit 1
+fi
+
 # A BIP39 passphrase goes into the seed, not the keystore, so the same words
 # with and without one are two different wallets. A stolen phrase alone then
 # does not spend, and there is nothing to check a wrong passphrase against: it
@@ -592,4 +664,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket"

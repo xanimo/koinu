@@ -118,6 +118,18 @@ selects inputs from that set and builds the transaction. send broadcasts it.
     kw sign --keystore w.ks --to DEST:100
     kw send --tx @tx.hex --node NODE          decodes it and asks first
 
+a spend can also cross as a psbt, which is the air-gapped shape: the machine
+with the account public key composes it and cannot sign, and the machine with
+the seed signs it and opens no socket.
+
+    kw psbt build --xpub XPUB --utxos u --to DEST:100
+    kw psbt sign  --psbt @psbt.hex --keystore w.ks
+    kw psbt extract --psbt @signed.hex | kw send --tx - --node NODE --yes
+
+the psbt carries the transaction behind every input, and the signer takes each
+amount and script from bytes that hash to the outpoint being spent, so nothing
+the building side says about them is believed.
+
 send asks the node for its mempool afterwards and looks for the transaction in
 what comes back, since a node acknowledges nothing it accepts: exit 0 and
 "broadcast" mean the node listed it, exit 4 and "unknown" mean no reject arrived
