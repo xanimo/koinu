@@ -15,6 +15,10 @@
 #include "chainparams.h"
 
 #define KW_SPK_MAX 64        /* p2pkh is 25, p2sh 23; a watched script fits here */
+/* The longest previous transaction an entry may carry. A transaction cannot
+   exceed the block holding it, and a wallet's own received transaction is
+   ordinarily a few hundred bytes. */
+#define KW_UTXO_PREVTX_MAX 1000000
 
 /* ── watch set ───────────────────────────────────────────────── */
 /* (seen) is set the first time an output pays this script. bip44 counts an
@@ -48,7 +52,27 @@ typedef struct {
     uint8_t  spk[KW_SPK_MAX];
     size_t   spklen;
     uint8_t  coinbase;               /* a miner's output: not spendable until mature */
+    /* The transaction that created this output, which is what makes (value)
+       worth believing. Legacy sighash does not commit to input amounts, so a
+       signer that takes them from a file signs whatever the file says, and the
+       difference between the stated value and the real one is paid to the miner.
+       Owned by the set. NULL means the entry came from memory rather than from
+       verified bytes, and such a set cannot be saved. */
+    uint8_t *prevtx;
+    size_t   prevtxlen;
 } kw_utxo;
+
+/* Require (rawtx) to be the transaction this outpoint names and to carry the
+   output claimed: hash256(rawtx) must equal (txid), output (vout) must exist,
+   and its value and script must be the ones given. Returns 1, or 0 on any
+   mismatch.
+
+   This is the whole of what makes a persisted amount unforgeable: to state a
+   value a transaction does not carry, a file would have to hold a transaction
+   hashing to the same txid. */
+int kw_utxo_bind(const uint8_t txid[32], uint32_t vout, uint64_t value,
+                 const uint8_t *spk, size_t spklen,
+                 const uint8_t *rawtx, size_t rawlen);
 
 /* 1 if (u) can be spent with the chain at (tip_height), under (cp)'s rule for the
    height it was mined at. Only a coinbase is ever unspendable here, and nothing
@@ -97,17 +121,38 @@ uint64_t kw_utxoset_balance(const kw_utxoset *us);
 uint64_t kw_utxoset_spendable(const kw_chainparams *cp, const kw_utxoset *us,
                               uint32_t tip_height);
 
-/* Insert one UTXO. Returns 1, or 0 on a too-long script, out of memory, or a value
-   that would carry the set's total past what a uint64 holds. */
+/* Insert one UTXO. (rawtx) is the transaction that created it, checked with
+   kw_utxo_bind and kept so the entry can be saved; passing NULL adds an entry
+   that is usable in memory and that kw_utxoset_save will refuse to write.
+   Returns 1, or 0 on a too-long script, out of memory, a value that would carry
+   the set's total past what a uint64 holds, or a (rawtx) that does not carry the
+   output claimed. */
 int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
                    uint64_t value, uint32_t height, const uint8_t *spk, size_t spklen,
-                   int coinbase);
+                   int coinbase, const uint8_t *rawtx, size_t rawlen);
 
-/* Persist the set as text, one "txid vout value height spk" line per UTXO (txid
-   and spk hex, internal byte order). Load appends onto (us). Return 1, or 0 on
-   an i/o or format error. */
+/* Persist the set as text: a "t <txid> <rawtx>" line per distinct creating
+   transaction, then a "u <txid> <vout> <value> <height> <spk>" line per UTXO,
+   hex throughout and txid in internal byte order. Load appends onto (us) and
+   checks every entry against its transaction, so an amount in the file is the
+   amount the chain carries or the load fails. Save refuses a set holding an
+   entry with no transaction. Return 1, or 0 on an i/o or format error. */
 int kw_utxoset_save(const kw_utxoset *us, const char *path);
-int kw_utxoset_load(kw_utxoset *us, const char *path);
+
+/* Why a load failed, so a caller can tell "nothing there, run a scan" from
+   "this file says an amount its own transaction does not carry". (why) may be
+   NULL. */
+typedef enum {
+    KW_UTXOSET_OK = 0,
+    KW_UTXOSET_NOFILE,     /* nothing at that path */
+    KW_UTXOSET_FORMAT,     /* not a utxo set, or a version with unbound amounts */
+    KW_UTXOSET_UNBOUND,    /* an entry its named transaction does not carry */
+    KW_UTXOSET_SHORT,      /* the end marker is absent or disagrees */
+    KW_UTXOSET_MEMORY
+} kw_utxoset_err;
+
+int kw_utxoset_load(kw_utxoset *us, const char *path, kw_utxoset_err *why);
+const char *kw_utxoset_strerror(kw_utxoset_err e);
 
 /* Scan metadata, written beside the utxo file as "<path>.meta": the peer's
    advertised feefilter (so a later offline sign defaults to it) and how many

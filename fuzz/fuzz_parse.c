@@ -200,7 +200,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
         if (which % 16 == 6) {
             kw_utxoset us;
-            if (kw_utxoset_init(&us)) { kw_utxoset_load(&us, path); kw_utxoset_free(&us); }
+            if (kw_utxoset_init(&us)) { kw_utxoset_load(&us, path, NULL); kw_utxoset_free(&us); }
         } else if (which % 16 == 7) {
             kw_journal j;
             if (kw_journal_init(&j)) { kw_journal_load(&j, path); kw_journal_free(&j); }

@@ -1442,7 +1442,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             const char *up = utxos_path;
             if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
             kw_utxoset_init(&us);
-            if (kw_utxoset_load(&us, up)) have_us = 1;
+            if (kw_utxoset_load(&us, up, NULL)) have_us = 1;
             else kw_utxoset_free(&us);
             if (have_us) kw_scanmeta_read(up, NULL, NULL, &input_tip);
         }
@@ -1536,7 +1536,16 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         const char *up = utxos_path;
         if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
         kw_utxoset_init(&us); have_us = 1;
-        if (!kw_utxoset_load(&us, up)) { fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up); goto out; }
+        {
+            kw_utxoset_err uw = KW_UTXOSET_OK;
+            if (!kw_utxoset_load(&us, up, &uw)) {
+                if (uw == KW_UTXOSET_NOFILE)
+                    fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up);
+                else
+                    fprintf(stderr, "kw: %s: %s\n", up, kw_utxoset_strerror(uw));
+                goto out;
+            }
+        }
 
         /* scan metadata: default the rate to the peer floor it recorded, and
            derive as far as it watched so every tracked utxo's key is available */
@@ -1954,10 +1963,21 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
 
     kw_utxoset_init(&us);
     have_us = 1;
-    if (!kw_utxoset_load(&us, utxos_arg)) {
-        fprintf(stderr, "kw: cannot read %s; run the --watch step against a node "
-                        "first\n", utxos_arg);
-        goto out;
+    {
+        kw_utxoset_err uw = KW_UTXOSET_OK;
+        if (!kw_utxoset_load(&us, utxos_arg, &uw)) {
+            if (uw == KW_UTXOSET_NOFILE)
+                fprintf(stderr, "kw: nothing at %s; run the --watch step against a "
+                                "node first\n", utxos_arg);
+            else
+                fprintf(stderr, "kw: %s: %s.\n    Nothing is signed from a set whose "
+                                "amounts cannot be checked: legacy sighash does not\n"
+                                "    commit to them, so the difference between a "
+                                "stated value and the real one is\n    paid to the "
+                                "miner. Run the --watch step again.\n",
+                        utxos_arg, kw_utxoset_strerror(uw));
+            goto out;
+        }
     }
     kw_scanmeta_read(utxos_arg, &meta_rate, &meta_extent, &tip);
 

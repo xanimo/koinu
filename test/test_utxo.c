@@ -109,7 +109,7 @@ int main(void)
         const char *tmp = "test_utxo_roundtrip.tmp";
         if (!kw_utxoset_save(&us, tmp)) { fprintf(stderr, "FAIL: save\n"); return 1; }
         kw_utxoset us2; kw_utxoset_init(&us2);
-        if (!kw_utxoset_load(&us2, tmp)) { fprintf(stderr, "FAIL: load\n"); return 1; }
+        if (!kw_utxoset_load(&us2, tmp, NULL)) { fprintf(stderr, "FAIL: load\n"); return 1; }
         if (kw_utxoset_count(&us2) != kw_utxoset_count(&us) ||
             kw_utxoset_balance(&us2) != kw_utxoset_balance(&us)) { fprintf(stderr, "FAIL: roundtrip totals\n"); return 1; }
         const kw_utxo *a = &us.u[0], *b = &us2.u[0];
@@ -147,7 +147,7 @@ int main(void)
             fwrite(all, 1, cuts[k], w);
             fclose(w);
             kw_utxoset cut; kw_utxoset_init(&cut);
-            int loaded = kw_utxoset_load(&cut, cutpath);
+            int loaded = kw_utxoset_load(&cut, cutpath, NULL);
             size_t n = kw_utxoset_count(&cut);
             kw_utxoset_free(&cut);
             remove(cutpath);
@@ -194,7 +194,7 @@ int main(void)
         const char *emptypath = "test_utxo_empty.tmp";
         FILE *e = fopen(emptypath, "wb"); if (e) fclose(e);
         kw_utxoset empty; kw_utxoset_init(&empty);
-        int eload = kw_utxoset_load(&empty, emptypath);
+        int eload = kw_utxoset_load(&empty, emptypath, NULL);
         kw_utxoset_free(&empty);
         remove(emptypath);
         if (eload) { fprintf(stderr, "FAIL: an empty file loaded as a zero balance\n"); return 1; }
@@ -214,16 +214,16 @@ int main(void)
         memset(t1, 0x11, 32);
         memset(t2, 0x22, 32);
         if (!kw_utxoset_init(&o)) { fprintf(stderr, "FAIL: init\n"); return 1; }
-        if (!kw_utxoset_add(&o, t1, 0, (uint64_t)1 << 63, 100, spk, sizeof spk, 0))
+        if (!kw_utxoset_add(&o, t1, 0, (uint64_t)1 << 63, 100, spk, sizeof spk, 0, NULL, 0))
             { fprintf(stderr, "FAIL: a lone huge value should be accepted\n"); return 1; }
-        if (kw_utxoset_add(&o, t2, 1, (uint64_t)1 << 63, 101, spk, sizeof spk, 0))
+        if (kw_utxoset_add(&o, t2, 1, (uint64_t)1 << 63, 101, spk, sizeof spk, 0, NULL, 0))
             { fprintf(stderr, "FAIL: a second one wrapped the total and was accepted\n"); return 1; }
         if (kw_utxoset_count(&o) != 1) { fprintf(stderr, "FAIL: the refused entry was stored\n"); return 1; }
         if (kw_utxoset_balance(&o) != ((uint64_t)1 << 63))
             { fprintf(stderr, "FAIL: balance %llu after the refusal\n",
                       (unsigned long long)kw_utxoset_balance(&o)); return 1; }
         /* and room freed by a spend is usable again */
-        if (!kw_utxoset_add(&o, t2, 1, 1000, 101, spk, sizeof spk, 0))
+        if (!kw_utxoset_add(&o, t2, 1, 1000, 101, spk, sizeof spk, 0, NULL, 0))
             { fprintf(stderr, "FAIL: a value that fits was refused\n"); return 1; }
         kw_utxoset_free(&o);
     }
@@ -235,9 +235,9 @@ int main(void)
        with bad-txns-premature-spend-of-coinbase, and held an early one back for
        twice as long as the chain asks. */
     {
-        kw_utxo cb100k = { {0}, 0, 100000000ULL, 100000, {0}, 25, 1 };
-        kw_utxo cb4m   = { {0}, 0, 100000000ULL, 4000000, {0}, 25, 1 };
-        kw_utxo plain  = { {0}, 0, 100000000ULL, 4000000, {0}, 25, 0 };
+        kw_utxo cb100k = { {0}, 0, 100000000ULL, 100000, {0}, 25, 1, NULL, 0 };
+        kw_utxo cb4m   = { {0}, 0, 100000000ULL, 4000000, {0}, 25, 1, NULL, 0 };
+        kw_utxo plain  = { {0}, 0, 100000000ULL, 4000000, {0}, 25, 0, NULL, 0 };
         const kw_chainparams *m = &KW_DOGE_MAINNET, *rt = &KW_DOGE_REGTEST;
 
         if (!kw_utxo_mature(m, &cb100k, 100000 + 29)) {
@@ -260,8 +260,8 @@ int main(void)
         uint8_t spk1[25]; memset(spk1, 0x11, sizeof spk1);
         uint8_t id1[32]; memset(id1, 0x22, sizeof id1);
         uint8_t id2[32]; memset(id2, 0x33, sizeof id2);
-        if (!kw_utxoset_add(&sp, id1, 0, 500, 4000000, spk1, sizeof spk1, 1) ||
-            !kw_utxoset_add(&sp, id2, 0, 700, 4000000, spk1, sizeof spk1, 0)) {
+        if (!kw_utxoset_add(&sp, id1, 0, 500, 4000000, spk1, sizeof spk1, 1, NULL, 0) ||
+            !kw_utxoset_add(&sp, id2, 0, 700, 4000000, spk1, sizeof spk1, 0, NULL, 0)) {
             fprintf(stderr, "FAIL: set add\n"); return 1; }
         if (kw_utxoset_balance(&sp) != 1200) { fprintf(stderr, "FAIL: held\n"); return 1; }
         if (kw_utxoset_spendable(m, &sp, 4000000 + 10) != 700) {
@@ -271,7 +271,121 @@ int main(void)
         kw_utxoset_free(&sp);
     }
 
+    /* The amount in a saved set is bound to the transaction that created it.
+       Legacy sighash does not commit to input amounts, so a signer reading a
+       file takes its word for what each input is worth and pays the difference
+       to the miner: editing one value column used to turn a 1000 DOGE sweep
+       into a 998 DOGE fee that the wallet reported as 0.000192. */
+    {
+        kw_utxoset b;
+        kw_watchset bw;
+        char path[256];
+        FILE *f;
+        long vpos = -1;
+        char line[8192];
+
+        snprintf(path, sizeof path, "/tmp/kwutxo-bind-%d", (int)getpid());
+
+        /* a watch set of its own: the one above was freed */
+        if (!kw_watchset_init(&bw) || !kw_watchset_add(&bw, spk, spklen)) {
+            fprintf(stderr, "FAIL: bind watchset\n"); return 1; }
+
+        if (!kw_utxoset_init(&b)) { fprintf(stderr, "FAIL: bind init\n"); return 1; }
+        if (!kw_utxoset_apply_tx(&b, &bw, cb, cblen, 1)) {
+            fprintf(stderr, "FAIL: bind apply\n"); return 1; }
+        if (!kw_utxoset_save(&b, path)) { fprintf(stderr, "FAIL: bind save\n"); return 1; }
+        kw_utxoset_free(&b);
+
+        /* It loads as written. */
+        if (!kw_utxoset_init(&b)) { fprintf(stderr, "FAIL: bind init 2\n"); return 1; }
+        if (!kw_utxoset_load(&b, path, NULL)) { fprintf(stderr, "FAIL: a bound set did not load\n"); return 1; }
+        if (kw_utxoset_balance(&b) != CB_VALUE) {
+            fprintf(stderr, "FAIL: bound set loaded %llu, wanted %llu, %zu entries\n",
+                    (unsigned long long)kw_utxoset_balance(&b),
+                    (unsigned long long)CB_VALUE, kw_utxoset_count(&b)); return 1; }
+        kw_utxoset_free(&b);
+
+        /* Halve the value column of the "u" line and it must not load. */
+        f = fopen(path, "r+");
+        if (!f) { fprintf(stderr, "FAIL: bind reopen\n"); return 1; }
+        while (fgets(line, sizeof line, f)) {
+            if (line[0] == 'u') {
+                char id[80]; unsigned vo; unsigned long long val;
+                if (sscanf(line + 2, "%79s %u %llu", id, &vo, &val) == 3)
+                    vpos = ftell(f) - (long)strlen(line) + 2 + (long)strlen(id) + 1 +
+                           (long)snprintf(NULL, 0, "%u", vo) + 1;
+                break;
+            }
+        }
+        if (vpos < 0) { fprintf(stderr, "FAIL: no u line to tamper with\n"); fclose(f); return 1; }
+        fseek(f, vpos, SEEK_SET);
+        fputc('1', f);                       /* first digit of the value */
+        fclose(f);
+
+        if (!kw_utxoset_init(&b)) { fprintf(stderr, "FAIL: bind init 3\n"); return 1; }
+        if (kw_utxoset_load(&b, path, NULL)) {
+            fprintf(stderr, "FAIL: a set naming a value its transaction does not "
+                            "carry was loaded\n");
+            return 1;
+        }
+        kw_utxoset_free(&b);
+        unlink(path);
+
+        /* And a set built in memory, whose amounts nothing can check, is not a
+           set to write. */
+        {
+            uint8_t id[32] = { 0 };
+            uint8_t spk[25] = { 0x76, 0xa9, 0x14 };
+            spk[23] = 0x88; spk[24] = 0xac;
+            if (!kw_utxoset_init(&b)) { fprintf(stderr, "FAIL: bind init 4\n"); return 1; }
+            if (!kw_utxoset_add(&b, id, 0, 1000, 1, spk, sizeof spk, 0, NULL, 0)) {
+                fprintf(stderr, "FAIL: unbound add\n"); return 1; }
+            if (kw_utxoset_save(&b, path)) {
+                fprintf(stderr, "FAIL: saved a set with an amount nothing backs\n");
+                return 1;
+            }
+            kw_utxoset_free(&b);
+        }
+
+        /* kw_utxo_bind on its own: the right claim passes, each wrong one fails. */
+        {
+            uint8_t id[32];
+            uint8_t bspk[64];
+            size_t bspklen;
+            uint64_t value;
+            uint32_t vo;
+
+            if (!kw_utxoset_init(&b)) { fprintf(stderr, "FAIL: bind init 5\n"); return 1; }
+            if (!kw_utxoset_apply_tx(&b, &bw, cb, cblen, 1)) {
+                fprintf(stderr, "FAIL: bind apply 2\n"); return 1; }
+            memcpy(id, b.u[0].txid, 32);
+            vo = b.u[0].vout;
+            value = b.u[0].value;
+            bspklen = b.u[0].spklen;
+            memcpy(bspk, b.u[0].spk, bspklen);
+            kw_utxoset_free(&b);
+
+            if (!kw_utxo_bind(id, vo, value, bspk, bspklen, cb, cblen)) {
+                fprintf(stderr, "FAIL: bind refused the truth\n"); return 1; }
+            if (kw_utxo_bind(id, vo, value - 1, bspk, bspklen, cb, cblen)) {
+                fprintf(stderr, "FAIL: bind accepted a wrong value\n"); return 1; }
+            if (kw_utxo_bind(id, vo + 7, value, bspk, bspklen, cb, cblen)) {
+                fprintf(stderr, "FAIL: bind accepted an absent vout\n"); return 1; }
+            if (kw_utxo_bind(id, vo, value, bspk, bspklen, cb, cblen - 1)) {
+                fprintf(stderr, "FAIL: bind accepted a truncated transaction\n"); return 1; }
+            bspk[5] ^= 0xff;
+            if (kw_utxo_bind(id, vo, value, bspk, bspklen, cb, cblen)) {
+                fprintf(stderr, "FAIL: bind accepted a wrong script\n"); return 1; }
+            bspk[5] ^= 0xff;
+            id[3] ^= 0xff;
+            if (kw_utxo_bind(id, vo, value, bspk, bspklen, cb, cblen)) {
+                fprintf(stderr, "FAIL: bind accepted a wrong txid\n"); return 1; }
+        }
+        kw_watchset_free(&bw);
+    }
+
     printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
-           "  and a value that would wrap the total refused\n");
+           "  and a value that would wrap the total refused,\n"
+           "  a saved amount bound to its transaction and a tampered one refused\n");
     return 0;
 }

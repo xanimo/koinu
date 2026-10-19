@@ -793,7 +793,7 @@ int main(int argc, char **argv)
         FILE *probe = fopen(utxos, "r");
         if (probe) {
             fclose(probe);
-            if (!kw_utxoset_load(&us, utxos)) utxos_partial = 1;
+            if (!kw_utxoset_load(&us, utxos, NULL)) utxos_partial = 1;
         }
     }
 
@@ -838,7 +838,7 @@ int main(int argc, char **argv)
                once the new one is read: a truncated file leaves what was there. */
             kw_utxoset fresh;
             if (!kw_utxoset_init(&fresh)) break;
-            if (kw_utxoset_load(&fresh, utxos)) {
+            if (kw_utxoset_load(&fresh, utxos, NULL)) {
                 kw_utxoset_free(&us);
                 us = fresh;
                 total = tally_rows(&us, rows, n);

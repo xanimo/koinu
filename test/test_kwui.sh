@@ -24,9 +24,6 @@ ADDR=$(echo "$OUT" | awk '/first address/{print $3}')
 SPK=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --spk)
 [ -n "$SPK" ] || { echo "FAIL: no scriptPubKey from kw address --spk" >&2; exit 1; }
 
-TXID1=1111111111111111111111111111111111111111111111111111111111111111
-TXID2=2222222222222222222222222222222222222222222222222222222222222222
-printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK" > "$WORK/ks.utxos"
 
 # A coin past kwui's --gap but inside what kw scan watched. kwui used to derive
 # its own gap only, so this one was missing from the balance while send_flow
@@ -35,8 +32,10 @@ printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK" > "$WORK/ks.utxos"
 # 160 the meta records: the rows are allocated from the gap now, so what the scan
 # watched is what kwui can show.
 SPK25=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 150 --spk)
-TXID3=3333333333333333333333333333333333333333333333333333333333333333
-printf '%s 0 900000000000 101 %s\n# end 2\n' "$TXID3" "$SPK25" >> "$WORK/ks.utxos"
+# built rather than written: since v2 the amount has to be the one its
+# transaction carries
+./test/mkutxos "$WORK/ks.utxos" "$SPK" 500000000 100 "$SPK25" 900000000000 101 \
+    || { echo "FAIL: mkutxos" >&2; exit 1; }
 printf 'feerate 0\ngap 160\n' > "$WORK/ks.utxos.meta"
 
 # wait until (file) contains (pattern), or fail after ~10s
@@ -81,11 +80,9 @@ printf 'q' >&3
 
 # a receive appended while it runs must appear on a refresh
 # rewritten whole, the way kw scan writes it, so the count marker stays right
-{ printf '%s 0 500000000 100 %s\n' "$TXID1" "$SPK"
-  printf '%s 0 900000000000 101 %s\n' "$TXID3" "$SPK25"
-  printf '%s 1 250000000 101 %s\n' "$TXID2" "$SPK"
-  printf '# end 3\n'
-} > "$WORK/ks.utxos"
+./test/mkutxos "$WORK/ks.utxos" "$SPK" 500000000 100 "$SPK25" 900000000000 101 \
+    "$SPK" 250000000 101 \
+    || { echo "FAIL: mkutxos refresh" >&2; exit 1; }
 printf 'r' >&3
 wait_for "$WORK/out" '9007.50000000 DOGE across 3'
 

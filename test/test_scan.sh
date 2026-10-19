@@ -61,7 +61,7 @@ CHECKED=$(echo "$OUT" | awk '/^checked the work/{print $5}')
 echo "$OUT" | grep -q "one peer, so nothing compared" || {
     echo "FAIL: a single-peer sync did not say it compared nothing" >&2; echo "$OUT" >&2; exit 1; }
 
-NU=$(awk '!/^#/{n++} END{print n+0}' "$U")   # the file carries a header line
+NU=$(awk "/^u /{n++} END{print n+0}" "$U")   # t lines carry the transactions
 [ "$NU" = "2" ] || { echo "FAIL: utxo set has $NU entries, want 2" >&2; cat "$U" >&2; exit 1; }
 
 # the journal is the point of this test: two receives, both named and confirmed
@@ -144,8 +144,9 @@ case "$XPUB" in tpub*) ;; *) echo "FAIL: regtest xpub is $XPUB" >&2; exit 1;; es
 ./kw --regtest scan --xpub "$XPUB" --node "127.0.0.1:$P2P" --spv --gap 3 \
      --utxos "$D/watch" >/dev/null 2>&1 \
     || { echo "FAIL: the watch-only scan failed" >&2; exit 1; }
-WB=$(awk '!/^#/{s+=$3} END{print s+0}' "$D/watch")
-KB=$(awk '!/^#/{s+=$3} END{print s+0}' "$U")
+# value is field 4 of a v2 "u" line
+WB=$(awk '/^u /{s+=$4} END{print s+0}' "$D/watch")
+KB=$(awk '/^u /{s+=$4} END{print s+0}' "$U")
 [ "$WB" = "$KB" ] || {
     echo "FAIL: watch-only saw $WB, the keyed scan saw $KB" >&2; exit 1; }
 
@@ -170,9 +171,10 @@ fi
 # between runs, so picking the first entry picks A1's about as often as A0's
 SPK0=$(./kw --regtest address $K --index 0 --spk)
 [ -n "$SPK0" ] || { echo "FAIL: no scriptPubKey for $A0" >&2; exit 1; }
-OP=$(awk -v spk="$SPK0" '!/^#/ && $5 == spk {s=$1; o="";
+# a v2 line is "u txid vout value height spk", so the script is field 6
+OP=$(awk -v spk="$SPK0" '/^u / && $6 == spk {s=$2; o="";
           for (i = length(s) - 1; i > 0; i -= 2) o = o substr(s, i, 2);
-          print o ":" $2; exit}' "$U")
+          print o ":" $3; exit}' "$U")
 case "$OP" in
     ?*:?*) ;;
     *) echo "FAIL: no outpoint in the utxo set" >&2; cat "$U" >&2; exit 1;;

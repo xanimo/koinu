@@ -77,8 +77,10 @@ wallet at all.
     kw export xpub    --keystore w.ks        the account public key
 
 split prints the seed as slip-39 shares, any threshold of which restores it and
-any fewer of which are nothing: 2of3 is three shares needing two, and
-1of1,3of5 is two groups combined across --group-threshold of them. combine
+any fewer of which are nothing: 2of3 is three shares needing two. groups nest a
+second threshold over the first, so 1of1,2of3 with --group-threshold 1 is "your
+own share, or two of the family's" and the same layout with 2 is "your share and
+two of the family's". combine
 seals a keystore from a threshold rather than printing the seed, so checking a
 set of shares means pointing it at a scratch path and comparing the
 fingerprint. a 64-byte seed makes 59-word shares, which other slip-39 software
@@ -115,6 +117,11 @@ rejected looks like, and exit 1 means a reject with the node's reason.
 the fee defaults to the peer's advertised relay floor, captured during scan;
 --feerate sets a rate and --fee an exact amount. change below the dust limit
 goes to the fee instead of an output.
+
+the utxo set carries the transaction behind every output it lists, and loading
+it checks each amount against those bytes. legacy sighash does not commit to
+input amounts, so without that a signer pays the difference between what a file
+claims an input is worth and what it is worth to the miner.
 
     kw height   --headers h                  the tip height and hash
     kw outpoint --watch ADDR --outpoint TXID:VOUT --since HEIGHT

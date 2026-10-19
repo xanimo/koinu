@@ -300,6 +300,27 @@ temp file and a rename, since all three name amounts, heights and addresses. The
 utxo set carries its own count, so a file cut short refuses to load rather than
 loading as a smaller balance.
 
+The utxo set also carries the transaction behind every output it lists, and
+loading it refuses any entry whose stated value and script are not the ones that
+transaction carries. Legacy sighash commits to the inputs being spent and not to
+what they are worth, so a signer reading a file takes its word for each amount
+and pays the difference between the stated value and the real one to the miner.
+Editing one value column in a swept set turned a 1000 DOGE spend into a 998 DOGE
+fee that the wallet reported as 0.000192, and `kw send` could not catch it
+either, since the fee is not in the transaction to be read back. The fee bound
+cannot help: it bounds the fee the signer believes it is paying.
+
+Binding the amount to the txid does not make a hostile file harmless, it makes
+it useless. Whoever writes the file can still name an outpoint that does not
+exist, or a real one holding less, and the worst either does is produce a
+transaction a node refuses or a smaller spend than intended. What they cannot do
+is move value to the miner. This matters most where the file is the whole of what
+crosses a trust boundary, which is `kw sweep`'s two steps and `kw scan` feeding
+`kw sign`.
+
+A set built in memory rather than read off the chain cannot be saved, because
+nothing could check its amounts afterwards.
+
 A coinbase output is tracked as one and is not spendable until
 KOINU_COINBASE_MATURITY confirmations: outpoint says "unspent but immature" and
 exits 5 rather than 0, and signing leaves it out of selection. An orphaned block

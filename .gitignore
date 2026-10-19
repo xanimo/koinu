@@ -37,11 +37,13 @@
 /test/test_cfstore
 /test/test_slip39
 /test/test_codex32
+/test/mkutxos
 /kw
 /kwd
 /kwui
 /net_multisig
 /fuzz_parse
+/fuzz_shares
 /fuzz_replay
 /fuzz_socks5
 /fuzz_kwd

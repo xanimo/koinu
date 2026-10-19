@@ -61,10 +61,10 @@ grep -q "$ADDR1" "$J" || { echo "FAIL: the journal does not name the destination
 # use index 1 rather than paying the same address twice
 SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --change --index 0 --spk)
 [ -n "$SPK0" ] || { echo "FAIL: no change scriptPubKey" >&2; exit 1; }
-{ echo "# koinu utxo set v1"
-  echo "0000000000000000000000000000000000000000000000000000000000000002 0 1000000000 1 $SPK0"
-  echo "# end 1"
-} > "$WORK/ks.utxos"
+# built rather than written: since v2 an amount in the set has to be the one its
+# transaction carries, so there is no hand-writing a value any more
+./test/mkutxos "$WORK/ks.utxos" "$SPK0" 1000000000 1 \
+    || { echo "FAIL: mkutxos" >&2; exit 1; }
 CH=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
      --input "$IN" --to "$ADDR1:8.5" --fee 0.001 | awk '/^change/{print $2}')
 [ "$CH" = "m/44'/1'/0'/1/1" ] || { echo "FAIL: change went to $CH, want index 1" >&2; exit 1; }
@@ -85,10 +85,8 @@ rm -f "$WORK/ks.utxos.journal"
 
 # a change index whose coins have since been spent must stay used: the utxo set
 # has forgotten it, so this is the journal's answer, not the utxo set's
-{ echo "# koinu utxo set v1"
-  echo "0000000000000000000000000000000000000000000000000000000000000002 0 1000000000 1 $SPK0"
-  echo "# end 1"
-} > "$WORK/ks.utxos"
+./test/mkutxos "$WORK/ks.utxos" "$SPK0" 1000000000 1 \
+    || { echo "FAIL: mkutxos" >&2; exit 1; }
 CADDR1=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --change --index 1)
 [ -n "$CADDR1" ] || { echo "FAIL: no change address at index 1" >&2; exit 1; }
 echo "1700000000 in 0000000000000000000000000000000000000000000000000000000000000003 1 5 100000000 0 $CADDR1" \
@@ -449,9 +447,15 @@ fi
 # transaction that pays the difference to the miner. Where the tracked set knows
 # the outpoint, the two have to agree.
 SPK0=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" --index 0 --spk)
-# the set stores a txid in internal order, so this one reads the same either way
-INTXID=1111111111111111111111111111111111111111111111111111111111111111
-printf '# koinu utxo set v1\n%s 0 100000000000 10 %s\n# end 1\n' "$INTXID" "$SPK0" > "$WORK/u4"
+./test/mkutxos "$WORK/u4" "$SPK0" 100000000000 10 \
+    || { echo "FAIL: mkutxos u4" >&2; exit 1; }
+# the set stores a txid in internal order and --input takes display order, so
+# this reverses the bytes; the old hand-written all-ones txid read the same
+# either way and hid the difference. awk rather than tac, which macos does not
+# have, the same way test_scan.sh does it.
+STORED=$(sed -n 's/^u \([0-9a-f]*\) .*/\1/p' "$WORK/u4")
+[ -n "$STORED" ] || { echo "FAIL: no txid in the built set" >&2; exit 1; }
+INTXID=$(awk -v s="$STORED" 'BEGIN{o=""; for (i = length(s) - 1; i > 0; i -= 2) o = o substr(s, i, 2); print o}')
 if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" --utxos "$WORK/u4" \
        --input "$INTXID:0:10:0" --to "$ADDR1:5" >/dev/null 2>&1; then
     echo "FAIL: signed an --input amount the tracked set disagrees with" >&2; exit 1
