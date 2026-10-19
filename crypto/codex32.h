@@ -58,6 +58,8 @@ typedef struct {
     size_t  nsym;
 } kw_codex32;
 
+/* Decoding zeroes (out) whole before filling it, so two decoded shares compare
+   equal as bytes when they are the same share. */
 kw_codex32_err kw_codex32_decode(const char *s, kw_codex32 *out);
 kw_codex32_err kw_codex32_encode(const kw_codex32 *c, char *out, size_t outcap);
 

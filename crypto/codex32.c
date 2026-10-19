@@ -258,9 +258,12 @@ kw_codex32_err kw_codex32_decode(const char *s, kw_codex32 *out)
 
     if (!verify_checksum(data, ndata)) return KW_CODEX32_CHECKSUM;
 
+    /* The whole struct, padding included, so two decoded shares can be compared
+       as bytes: the alignment hole before nsym is otherwise never written and a
+       caller memcmp'ing them reads whatever was on the stack. */
+    memset(out, 0, sizeof *out);
     out->nsym = ndata - (is_long(ndata) ? CHECK_LONG : CHECK_SHORT);
     memcpy(out->sym, data, out->nsym);
-    memset(out->sym + out->nsym, 0, sizeof out->sym - out->nsym);
     kw_secure_zero(data, sizeof data);
     return KW_CODEX32_OK;
 }
