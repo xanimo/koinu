@@ -4,6 +4,22 @@
 
 ## Upgrading
 
+Rescan. The utxo set is v2 and carries the transaction behind every output, so a
+v1 file does not load and `kw sign`, `kw sweep` and `kwui` report the version
+rather than a balance until `kw scan` or `kw sweep --watch` writes a new one.
+Nothing is lost by it: the set is derived from the chain.
+
+What a caller has to change:
+
+- `kw_utxoset_add` takes the raw transaction that created the output, or NULL
+  for an entry that only has to work in memory. `kw_utxoset_save` refuses a set
+  holding one of those.
+- `kw_utxoset_load` takes a `kw_utxoset_err *`, which may be NULL, so a caller
+  can tell "no file, run a scan" from "this file names an amount its own
+  transaction does not carry".
+- A test or script that wrote a utxo set by hand cannot any more. `test/mkutxos`
+  builds one through the same path a scan uses.
+
 `kw sweep` is two commands. A single run that took `--wif` and `--node` together
 held the key in the process that opened the socket, so the networked half and
 the signing half are separate invocations now:
@@ -16,6 +32,38 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* utxo: bind every amount to the transaction that created it
+  Legacy sighash does not commit to input amounts, so a signer reading a utxo
+  set believed whatever value the file stated and paid the difference to the
+  miner: one edited value column turned a 1000 DOGE sweep into a 998 DOGE fee
+  reported as 0.000192, mined on regtest. The set now carries the creating
+  transaction and loading checks each entry against it, so a value a file
+  cannot prove is a load that fails rather than a fee that is paid.
+* slip39: a group threshold of one over several groups is a real layout
+  Split refused it as a threshold that hands out copies, which is the spec's
+  rule for member shares and not for groups: each group holds the same group
+  share and splits it its own way, so "my share, or two of the family's" is
+  exactly what it says. It was 43 of 150 random layouts in a differential run
+  against the reference library, and the layout the help text uses as its
+  example.
+* slip39, codex32: branchless field arithmetic
+  Both interpolations multiplied secret share bytes through table lookups and
+  a branch on whether the byte was zero, so the cache line touched and the work
+  done followed the secret. Neither uses a table now, and the operation
+  sequence is fixed. Checked against both specs' own formulations over every
+  pair in both fields.
+* tx: size the scriptCode to a redeem script, not to a scriptPubKey
+  kw_tx_sighash hashed through a 256-byte buffer while a psbt holds the 520 a
+  pushed element may be, so a 1-of-8 multisig redeem script at 275 bytes was
+  stored and then refused at signing with no reason given.
+* codex32: zero the decoded share whole, padding included
+  Two decoded shares compared as bytes read the alignment hole before nsym,
+  which is whatever the stack held. Found by the new fuzz harness, whose first
+  crash would not reproduce.
+* fuzz: a harness for both share formats
+  Neither decoder had any coverage. decode, encode and combine for SLIP-39 and
+  codex32 off one corpus, seeded from the official vectors, since from noise
+  the checksums refuse everything and combine is never reached. 7.4M runs clean.
 * sweep: two commands, so the run that holds the key opens no socket
   The threat model said the process holding a key never opens a socket, and
   sweep enforced something weaker: it wiped the WIF before connecting and read
