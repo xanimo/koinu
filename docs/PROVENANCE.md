@@ -130,3 +130,19 @@ auditable from this tree.
 each further primitive that lands here will be listed the same way: its upstream,
 the commit or version it came from, its license, and the vectors it is checked
 against, before anything is built on it.
+
+## Symbol names
+
+The vendored sources are unmodified, so the hashes above describe what is in the
+tree. Their exported names are not upstream's: argon2, its blake2b and
+poly1305-donna export `initialize`, `finalize`, `allocate_memory`,
+`free_memory`, `copy_block`, `encode_string`, `decode_string` and 48 more that a
+host program is entitled to use for its own, and a program defining any of them
+could not link libkoinu-sign.a at all. `crypto/vendor/kw_symbols.h` renames all
+55 to `kw_vendor_*` and is force-included into every translation unit by
+CPPFLAGS, so a definition, a declaration and a call move together. Renaming
+rather than patching keeps crypto/vendor as it came.
+
+`test/test_split.sh` fails if the signing archive exports anything outside the
+`kw_` and `KW_` prefixes, and links `test/hostnames.c`, which keeps five of
+those names for itself.

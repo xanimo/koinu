@@ -39,6 +39,7 @@
 /test/test_codex32
 /test/mkutxos
 /test/signonly
+/test/hostnames
 /kw
 /kwd
 /kwui

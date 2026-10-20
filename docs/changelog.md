@@ -32,6 +32,17 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* build: prefix the vendored primitives' symbol names
+  argon2, its blake2b and poly1305-donna export 55 names without a namespace,
+  among them initialize, finalize, allocate_memory, free_memory, copy_block,
+  encode_string and decode_string. A program defining any of those could not
+  link libkoinu-sign.a: the linker reported four multiple definitions and
+  stopped, and one that vendored argon2 itself got whichever copy came first
+  with no diagnostic at all. crypto/vendor/kw_symbols.h renames them to
+  kw_vendor_* and is force-included by CPPFLAGS, so the vendored sources stay
+  as they came and PROVENANCE's hashes still describe them. test_split.sh fails
+  on any exported name outside kw_ and KW_, and links a program that keeps five
+  of them for itself.
 * psbt: an ordinary spend crosses as a psbt, built without a key and signed
   without a socket
   kw psbt build takes the account public key and the utxo set, chooses the

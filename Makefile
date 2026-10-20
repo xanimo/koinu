@@ -42,7 +42,8 @@ SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a
 override CFLAGS += -pthread $(HARDEN)
 override LDFLAGS += $(HARDLDFLAGS)
 CPPFLAGS += -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include -Icrypto/vendor/poly1305-donna \
-            -Icrypto/vendor/argon2 -DARGON2_NO_THREADS
+            -Icrypto/vendor/argon2 -DARGON2_NO_THREADS \
+            -include crypto/vendor/kw_symbols.h
 
 CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/sha2_hw.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
            crypto/pbkdf2.c crypto/slip39.c crypto/codex32.c crypto/scrypt.c crypto/scrypt_avx2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
@@ -92,6 +93,13 @@ split: $(SIGN_LIB) $(CHAIN_LIB)
 # wallet/ onto net/ becomes a link error here.
 test/signonly: test/signonly.o $(SIGN_LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/signonly.o $(SIGN_LIB) $(SECP_LIB)
+
+# Built without the prefix header, because the point of it is to use the names
+# a host would: with -include in CPPFLAGS its own definitions would be renamed
+# along with the library's and the collision would be hidden.
+test/hostnames: test/hostnames.c $(SIGN_LIB) $(SECP_LIB)
+	$(CC) $(CFLAGS) -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include \
+	    $(LDFLAGS) -o $@ test/hostnames.c $(SIGN_LIB) $(SECP_LIB)
 
 kw: cli/kw.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ cli/kw.o $(LIB) $(SECP_LIB)
@@ -344,7 +352,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 # fails at runtime looking like a logic bug rather than at the build.
 -include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
-check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly
+check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly test/hostnames
 	./test/test_cpu
 	./test/test_rng
 	./test/test_sha2
@@ -450,7 +458,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

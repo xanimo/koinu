@@ -62,6 +62,12 @@ against the signing half alone and fails on any socket symbol in it.
 
     make split          # libkoinu-sign.a and libkoinu-chain.a
 
+neither archive exports a name outside the kw_ and KW_ prefixes. the vendored
+argon2 and poly1305-donna arrive with initialize, finalize, allocate_memory and
+52 others, which a host program is entitled to use for its own, so
+crypto/vendor/kw_symbols.h renames them at compile time rather than patching
+the vendored sources.
+
 libkw.a is both together, which is what kw, kwd and kwui link.
 
 ## kw
