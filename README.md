@@ -61,6 +61,23 @@ depends on the signing half rather than the reverse. make check links a signer
 against the signing half alone and fails on any socket symbol in it.
 
     make split          # libkoinu-sign.a and libkoinu-chain.a
+    make install PREFIX=/usr/local
+
+install places the two archives, the headers under include/koinu, pkg-config
+files and the three binaries. a consumer writes one include:
+
+    #include <koinu/koinu-sign.h>
+    cc prog.c $(pkg-config --cflags --libs koinu-sign) -lsecp256k1
+
+secp256k1 is yours to provide. this tree builds its own from a pinned submodule
+and deliberately does not install it, since a second libsecp256k1 on a system is
+how a program ends up linking two of them with no warning.
+
+there is no shared library and no abi promise. the types in those headers are
+transparent structs and they still change: kw_utxo grew two fields while the
+amounts in a utxo set were being bound to the transactions that carry them. pin
+a commit and build from source. opaque handles are what a version number would
+have to come after.
 
 neither archive exports a name outside the kw_ and KW_ prefixes. the vendored
 argon2 and poly1305-donna arrive with initialize, finalize, allocate_memory and

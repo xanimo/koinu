@@ -1,0 +1,13 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: koinu-chain
+Description: koinu chain half: peers, headers, auxpow and difficulty checks, compact filters
+URL: https://github.com/xanimo/koinu
+Version: @VERSION@
+Requires: koinu-sign
+Libs: -L${libdir} -lkoinu-chain
+Libs.private: -lsecp256k1 -pthread
+Cflags: -I${includedir}

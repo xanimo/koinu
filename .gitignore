@@ -92,3 +92,8 @@
 *history*.csv
 seed*.txt
 xpub*.txt
+
+/libkoinu-sign.a
+/libkoinu-chain.a
+/koinu-sign.pc
+/koinu-chain.pc

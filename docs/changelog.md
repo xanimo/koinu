@@ -32,6 +32,22 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* build: make install, pkg-config, and one header for the signing half
+  include/koinu-sign.h is the whole of libkoinu-sign.a behind a single include,
+  and make install places it with the archives, the pkg-config files and the
+  binaries under PREFIX. test_install.sh installs into a throwaway DESTDIR and
+  compiles test/consumer.c with only the installed prefix on the include path,
+  which is what catches a public header that includes a private one: adding
+  cpu.h to tx.h fails it. uninstall has to take back what it placed.
+
+  secp256k1 is not installed, because a second libsecp256k1 on a system is how
+  a program links two of them; the .pc declares it in Libs.private, which does
+  not demand a libsecp256k1.pc that may be absent even where the library is not.
+
+  No shared library and no SONAME. The types in those headers are transparent
+  structs that still change, so a version number on a .so would be one this
+  project breaks on its next commit, and the header says so rather than
+  implying otherwise.
 * build: prefix the vendored primitives' symbol names
   argon2, its blake2b and poly1305-donna export 55 names without a namespace,
   among them initialize, finalize, allocate_memory, free_memory, copy_block,

@@ -1,0 +1,16 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: koinu-sign
+Description: koinu signing half: keys, derivations, share backups, transactions and psbt, with no socket code
+URL: https://github.com/xanimo/koinu
+Version: @VERSION@
+# secp256k1 is not installed by this project: a second libsecp256k1 on a
+# system is how a program ends up linking two of them. Libs.private rather
+# than Requires.private, which would demand a libsecp256k1.pc that may not
+# be there even when the library is.
+Libs: -L${libdir} -lkoinu-sign
+Libs.private: -lsecp256k1 -pthread
+Cflags: -I${includedir}

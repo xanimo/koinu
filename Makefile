@@ -89,6 +89,50 @@ $(CHAIN_LIB): $(CHAIN_SRC:.c=.o)
 # them in that order.
 split: $(SIGN_LIB) $(CHAIN_LIB)
 
+# ── install ─────────────────────────────────────────────────────
+# Static archives, headers and pkg-config. No shared library and no SONAME: the
+# types in those headers are transparent structs that still change, so a version
+# number on a .so would be one this project breaks on its next commit. Opaque
+# handles come first, and they are not done.
+#
+# secp256k1 is not installed. This tree builds its own from a pinned submodule,
+# and putting a second libsecp256k1 on a system is how a program ends up linking
+# two of them with no warning; the .pc declares it as a private requirement for
+# the consumer to satisfy.
+PREFIX     ?= /usr/local
+DESTDIR    ?=
+bindir      = $(PREFIX)/bin
+libdir      = $(PREFIX)/lib
+includedir  = $(PREFIX)/include
+pkgconfdir  = $(libdir)/pkgconfig
+KW_VER      = $(shell sed -n 's/.*KW_VERSION "\([^"]*\)".*/\1/p' include/kw_version.h)
+
+SIGN_HDRS = include/koinu-sign.h include/kw_version.h \
+            crypto/address.h crypto/aead.h crypto/base58.h crypto/bip32.h \
+            crypto/bip39.h crypto/bip44.h crypto/chacha20.h crypto/chainparams.h \
+            crypto/codex32.h crypto/ec.h crypto/hex.h crypto/hmac.h crypto/kdf.h \
+            crypto/keystore.h crypto/mem.h crypto/pbkdf2.h crypto/psbt.h \
+            crypto/ripemd160.h crypto/rng.h crypto/scrypt.h crypto/sha2.h \
+            crypto/siphash.h crypto/slip39.h crypto/tx.h \
+            wallet/change.h wallet/fee.h wallet/journal.h wallet/utxo.h
+
+%.pc: %.pc.in include/kw_version.h
+	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@VERSION@|$(KW_VER)|g' $< > $@
+
+install: $(SIGN_LIB) $(CHAIN_LIB) koinu-sign.pc koinu-chain.pc kw kwd kwui
+	install -d $(DESTDIR)$(includedir)/koinu $(DESTDIR)$(libdir) \
+	           $(DESTDIR)$(pkgconfdir) $(DESTDIR)$(bindir)
+	install -m 644 $(SIGN_HDRS) $(DESTDIR)$(includedir)/koinu/
+	install -m 644 $(SIGN_LIB) $(CHAIN_LIB) $(DESTDIR)$(libdir)/
+	install -m 644 koinu-sign.pc koinu-chain.pc $(DESTDIR)$(pkgconfdir)/
+	install -m 755 kw kwd kwui $(DESTDIR)$(bindir)/
+
+uninstall:
+	rm -rf $(DESTDIR)$(includedir)/koinu
+	rm -f $(DESTDIR)$(libdir)/$(SIGN_LIB) $(DESTDIR)$(libdir)/$(CHAIN_LIB)
+	rm -f $(DESTDIR)$(pkgconfdir)/koinu-sign.pc $(DESTDIR)$(pkgconfdir)/koinu-chain.pc
+	rm -f $(DESTDIR)$(bindir)/kw $(DESTDIR)$(bindir)/kwd $(DESTDIR)$(bindir)/kwui
+
 # Linked against the signing half alone, so a dependency from crypto/ or
 # wallet/ onto net/ becomes a link error here.
 test/signonly: test/signonly.o $(SIGN_LIB) $(SECP_LIB)
@@ -394,6 +438,7 @@ check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly test/hostna
 	./test/test_cf
 	./test/test_cfstore
 	./test/test_split.sh
+	./test/test_install.sh "$(CFLAGS)"
 	./test/test_cli.sh
 	./test/test_sweep.sh
 	./test/test_scan.sh
@@ -458,7 +503,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
