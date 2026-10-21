@@ -15,8 +15,6 @@
    round is abandoned. A socket timeout only catches a peer that says nothing. */
 #define KW_SYNC_MAX_SKIP 256
 
-/* When nonzero, the sync drivers print progress to stderr. Off by default. */
-extern int kw_net_verbose;
 
 /* Walk the peer's header chain into (s): send getheaders with a locator built
    from the store tip, or from (cp)'s genesis when the store is empty, append

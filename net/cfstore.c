@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "cfstore.h"
+#include "log.h"
 #include "cf.h"
 #include "sync.h"
 #include "sha2.h"
@@ -255,8 +256,8 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                      uint32_t base_height)
 {
     if (p && p->peer_services && !(p->peer_services & KW_NODE_COMPACT_FILTERS))
-        fprintf(stderr, "kw: this peer does not serve compact filters (services %#llx); "
-                        "use --spv, or a node with filters enabled\n",
+        kw_logf(KW_LOG_ERROR, "this peer does not serve compact filters (services %#llx); "
+                        "use --spv, or a node with filters enabled",
                 (unsigned long long)p->peer_services);
 
     /* count via the index (O(1)) rather than streaming the whole cache */
@@ -290,9 +291,9 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
             char ip[4200];
             snprintf(ip, sizeof ip, "%s.idx", path);
             remove(ip);
-            fprintf(stderr, "kw: %s.fh is missing or does not match %s, so those filters "
+            kw_logf(KW_LOG_ERROR, "%s.fh is missing or does not match %s, so those filters "
                             "cannot be tied to a verified chain; delete %s and %s.fh and "
-                            "sync again (the .idx index is rebuilt, and has been removed)\n",
+                            "sync again (the .idx index is rebuilt, and has been removed)",
                     path, path, path, path);
             return -1;
         }
@@ -300,11 +301,11 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
             long at = cache_offset(path, (size_t)fhc);
             char ip[4200]; snprintf(ip, sizeof ip, "%s.idx", path);
             if (at < 4 || truncate(path, (off_t)at) != 0) {
-                fprintf(stderr, "kw: cannot drop the unverified tail of %s\n", path);
+                kw_logf(KW_LOG_ERROR, "cannot drop the unverified tail of %s", path);
                 return -1;
             }
             remove(ip);                                  /* rebuilt against the new size */
-            fprintf(stderr, "kw: dropped %ld filters past the verified tip of %s\n",
+            kw_logf(KW_LOG_ERROR, "dropped %ld filters past the verified tip of %s",
                     have - fhc, path);
             have = fhc;
             if (have > 0 && !ensure_index(path)) return -1;
@@ -336,8 +337,8 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                 snprintf(ip, sizeof ip, "%s.idx", path);
                 snprintf(fp, sizeof fp, "%s.fh", path);
                 remove(path); remove(ip); remove(fp);
-                fprintf(stderr, "kw: the chain moved under %s and it predates the "
-                                "chain base, so it is being rebuilt\n", path);
+                kw_logf(KW_LOG_ERROR, "the chain moved under %s and it predates the "
+                                "chain base, so it is being rebuilt", path);
                 have = 0; have_chain = 0; fhc = 0;
             } else {
                 /* The sidecar goes first, for the height being kept, and the
@@ -354,12 +355,12 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
                     !fh_save(path, (long)agree, newtip, cbase) ||
                     !cache_truncate(path, agree) ||
                     !cache_sync_to_disk(path)) {
-                    fprintf(stderr, "kw: cannot roll %s back to height %u\n",
+                    kw_logf(KW_LOG_ERROR, "cannot roll %s back to height %u",
                             path, base_height + (uint32_t)agree);
                     return -1;
                 }
-                fprintf(stderr, "kw: the chain moved, dropped %ld filters from %s "
-                                "above height %u\n",
+                kw_logf(KW_LOG_ERROR, "the chain moved, dropped %ld filters from %s "
+                                "above height %u",
                         have - (long)agree, path, base_height + (uint32_t)agree);
                 have = (long)agree;
                 fhc = (long)agree;
@@ -388,7 +389,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         /* the chain before the first cached filter, knowable only here */
         if (s0 == 0 && !have_base) { memcpy(cbase, prev, 32); have_base = 1; }
         if (have_chain && memcmp(prev, chain, 32) != 0) {
-            if (kw_net_verbose) fprintf(stderr, "[cf] filter-header chain broke at height %u\n",
+            kw_logf(KW_LOG_TRACE, "[cf] filter-header chain broke at height %u",
                                         base_height + (uint32_t)s0);
             free(fh); return -1;
         }
@@ -413,7 +414,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
             uint8_t fhash[32];
             kw_hash256(filt, flen, fhash);
             if (memcmp(fhash, fh[k - s0], 32) != 0) {
-                if (kw_net_verbose) fprintf(stderr, "[cf] filter commitment mismatch at height %u\n",
+                kw_logf(KW_LOG_TRACE, "[cf] filter commitment mismatch at height %u",
                                             base_height + (uint32_t)k);
                 free(fh); return -1;
             }
@@ -426,7 +427,7 @@ long kw_cfstore_sync(kw_peer *p, const kw_headerstore *s, const char *path,
         if (!cache_sync_to_disk(path) || !fh_save(path, (long)s1, chain, cbase)) {
             free(fh); return -1;
         }
-        if (kw_net_verbose) fprintf(stderr, "[cf] cached %zu/%zu filters\n", s1, s->count);
+        kw_logf(KW_LOG_TRACE, "[cf] cached %zu/%zu filters", s1, s->count);
     }
     free(fh);
     return (long)s->count;

@@ -38,6 +38,11 @@
 #include <time.h>
 #include <unistd.h>
 
+/* What kw_net_verbose was, on the side that decides rather than a global in
+   the library: the sink below consults it for a trace and prints an error
+   either way. */
+static int want_trace;
+
 /* The rows are allocated from the gap rather than fixed: kwui capped at 100 per
    chain while kw scan watches up to 20000, so a wallet whose .meta recorded a
    gap of 160 showed the coins below 100 and left the rest out of the balance
@@ -744,14 +749,23 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     }
 }
 
-/* The library prints nothing by default, so a program that wants its
-   diagnostics says where they go. stderr and the same wording as before, so
-   this changes nothing a user sees. */
+
+
+
+/* Where this program's diagnostics go. The library prints nothing of its own
+   accord, so without this nothing would be seen; with it the wording is what it
+   was before. An error carries the program's name, which the library does not
+   know, and a trace carries its own subsystem tag, so both read exactly as they
+   used to. (want_trace) is what kw_net_verbose was, moved to the side that
+   decides rather than living in the library as a global. */
 static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
 {
     (void)ctx;
-    (void)level;
-    fprintf(stderr, "kwui: %s\n", line);
+    if (level == KW_LOG_TRACE) {
+        if (want_trace) fprintf(stderr, "%s\n", line);
+    } else {
+        fprintf(stderr, "kwui: %s\n", line);
+    }
 }
 
 int main(int argc, char **argv)

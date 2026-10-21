@@ -52,6 +52,11 @@
 #include <termios.h>
 #include <unistd.h>
 
+/* What kw_net_verbose was, on the side that decides rather than a global in
+   the library: the sink below consults it for a trace and prints an error
+   either way. */
+static int want_trace;
+
 
 static void usage(void)
 {
@@ -591,7 +596,7 @@ static const char *seed_nodes(const kw_chainparams *cp, int tor)
         size_t n = kw_seed_resolve(cp, g_seed_ips, 8);
         for (size_t i = 0; i < n; i++) g_nodes[g_nnodes++] = g_seed_ips[i];
     }
-    if (g_nnodes && kw_net_verbose)
+    if (g_nnodes && want_trace)
         fprintf(stderr, "[seed] %d peers from dns seeds\n", g_nnodes);
     return g_nnodes ? g_nodes[0] : NULL;
 }
@@ -1249,7 +1254,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         if (!watch) { fprintf(stderr, "kw: out of memory deriving addresses\n"); return 1; }
     }
 
-    kw_net_verbose = 1;
+    want_trace = 1;
     /* The parallel fill writes the checkpointed range straight to the cache without
        the blobs, so it cannot check work. That is exactly the range the default
        trusts anchors for, so the two fit together; asking for the whole chain does
@@ -1881,7 +1886,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
 
     kw_watchset_init(&ws);
     kw_watchset_add(&ws, spk, spklen);
-    kw_net_verbose = 1;
+    want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
 
     conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
@@ -2144,7 +2149,7 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
     if (spacing <= 0) spacing = 100000;
-    kw_net_verbose = 1;
+    want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
 
     kw_peer p;
@@ -2211,7 +2216,7 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
 {
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
-    kw_net_verbose = 1;
+    want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
@@ -2299,7 +2304,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     if (!parse_outpoint(outpoint_arg, "--outpoint", txint, &vout)) return 1;
 
     kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
-    kw_net_verbose = 1;
+    want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
@@ -4030,14 +4035,23 @@ out:
     return rc;
 }
 
-/* The library prints nothing by default, so a program that wants its
-   diagnostics says where they go. stderr and the same wording as before, so
-   this changes nothing a user sees. */
+
+
+
+/* Where this program's diagnostics go. The library prints nothing of its own
+   accord, so without this nothing would be seen; with it the wording is what it
+   was before. An error carries the program's name, which the library does not
+   know, and a trace carries its own subsystem tag, so both read exactly as they
+   used to. (want_trace) is what kw_net_verbose was, moved to the side that
+   decides rather than living in the library as a global. */
 static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
 {
     (void)ctx;
-    (void)level;
-    fprintf(stderr, "kw: %s\n", line);
+    if (level == KW_LOG_TRACE) {
+        if (want_trace) fprintf(stderr, "%s\n", line);
+    } else {
+        fprintf(stderr, "kw: %s\n", line);
+    }
 }
 
 int main(int argc, char **argv)

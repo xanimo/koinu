@@ -36,6 +36,11 @@
 #include <time.h>
 #include <unistd.h>
 
+/* What kw_net_verbose was, on the side that decides rather than a global in
+   the library: the sink below consults it for a trace and prints an error
+   either way. */
+static int want_trace;
+
 static volatile sig_atomic_t stop = 0;
 
 /* The first signal asks, the second insists. Startup syncs the headers and the
@@ -131,7 +136,7 @@ static long kwd_sync(kw_headerstore *s, const kw_chainparams *cp)
         for (int i = 0; i < dial.nnode; i++) { if (g_alive[i]) kw_peer_close(&g_peer[i]); g_alive[i] = 0; }
         return -1;
     }
-    if (kw_net_verbose)
+    if (want_trace)
         fprintf(stderr, "kwd: %llu header(s) work-checked from %u, %d of %d peers "
                         "served a chain\n",
                 (unsigned long long)r.pow_checked, pow_from, r.ncandidates, n);
@@ -253,14 +258,23 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     if (n > 0) write_all(fd, reply, (size_t)n);
 }
 
-/* The library prints nothing by default, so a program that wants its
-   diagnostics says where they go. stderr and the same wording as before, so
-   this changes nothing a user sees. */
+
+
+
+/* Where this program's diagnostics go. The library prints nothing of its own
+   accord, so without this nothing would be seen; with it the wording is what it
+   was before. An error carries the program's name, which the library does not
+   know, and a trace carries its own subsystem tag, so both read exactly as they
+   used to. (want_trace) is what kw_net_verbose was, moved to the side that
+   decides rather than living in the library as a global. */
 static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
 {
     (void)ctx;
-    (void)level;
-    fprintf(stderr, "kwd: %s\n", line);
+    if (level == KW_LOG_TRACE) {
+        if (want_trace) fprintf(stderr, "%s\n", line);
+    } else {
+        fprintf(stderr, "kwd: %s\n", line);
+    }
 }
 
 int main(int argc, char **argv)
@@ -324,7 +338,7 @@ int main(int argc, char **argv)
         sigaction(SIGTERM, &sa, NULL);
     }
     signal(SIGPIPE, SIG_IGN);
-    kw_net_verbose = 1;
+    want_trace = 1;
 
     dial.cp = cp; dial.port = port; dial.tor = tor; dial.nnode = nnode;
     for (int i = 0; i < nnode; i++) dial.node[i] = node[i];

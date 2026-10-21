@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "sync.h"
+#include "log.h"
 #include "sha2.h"
 #include "pow.h"
 #include "auxpow.h"
@@ -14,7 +15,6 @@
 #include <string.h>
 #include <time.h>
 
-int kw_net_verbose = 0;
 
 /* The nBits and timestamp of (height), from the store, or from chainparams when it
    is genesis, which a store never holds. */
@@ -361,14 +361,12 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
             if (!strcmp(cmd, "headers")) { got = 1; break; }
             if (!strcmp(cmd, "ping")) kw_peer_send(p, "pong", pl, pn);
             if (sync_since_ms(&d0) > KW_PEER_EXCHANGE_SECONDS * 1000L) {
-                if (kw_net_verbose)
-                    fprintf(stderr, "[headers] peer spent %d seconds not answering\n",
+                kw_logf(KW_LOG_TRACE, "[headers] peer spent %d seconds not answering",
                             KW_PEER_EXCHANGE_SECONDS);
                 break;
             }
             if (++skipped > KW_SYNC_MAX_SKIP) {
-                if (kw_net_verbose)
-                    fprintf(stderr, "[headers] peer sent %d messages without headers\n", skipped);
+                kw_logf(KW_LOG_TRACE, "[headers] peer sent %d messages without headers", skipped);
                 break;
             }
         }
@@ -416,8 +414,7 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                 if (!kw_sync_chainwork(s, (uint32_t)at, (uint32_t)fork_at, &dropped_work)) goto fail;
                 fork_at = at;
             }
-            if (kw_net_verbose)
-                fprintf(stderr, "[headers] a fork at %ld, %zu header(s) of ours above it\n",
+            kw_logf(KW_LOG_TRACE, "[headers] a fork at %ld, %zu header(s) of ours above it",
                         at, s->count - (size_t)at);
             kw_headerstore_truncate(s, (uint32_t)at);
             cpi = cp_from(cp, (uint32_t)s->count + 1);
@@ -442,21 +439,18 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                 uint8_t want[32];
                 if (!unhex_rev(cp->checkpoints[cpi].hash, want) ||
                     memcmp(want, batch[i].hash, 32) != 0) {
-                    if (kw_net_verbose)
-                        fprintf(stderr, "[headers] %u is not the block this release "
-                                        "pins at that height\n", height);
+                    kw_logf(KW_LOG_TRACE, "[headers] %u is not the block this release "
+                                        "pins at that height", height);
                     goto fail;
                 }
                 cpi++;
             }
             if (!kw_sync_bits_ok(s, cp, height, kw_header_bits(batch[i].raw))) {
-                if (kw_net_verbose)
-                    fprintf(stderr, "[headers] %u carries the wrong difficulty\n", height);
+                kw_logf(KW_LOG_TRACE, "[headers] %u carries the wrong difficulty", height);
                 goto fail;
             }
             if (!kw_sync_version_ok(cp, height, kw_header_version(batch[i].raw))) {
-                if (kw_net_verbose)
-                    fprintf(stderr, "[headers] %u does not say it belongs to this chain\n", height);
+                kw_logf(KW_LOG_TRACE, "[headers] %u does not say it belongs to this chain", height);
                 goto fail;
             }
             /* The retarget rule is derived from these timestamps, so a chain that
@@ -465,9 +459,8 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
                 /* Core refuses this header and keeps the chain below it, and so
                    does this: failing the call threw away every header the sync
                    had already checked, which on a fresh chain is all of them. */
-                if (kw_net_verbose)
-                    fprintf(stderr, "[headers] %u is timestamped outside what the chain "
-                                    "before it allows; keeping the %ld below it\n",
+                kw_logf(KW_LOG_TRACE, "[headers] %u is timestamped outside what the chain "
+                                    "before it allows; keeping the %ld below it",
                             height, total);
                 stop = 1;
                 break;
@@ -475,7 +468,7 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
             if (!kw_headerstore_append(s, &batch[i])) { goto fail; }
             total++;
         }
-        if (kw_net_verbose) fprintf(stderr, "[headers] %ld synced\n", total);
+        kw_logf(KW_LOG_TRACE, "[headers] %ld synced", total);
         if (stop) break;
     }
 
@@ -485,9 +478,8 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
     if (cp->ncheckpoints) {
         uint32_t last = cp->checkpoints[cp->ncheckpoints - 1].height;
         if ((uint32_t)s->count < last) {
-            if (kw_net_verbose)
-                fprintf(stderr, "[headers] the peer's chain ends at %zu, below the %u "
-                                "this release pins\n", s->count, last);
+            kw_logf(KW_LOG_TRACE, "[headers] the peer's chain ends at %zu, below the %u "
+                                "this release pins", s->count, last);
             goto fail;
         }
     }
@@ -497,9 +489,8 @@ long kw_sync_headers_checked(kw_peer *p, kw_headerstore *s, const kw_chainparams
         int heavier = kw_sync_chainwork(s, (uint32_t)fork_at, (uint32_t)s->count, &gained) &&
                       kw_u256_cmp(&gained, &dropped_work) > 0;
         if (!heavier) {
-            if (kw_net_verbose)
-                fprintf(stderr, "[headers] the fork at %ld carries no more work than the "
-                                "%zu header(s) it would replace; keeping ours\n",
+            kw_logf(KW_LOG_TRACE, "[headers] the fork at %ld carries no more work than the "
+                                "%zu header(s) it would replace; keeping ours",
                         fork_at, ndropped);
             goto fail;
         }

@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "psync.h"
+#include "log.h"
 #include "headers.h"
 #include "sync.h"
 #include "msg.h"
@@ -217,8 +218,8 @@ static size_t get_work(psync_ctx *c)
             uint8_t least = KW_PSYNC_MAX_CLAIMS;
             for (size_t i = 1; i <= c->nseg; i++)
                 if (c->state[i] == 1 && c->claims[i] < least) { least = c->claims[i]; pick = i; }
-            if (pick && kw_net_verbose)
-                fprintf(stderr, "[psync] racing segment %u-%u\n",
+            if (pick)
+                kw_logf(KW_LOG_TRACE, "[psync] racing segment %u-%u",
                         c->cp->checkpoints[pick - 1].height, c->cp->checkpoints[pick].height);
         }
         if (pick) { c->state[pick] = 1; c->claims[pick]++; }
@@ -279,8 +280,7 @@ static void *worker(void *arg)
             c->last_done = now_mono();
             c->host_segs[host]++;
             c->host_hdrs[host] += (long)(h1 - h0);
-            if (kw_net_verbose)
-                fprintf(stderr, "[psync] segment %u-%u done via %s (%zu/%zu)\n",
+            kw_logf(KW_LOG_TRACE, "[psync] segment %u-%u done via %s (%zu/%zu)",
                         h0, h1, c->hosts[host], c->done, c->nseg);
         } else if (!done) {
             if (c->state[i] == 1 && c->claims[i] == 0) c->state[i] = 0;   /* requeue */
@@ -304,8 +304,7 @@ static void *worker(void *arg)
 
         /* between segments, not during one, so a switch costs only a reconnect */
         if (connected && worth_switching(c, host)) {
-            if (kw_net_verbose)
-                fprintf(stderr, "[psync] leaving %s for a faster host\n", c->hosts[host]);
+            kw_logf(KW_LOG_TRACE, "[psync] leaving %s for a faster host", c->hosts[host]);
             kw_peer_close(&p); connected = 0; drop_host(c, host, 0);
         }
     }
@@ -350,7 +349,7 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
         if (span > c.maxspan) c.maxspan = span;
     }
     if (c.maxspan > KW_PSYNC_MAX_SPAN) {
-        fprintf(stderr, "kw: anchors %zu apart is too wide to fill in parallel\n", c.maxspan);
+        kw_logf(KW_LOG_ERROR, "anchors %zu apart is too wide to fill in parallel", c.maxspan);
         fclose(pf); remove(part); return -1;
     }
     c.state = (uint8_t *)calloc(cp->ncheckpoints, 1);
@@ -380,17 +379,17 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
         /* Say which of the three it was, since "parallel header sync failed" sent
            a reader looking at their network when the answer was a retry budget. */
         if (!started)
-            fprintf(stderr, "kw: no download threads started\n");
+            kw_logf(KW_LOG_ERROR, "no download threads started");
         else if (!c.ever_connected)
-            fprintf(stderr, "kw: no peer answered, so nothing was downloaded\n");
+            kw_logf(KW_LOG_ERROR, "no peer answered, so nothing was downloaded");
         else if (c.bad_seg)
-            fprintf(stderr, "kw: no segment finished in %.0f seconds, last attempt was "
-                            "headers %u-%u, %zu of %zu segments were done\n",
+            kw_logf(KW_LOG_ERROR, "no segment finished in %.0f seconds, last attempt was "
+                            "headers %u-%u, %zu of %zu segments were done",
                     KW_PSYNC_STALL_SECONDS,
                     cp->checkpoints[c.bad_seg - 1].height, cp->checkpoints[c.bad_seg].height,
                     c.done, c.nseg);
         else
-            fprintf(stderr, "kw: the parallel fill gave up with %zu of %zu segments done\n",
+            kw_logf(KW_LOG_ERROR, "the parallel fill gave up with %zu of %zu segments done",
                     c.done, c.nseg);
     }
     if (ok) {
@@ -398,8 +397,7 @@ long kw_psync_headers(const kw_chainparams *cp, const char *const *hosts, size_t
         for (size_t i = 0; i < nhosts; i++) {
             double rate = c.host_secs[i] > 0.1 ? (double)c.host_srv[i] / c.host_secs[i] : 0.0;
             if (best && rate > bestrate) { bestrate = rate; *best = hosts[i]; }
-            if (kw_net_verbose)
-                fprintf(stderr, "[psync] %s served %zu segments, %ld headers, %.0f hdr/s\n",
+            kw_logf(KW_LOG_TRACE, "[psync] %s served %zu segments, %ld headers, %.0f hdr/s",
                         hosts[i], c.host_segs[i], c.host_hdrs[i], rate);
         }
     }

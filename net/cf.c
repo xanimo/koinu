@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "cf.h"
+#include "log.h"
 #include "gcs.h"
 #include "spv.h"
 #include "sync.h"
@@ -119,11 +120,11 @@ int kw_cf_anchor_ok(const kw_chainparams *cp, uint32_t height, const uint8_t cha
     uint8_t want[32];
     if (!a || !unhex_rev(a->header, want)) return 1;
     if (memcmp(chain, want, 32) == 0) {
-        if (kw_net_verbose) fprintf(stderr, "[cf] filter-header anchor %u matched\n", height);
+        kw_logf(KW_LOG_TRACE, "[cf] filter-header anchor %u matched", height);
         return 1;
     }
-    fprintf(stderr, "kw: filter-header anchor mismatch at height %u; "
-                    "this peer's filters are not the ones this release pins\n", height);
+    kw_logf(KW_LOG_ERROR, "filter-header anchor mismatch at height %u; "
+                    "this peer's filters are not the ones this release pins", height);
     return 0;
 }
 
@@ -151,8 +152,8 @@ int kw_cf_fetch_headers(kw_peer *p, const kw_headerstore *s, uint32_t base_heigh
 static void warn_no_filters(const kw_peer *p)
 {
     if (p && p->peer_services && !(p->peer_services & KW_NODE_COMPACT_FILTERS))
-        fprintf(stderr, "kw: this peer does not serve compact filters (services %#llx); "
-                        "use --spv, or a node with filters enabled\n",
+        kw_logf(KW_LOG_ERROR, "this peer does not serve compact filters (services %#llx); "
+                        "use --spv, or a node with filters enabled",
                 (unsigned long long)p->peer_services);
 }
 
@@ -188,7 +189,7 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
         uint8_t prev[32];
         if (!kw_cf_fetch_headers(p, s, base_height, s0, s1, prev, fh)) { err = 1; break; }
         if (have_chain && memcmp(prev, chain, 32) != 0) {
-            if (kw_net_verbose) fprintf(stderr, "[cf] filter-header chain broke at height %u\n",
+            kw_logf(KW_LOG_TRACE, "[cf] filter-header chain broke at height %u",
                                         base_height + (uint32_t)s0);
             err = 1; break;
         }
@@ -214,7 +215,7 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
             uint8_t fhash[32];
             kw_hash256(filt, flen, fhash);
             if (memcmp(fhash, fh[k - s0], 32) != 0) {
-                if (kw_net_verbose) fprintf(stderr, "[cf] filter commitment mismatch at height %u\n",
+                kw_logf(KW_LOG_TRACE, "[cf] filter commitment mismatch at height %u",
                                             base_height + (uint32_t)k);
                 err = 1; break;
             }
@@ -231,12 +232,10 @@ long kw_cf_sync(kw_peer *p, const kw_headerstore *s,
                     matched = t; capm = nc;
                 }
                 matched[nm++] = k;
-                if (kw_net_verbose)
-                    fprintf(stderr, "[cf] match at height %u\n", base_height + (uint32_t)k);
+                kw_logf(KW_LOG_TRACE, "[cf] match at height %u", base_height + (uint32_t)k);
             }
         }
-        if (kw_net_verbose)
-            fprintf(stderr, "[cf] checked %zu/%zu filters, %zu matched\n",
+        kw_logf(KW_LOG_TRACE, "[cf] checked %zu/%zu filters, %zu matched",
                     s1, s->count, nm);
     }
 
@@ -315,9 +314,9 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
            new one cannot omit it. */
         uint32_t tip = base_height + (uint32_t)(s->count ? s->count - 1 : 0);
         if (s->count && (since > tip || tip - since >= KW_CF_MAX_UNFILTERED_SPAN)) {
-            fprintf(stderr, "kw: %lu blocks from height %u with no filters, which is "
+            kw_logf(KW_LOG_ERROR, "%lu blocks from height %u with no filters, which is "
                             "more than the %u this fetches one at a time; raise --since "
-                            "or serve compact filters\n",
+                            "or serve compact filters",
                     (unsigned long)(since > tip ? 0 : tip - since + 1), since,
                     KW_CF_MAX_UNFILTERED_SPAN);
             free(heights);
@@ -329,8 +328,7 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
             uint32_t h = base_height + (uint32_t)i;
             if (h >= since) heights[nm++] = h;
         }
-        if (kw_net_verbose)
-            fprintf(stderr, "[spv] no filters, fetching %ld block(s) from %u\n", nm, since);
+        kw_logf(KW_LOG_TRACE, "[spv] no filters, fetching %ld block(s) from %u", nm, since);
     }
 
     long created_h = -1, spent_h = -1; uint64_t value = 0; int created_cb = 0;

@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "chainsel.h"
+#include "log.h"
 #include "sync.h"
 #include "hex.h"
 #include "msg.h"
@@ -217,8 +218,8 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
 
     size_t ntail = s->count - floor;
     if (span > KW_CHAINSEL_MAX_TAIL) {
-        fprintf(stderr, "kw: %zu headers above the newest anchor, too many to weigh "
-                        "several peers' chains; using one\n", span);
+        kw_logf(KW_LOG_ERROR, "%zu headers above the newest anchor, too many to weigh "
+                        "several peers' chains; using one", span);
         kw_peer *const one[1] = { peers[0] };
         return kw_sync_headers_best(one, 1, s, cp, pow_from, out);
     }
@@ -249,7 +250,7 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
         uint32_t at = 0;
         int fp = fork_point(peers[i], s, cp, &at);
         if (fp < 0) {
-            if (kw_net_verbose) fprintf(stderr, "[chain] peer %d served nothing usable\n", i);
+            kw_logf(KW_LOG_TRACE, "[chain] peer %d served nothing usable", i);
             continue;
         }
         if (fp == 0) {                            /* agrees with our tip */
@@ -259,8 +260,8 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
         if (at < floor) {
             /* A fork below an anchor contradicts a hash compiled into the release,
                which no amount of work outweighs. */
-            fprintf(stderr, "kw: a peer's chain forks at %u, below the %u this release "
-                            "pins; ignoring it\n", at, floor);
+            kw_logf(KW_LOG_ERROR, "a peer's chain forks at %u, below the %u this release "
+                            "pins; ignoring it", at, floor);
             continue;
         }
 
@@ -277,8 +278,7 @@ long kw_sync_headers_best(kw_peer *const *peers, int npeers,
             /* Its own pool, so one peer's bad header does not condemn another's
                chain. Recorded and dropped. */
             if (!powok) r.bad_height = bad;
-            if (kw_net_verbose)
-                fprintf(stderr, "[chain] peer %d dropped%s\n", i,
+            kw_logf(KW_LOG_TRACE, "[chain] peer %d dropped%s", i,
                         powok ? "" : ": a header does not prove its work");
             continue;
         }

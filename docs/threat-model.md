@@ -32,7 +32,7 @@ caller installs and says nothing without one, so a daemon, a gui or a wasm build
 does not get koinu's prose in the middle of its own output; kw, kwd and kwui
 install one that writes to stderr, which is why nothing a user sees has changed.
 `test/test_split.sh` fails if any object in the signing archive references the
-process's stderr or stdout, naming the object. Writing to a FILE the caller
+process's stderr or stdout, naming the object, and neither archive does. Writing to a FILE the caller
 handed over is a different thing and stays allowed, which is how the utxo set is
 written.
 

@@ -32,6 +32,13 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* net: the chain half's diagnostics through the sink too, and the global gone
+  42 fprintf(stderr, ...) calls across sync, psync, cf, cfstore and chainsel,
+  and kw_net_verbose with them: 25 traces, 17 errors, and the sink decides what
+  to do with each rather than a library global deciding whether to format it.
+  kw, kwd and kwui carry want_trace, set where the global was, so the output is
+  what it was; a trace still reads "[headers] 20 synced" with no prefix.
+  Neither archive references the process's stderr or stdout from any object.
 * log: the library says nothing unless a caller asks it to
   A library that writes to stderr decides where a daemon's, a gui's or a wasm
   build's output goes, and a caller gets koinu's prose in its own output with no
