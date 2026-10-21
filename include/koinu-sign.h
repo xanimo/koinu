@@ -30,6 +30,12 @@
 
 #include "kw_version.h"
 
+/* ── diagnostics ─────────────────────────────────────────────── */
+/* Nothing here prints. Install a sink to see the few things the library has to
+   say, such as a secret it could not lock into ram; without one it is silent,
+   which is the default a library should have. */
+#include "log.h"
+
 /* ── the wallet ──────────────────────────────────────────────── */
 #include "chainparams.h"      /* which network, and the heights its rules change at */
 #include "keystore.h"         /* the seed sealed under argon2id and chacha20-poly1305 */

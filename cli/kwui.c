@@ -10,6 +10,7 @@
  * termios, no curses, in keeping with secp256k1 being the only dependency. */
 
 #include "chainparams.h"
+#include "log.h"
 #include "keystore.h"
 #include "bip32.h"
 #include "bip44.h"
@@ -743,8 +744,19 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     }
 }
 
+/* The library prints nothing by default, so a program that wants its
+   diagnostics says where they go. stderr and the same wording as before, so
+   this changes nothing a user sees. */
+static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
+{
+    (void)ctx;
+    (void)level;
+    fprintf(stderr, "kwui: %s\n", line);
+}
+
 int main(int argc, char **argv)
 {
+    kw_log_set(log_to_stderr, NULL);          /* before anything can log */
     kw_no_core_dumps();
     int net = 0, gap = 20;
     const char *ks = NULL, *utxos = NULL;

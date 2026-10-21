@@ -3,11 +3,11 @@
  * Copyright (c) 2026 bluezr */
 
 #include "mem.h"
+#include "log.h"
 
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -81,8 +81,12 @@ void kw_secure_keep(void *p, size_t n)
 
     if (err && !moaned) {
         moaned = 1;
-        fprintf(stderr, "kw: cannot lock %zu bytes into ram (%s); secrets may reach swap\n",
-                n, strerror(err));
+        /* To the caller's sink rather than to stderr: a library that writes
+           there decides where a daemon's or a gui's output goes. With no sink
+           installed this is silent, which is why kw, kwd and kwui install one.
+           Said once, because the first failure means the rest will fail too. */
+        kw_logf(KW_LOG_ERROR, "cannot lock %zu bytes into ram (%s); secrets may "
+                              "reach swap", n, strerror(err));
     }
 }
 

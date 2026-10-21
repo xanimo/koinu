@@ -32,6 +32,20 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* log: the library says nothing unless a caller asks it to
+  A library that writes to stderr decides where a daemon's, a gui's or a wasm
+  build's output goes, and a caller gets koinu's prose in its own output with no
+  way to stop it. crypto/log.h takes a sink and is silent without one; kw, kwd
+  and kwui install one that writes to stderr with the same wording, so nothing a
+  user sees changes. Two levels, because the messages are two kinds: a refusal
+  the user needs either way, and progress, which is what --verbose meant.
+
+  The signing half had exactly one such line, the mlock failure in crypto/mem.c,
+  so this is a one-object change there rather than the sweep the count suggests:
+  of the 69 printf calls in the library, 22 are snprintf into a buffer and 7
+  write the utxo set to a file it was given. test_split.sh now fails if any
+  object in the signing archive references stderr or stdout, and names it. The
+  chain half still has 49 of them, gated on kw_net_verbose, and is next.
 * build: make install, pkg-config, and one header for the signing half
   include/koinu-sign.h is the whole of libkoinu-sign.a behind a single include,
   and make install places it with the archives, the pkg-config files and the

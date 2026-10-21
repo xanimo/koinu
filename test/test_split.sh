@@ -18,6 +18,9 @@ cd "$(dirname "$0")/.."
 
 command -v nm >/dev/null 2>&1 || { echo "split skipped: no nm"; exit 0; }
 
+D_TMP=$(mktemp -d)
+trap 'rm -rf "$D_TMP"' EXIT
+
 make -s split
 
 SOCKETS='socket|socketpair|connect|bind|listen|accept|accept4|send|sendto|sendmsg|recv|recvfrom|recvmsg|getaddrinfo|gethostbyname|gethostbyname2|getnameinfo|setsockopt|getsockopt|shutdown|select|pselect|poll|ppoll|epoll_create|epoll_create1|epoll_ctl|epoll_wait'
@@ -84,6 +87,26 @@ if [ -n "$EXPORTED" ]; then
     exit 1
 fi
 
+# The signing half must not write to the process's stderr or stdout. A library
+# that does decides where a daemon's, a gui's or a wasm build's output goes, and
+# a caller gets koinu's prose in the middle of its own with no way to stop it.
+# crypto/log.h is the way out: a sink the caller installs, and silence without
+# one. Writing to a FILE * the caller handed over is a different thing and stays
+# allowed, which is why this names the two streams rather than the functions.
+NOISY=""
+for o in $(ar t libkoinu-sign.a); do
+    ar p libkoinu-sign.a "$o" > "$D_TMP/o.o" 2>/dev/null || continue
+    if nm -u "$D_TMP/o.o" 2>/dev/null | awk '{print $NF}' | sed 's/^_*//' |
+       grep -qxE 'stderr|stdout'; then
+        NOISY="$NOISY $o"
+    fi
+done
+if [ -n "$NOISY" ]; then
+    echo "FAIL: libkoinu-sign.a writes to stderr or stdout from:$NOISY" >&2
+    echo "  use kw_logf and let the caller install a sink" >&2
+    exit 1
+fi
+
 # and the proof that it matters: a program keeping those names for itself
 make -s test/hostnames >/dev/null
 ./test/hostnames >/dev/null || { echo "FAIL: a host using ordinary names could not link" >&2; exit 1; }
@@ -91,7 +114,8 @@ make -s test/hostnames >/dev/null
 NG=$(printf '%s\n' "$GOOD" | wc -l | tr -d ' ')
 SIGNSZ=$(wc -c < libkoinu-sign.a)
 CHAINSZ=$(wc -c < libkoinu-chain.a)
-echo "split ok: libkoinu-sign.a references no socket call, exports only kw_ and"
-echo "  KW_ names, and a signer and a host keeping initialize/finalize both link"
+echo "split ok: libkoinu-sign.a references no socket call, writes to neither"
+echo "  stderr nor stdout, exports only kw_ and KW_ names, and a signer and a"
+echo "  host keeping initialize/finalize both link"
 echo "  against it alone; libkoinu-chain.a references $NG socket calls."
 echo "  $SIGNSZ bytes signing, $CHAINSZ bytes chain"

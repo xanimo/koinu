@@ -45,7 +45,7 @@ CPPFLAGS += -Icrypto -Inet -Iwallet -Iinclude -I$(SECP_DIR)/include -Icrypto/ven
             -Icrypto/vendor/argon2 -DARGON2_NO_THREADS \
             -include crypto/vendor/kw_symbols.h
 
-CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/hex.c crypto/sha2.c crypto/sha2_hw.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
+CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/log.c crypto/hex.c crypto/sha2.c crypto/sha2_hw.c crypto/ripemd160.c crypto/hmac.c crypto/siphash.c \
            crypto/pbkdf2.c crypto/slip39.c crypto/codex32.c crypto/scrypt.c crypto/scrypt_avx2.c crypto/base58.c crypto/ec.c crypto/bip32.c crypto/bip39.c \
            crypto/chainparams.c crypto/address.c crypto/bip44.c \
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
@@ -107,7 +107,7 @@ includedir  = $(PREFIX)/include
 pkgconfdir  = $(libdir)/pkgconfig
 KW_VER      = $(shell sed -n 's/.*KW_VERSION "\([^"]*\)".*/\1/p' include/kw_version.h)
 
-SIGN_HDRS = include/koinu-sign.h include/kw_version.h \
+SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
             crypto/address.h crypto/aead.h crypto/base58.h crypto/bip32.h \
             crypto/bip39.h crypto/bip44.h crypto/chacha20.h crypto/chainparams.h \
             crypto/codex32.h crypto/ec.h crypto/hex.h crypto/hmac.h crypto/kdf.h \

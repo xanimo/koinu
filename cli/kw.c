@@ -8,6 +8,7 @@
  * at creation for the operator to back up and is never stored. */
 
 #include "chainparams.h"
+#include "log.h"
 #include "bip39.h"
 #include "codex32.h"
 #include "slip39.h"
@@ -4029,8 +4030,19 @@ out:
     return rc;
 }
 
+/* The library prints nothing by default, so a program that wants its
+   diagnostics says where they go. stderr and the same wording as before, so
+   this changes nothing a user sees. */
+static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
+{
+    (void)ctx;
+    (void)level;
+    fprintf(stderr, "kw: %s\n", line);
+}
+
 int main(int argc, char **argv)
 {
+    kw_log_set(log_to_stderr, NULL);          /* before anything can log */
     kw_no_core_dumps();                        /* before anything reads a secret */
     int net = 0, words = 12, change = 0, ninputs = 0, want_spk = 0, validate_pow = 0;
     int assume_yes = 0;

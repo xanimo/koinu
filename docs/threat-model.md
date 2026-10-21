@@ -27,6 +27,15 @@ enforced is that no single invocation does both. `new`, `restore`, `address`,
 the master key before it connects, and `sweep` is two commands for this reason
 rather than one that orders them.
 
+The library prints nothing of its own accord. `crypto/log.h` takes a sink the
+caller installs and says nothing without one, so a daemon, a gui or a wasm build
+does not get koinu's prose in the middle of its own output; kw, kwd and kwui
+install one that writes to stderr, which is why nothing a user sees has changed.
+`test/test_split.sh` fails if any object in the signing archive references the
+process's stderr or stdout, naming the object. Writing to a FILE the caller
+handed over is a different thing and stays allowed, which is how the utxo set is
+written.
+
 For anyone linking the library rather than running kw, the boundary is a link
 boundary. `libkoinu-sign.a` holds the keys, the derivations, the share formats,
 the keystore, the transaction builder, the psbt code and the utxo tracking, and

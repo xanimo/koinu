@@ -13,6 +13,7 @@
  *   immature coinbase, 1 error. */
 
 #include "chainparams.h"
+#include "log.h"
 #include "base58.h"
 #include "hex.h"
 #include "peer.h"
@@ -252,8 +253,19 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     if (n > 0) write_all(fd, reply, (size_t)n);
 }
 
+/* The library prints nothing by default, so a program that wants its
+   diagnostics says where they go. stderr and the same wording as before, so
+   this changes nothing a user sees. */
+static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
+{
+    (void)ctx;
+    (void)level;
+    fprintf(stderr, "kwd: %s\n", line);
+}
+
 int main(int argc, char **argv)
 {
+    kw_log_set(log_to_stderr, NULL);          /* before anything can log */
     kw_no_core_dumps();
     int net = 0, tor = 0, port = -1, nnode = 0;
     const char *node[KWD_MAX_PEERS] = { 0 };
