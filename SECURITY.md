@@ -7,13 +7,24 @@ same key that signs the release tags. Encrypt anything you would not put in a
 public issue, and do not open a GitHub issue for a bug that costs someone money
 until it is fixed.
 
-A source archive carries no git history, so that key claim cannot be checked from
-one. From a clone it can:
+The key itself is `docs/bluezr.asc`, so verifying does not need a keyserver:
 
-    git tag -v v0.2.5
+    gpg --import docs/bluezr.asc
+    git tag -v v0.3.0
+    git verify-commit HEAD
 
-which prints `Good signature` and the fingerprint above, or fails. Check it before
-trusting either the code or this address.
+each of which prints `Good signature` and the fingerprint above, or fails.
+
+A key shipped in the repo it signs proves nothing on its own. Whoever could
+rewrite the history could put their own key here and their own fingerprint in
+this file, and both would agree. The fingerprint is what has to come from
+somewhere else: compare it against a copy you did not get from this repository
+before trusting either the code or this address. What the file does buy is that
+the check can be run at all, rather than needing a key fetched from a keyserver
+that may or may not have it.
+
+A source archive carries no git history, so none of the above can be checked
+from one. Clone it.
 
 Expect an acknowledgement within three days that a human has read it, and after
 that whatever the fix actually needs, since a report with a reproduction gets one
