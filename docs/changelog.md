@@ -32,6 +32,20 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* kw: sign --raw, so its output goes straight into send
+  sign prints five lines and send --tx - reads one of hex, so the two could not
+  be joined without an awk in between. --raw puts the transaction alone on
+  stdout and moves the decoded outputs and the fee to stderr rather than
+  dropping them: a pipeline that skips the readback should be the caller saying
+  --yes, not a consequence of redirecting stdout. The default output is
+  unchanged, which the test asserts alongside the pipeline.
+* docs: ship the public key that signs the tags
+  SECURITY.md named a fingerprint and said to run git tag -v, which needs a key
+  the reader does not have, from a keyserver that may not have it either.
+  docs/bluezr.asc is the key. It also says what the file does not prove: whoever
+  could rewrite this history could put their own key beside their own
+  fingerprint and both would agree, so the fingerprint has to come from
+  somewhere that is not this repository.
 * net: the chain half's diagnostics through the sink too, and the global gone
   42 fprintf(stderr, ...) calls across sync, psync, cf, cfstore and chainsel,
   and kw_net_verbose with them: 25 traces, 17 errors, and the sink decides what

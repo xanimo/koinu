@@ -141,6 +141,11 @@ selects inputs from that set and builds the transaction. send broadcasts it.
     kw sign --keystore w.ks --to DEST:100
     kw send --tx @tx.hex --node NODE          decodes it and asks first
 
+sign --raw puts the transaction alone on stdout and the decoded outputs and the
+fee on stderr, so it pipes into send without the readback being lost:
+
+    kw sign --keystore w.ks --to DEST:100 --raw | kw send --tx - --node NODE --yes
+
 a spend can also cross as a psbt, which is the air-gapped shape: the machine
 with the account public key composes it and cannot sign, and the machine with
 the seed signs it and opens no socket.

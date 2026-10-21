@@ -72,7 +72,7 @@ static void usage(void)
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
       "           or --xpub XPUB (watch only, no keys on this machine)\n"
       "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH] [--validate-pow]\n"
-      "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT\n"
+      "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT [--raw]\n"
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
       "           [--input TXID:VOUT:AMOUNT:INDEX ...]\n"
@@ -150,6 +150,10 @@ static void usage(void)
       "  its 4-character identifier, and it has no passphrase, no grouping and no\n"
       "  check that a set reconstructs the seed it came from: compare the\n"
       "  fingerprint. combine reads the format off the shares.\n"
+      "\n"
+      "  sign --raw puts the transaction alone on stdout and the decoded outputs\n"
+      "  and fee on stderr, so it pipes into send without losing the readback:\n"
+      "  kw sign ... --raw | kw send --tx - --node HOST --yes\n"
       "\n"
       "  psbt build and psbt sign are the same split for an ordinary spend: the\n"
       "  first takes the account public key and the utxo set, chooses the coins,\n"
@@ -1393,10 +1397,21 @@ static int  spk_to_addr(const kw_chainparams *cp, const uint8_t *spk, size_t spk
    at m/44'/coin'/0'/0/INDEX). Without, inputs are chosen from the tracked utxo
    set written by scan, and each input's key is found by matching its script to
    a derived address in the first (gap) receive and change addresses. */
+/* With --raw only the transaction reaches stdout, so the output is something
+   kw send can be given directly:
+
+       kw sign ... --raw | kw send --tx - --node HOST --yes
+
+   Everything a person reads, the decoded outputs and the fee, goes to stderr
+   instead of being suppressed. A pipeline that skips the readback should be the
+   caller saying so with --yes, not a consequence of redirecting stdout. */
+#define sign_out(raw_only, ...) \
+    do { if (raw_only) fprintf(stderr, __VA_ARGS__); else printf(__VA_ARGS__); } while (0)
+
 static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass_arg,
                     char **inputs, int ninputs, const char *to_arg,
                     const char *fee_arg, const char *feerate_arg, const char *maxfee_arg,
-                    const char *change_arg, const char *utxos_path, int gap)
+                    const char *change_arg, const char *utxos_path, int gap, int raw_only)
 {
     if (!path || !to_arg) { usage(); return 2; }
 
@@ -1672,7 +1687,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             h160_to_spk(ch, cspk); cl = 25;
             kw_address_p2pkh(cpub, cp->p2pkh, caddr, sizeof caddr);
             kw_secure_zero(&ck, sizeof ck);
-            printf("change m/44'/%u'/0'/1/%u\n", cp->bip44_coin, ci);
+            sign_out(raw_only, "change m/44'/%u'/0'/1/%u\n", cp->bip44_coin, ci);
         }
         if (!kw_tx_add_output(&tx, change, cspk, cl)) { fprintf(stderr, "kw: add change\n"); goto out; }
         if (cl == 25) { memcpy(change_spk, cspk, 25); change_spklen = 25; }
@@ -1696,8 +1711,9 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         for (int i = 0; i < 32; i++) disp[i] = txid[31 - i];
         char txidhex[65];
         kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
-        printf("txid  %s\n", txidhex);
-        printf("raw   %s\n", hex);
+        sign_out(raw_only, "txid  %s\n", txidhex);
+        if (raw_only) printf("%s\n", hex);
+        else          printf("raw   %s\n", hex);
 
         /* Read back what was signed, rather than reporting what was asked for.
            Everything above this point is the request; from here the numbers come
@@ -1732,7 +1748,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 fmt_doge(back.vout[o].value, amt, sizeof amt);
                 if (!spk_to_addr(cp, back.vout[o].script, back.vout[o].scriptlen, addr, sizeof addr))
                     snprintf(addr, sizeof addr, "an unrecognised script");
-                printf("out %zu %-7s %s DOGE to %s\n", o,
+                sign_out(raw_only, "out %zu %-7s %s DOGE to %s\n", o,
                        is_change ? "change" : "pays", amt, addr);
             }
             if (!bad) {
@@ -1770,7 +1786,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         if (bad) { fprintf(stderr, "kw: not reporting this as signed\n"); goto out; }
 
         uint64_t paid = total_in - signed_out;
-        printf("fee   %llu koinu, %zu bytes\n", (unsigned long long)paid, rn);
+        sign_out(raw_only, "fee   %llu koinu, %zu bytes\n", (unsigned long long)paid, rn);
 
         /* Recorded as signed, not as confirmed: the transaction has not been
            broadcast yet and may never be. A failure to record is reported and
@@ -4073,6 +4089,7 @@ int main(int argc, char **argv)
     const char *groups_arg = NULL, *bpass_arg = NULL, *shares_arg = NULL;
     const char *format_arg = NULL, *id_arg = NULL;
     int group_threshold = -1;                  /* -1: every group given */
+    int raw_only = 0;
     int npsbt = 0;
     long since = -1;
     int vin = -1, nsigs = 0, finish = 0, peers = 1;   /* -1: every input */
@@ -4148,6 +4165,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--peers"))    { if (!arg_int("--peers", NEXT(), 1, 64, &peers)) return 2; }
         else if (!strcmp(a, "--validate-pow")) validate_pow = 1;
         else if (!strcmp(a, "--yes"))        assume_yes = 1;
+        else if (!strcmp(a, "--raw"))        raw_only = 1;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else if (!strcmp(a, "--version")) { printf("kw %s\n", KW_VERSION); return 0; }
         else if (a[0] != '-' && !cmd)        cmd = a;
@@ -4183,7 +4201,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, seedpass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, xpub_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
-    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap);
+    else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap, raw_only);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, watch_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);

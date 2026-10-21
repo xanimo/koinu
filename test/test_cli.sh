@@ -127,6 +127,27 @@ case $(ls -l "$J") in
     *) echo "FAIL: journal is $(ls -l "$J" | cut -c1-10), want -rw-------" >&2; exit 1;;
 esac
 
+# sign --raw puts the transaction alone on stdout, so the output goes straight
+# into send. The readback a person reads moves to stderr rather than being
+# suppressed: skipping it should take --yes, not a stdout redirect.
+RAWONLY=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+           --input "$IN" --to "$ADDR1:8.5" --fee 0.001 --change-to "$ADDR1" --raw 2>/dev/null)
+case "$RAWONLY" in 01000000*00000000) ;; *) echo "FAIL: --raw did not print a bare transaction" >&2; exit 1;; esac
+[ "$(printf '%s\n' "$RAWONLY" | wc -l)" -eq 1 ] \
+    || { echo "FAIL: --raw printed more than the transaction" >&2; exit 1; }
+./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.5" --fee 0.001 --change-to "$ADDR1" --raw 2>&1 >/dev/null \
+    | grep -q "^fee" || { echo "FAIL: --raw lost the readback instead of moving it" >&2; exit 1; }
+# and the default still carries both, which the assertions above rely on
+./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.5" --fee 0.001 --change-to "$ADDR1" 2>/dev/null \
+    | grep -q "^raw   " || { echo "FAIL: the default output changed" >&2; exit 1; }
+# the pipeline itself: send has to decode what sign handed it
+./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+     --input "$IN" --to "$ADDR1:8.5" --fee 0.001 --change-to "$ADDR1" --raw 2>/dev/null \
+  | ./kw --regtest send --tx - --node 127.0.0.1 --port 1 --yes 2>&1 \
+  | grep -q "^txid" || { echo "FAIL: send could not read what sign piped it" >&2; exit 1; }
+
 # send decodes what it is about to broadcast rather than pushing opaque hex. The
 # destination it prints has to be the one that was signed for, since the whole point
 # is catching a transaction that pays somewhere else.
@@ -664,4 +685,4 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket"
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket, sign --raw pipes into send"
