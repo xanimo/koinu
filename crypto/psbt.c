@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
-#include "psbt.h"
+#include "psbt_internal.h"
 #include "ec.h"
 #include "mem.h"
 #include "ripemd160.h"
@@ -10,6 +10,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+
 
 static const uint8_t KW_PSBT_MAGIC[5] = { 0x70, 0x73, 0x62, 0x74, 0xff };
 
@@ -28,23 +30,42 @@ static const uint8_t KW_PSBT_MAGIC[5] = { 0x70, 0x73, 0x62, 0x74, 0xff };
 #define PSBT_OUT_REDEEM_SCRIPT   0x00
 #define PSBT_OUT_WITNESS_SCRIPT  0x01
 
-void kw_psbt_init(kw_psbt *p)
+/* Release what a psbt owns and leave it empty and reusable. The parse error
+   path below wants this and not kw_psbt_free: freeing the struct there would
+   free an allocation the caller made and is about to free itself, which is the
+   double free this refactor invited. */
+static void psbt_clear(kw_psbt *p)
 {
+    size_t i;
+
+    for (i = 0; i < KW_TX_MAX_IN; i++) {
+        free(p->in[i].utxo);
+        p->in[i].utxo = NULL;
+    }
     memset(p, 0, sizeof *p);
     kw_tx_init(&p->tx);
 }
 
+kw_psbt *kw_psbt_new(void)
+{
+    kw_psbt *p = (kw_psbt *)calloc(1, sizeof *p);
+
+    if (p) psbt_clear(p);
+    return p;
+}
+
 void kw_psbt_free(kw_psbt *p)
 {
-    for (size_t i = 0; i < KW_TX_MAX_IN; i++) free(p->in[i].utxo);
-    memset(p, 0, sizeof *p);
+    if (!p) return;
+    psbt_clear(p);
+    free(p);
 }
 
 int kw_psbt_create(kw_psbt *p, const kw_tx *tx)
 {
     for (size_t i = 0; i < tx->nin; i++)
         if (tx->vin[i].scriptlen) return 0;      /* not an unsigned transaction */
-    kw_psbt_init(p);
+    psbt_clear(p);
     p->tx = *tx;
     return 1;
 }
@@ -400,7 +421,7 @@ static int r_kv(rd *r, const uint8_t **key, size_t *keylen,
 
 int kw_psbt_parse(const uint8_t *in, size_t len, kw_psbt *p)
 {
-    kw_psbt_init(p);
+    psbt_clear(p);
     rd r = { in, len, 0, 0 };
     if (len < 5 || memcmp(in, KW_PSBT_MAGIC, 5) != 0) return 0;
     r.off = 5;
@@ -474,6 +495,56 @@ int kw_psbt_parse(const uint8_t *in, size_t len, kw_psbt *p)
     if (r.off != r.len) goto bad;                /* trailing bytes */
     return 1;
 bad:
-    kw_psbt_free(p);
+    psbt_clear(p);
     return 0;
+}
+
+/* ── reading one ──────────────────────────────────────────────── */
+/* Each borrows a pointer into the psbt and returns 0 when the field is absent,
+   rather than handing back a zero length for the caller to interpret. */
+
+size_t kw_psbt_nsigs(const kw_psbt *p, size_t index)
+{
+    if (!p || index >= p->tx.nin) return 0;
+    return p->in[index].nsigs;
+}
+
+int kw_psbt_redeem(const kw_psbt *p, size_t index, const uint8_t **script, size_t *len)
+{
+    if (!p || index >= p->tx.nin || !p->in[index].redeemlen) return 0;
+    if (script) *script = p->in[index].redeem;
+    if (len) *len = p->in[index].redeemlen;
+    return 1;
+}
+
+int kw_psbt_utxo(const kw_psbt *p, size_t index, const uint8_t **rawtx, size_t *len)
+{
+    if (!p || index >= p->tx.nin || !p->in[index].utxo || !p->in[index].utxolen)
+        return 0;
+    if (rawtx) *rawtx = p->in[index].utxo;
+    if (len) *len = p->in[index].utxolen;
+    return 1;
+}
+
+int kw_psbt_final(const kw_psbt *p, size_t index, const uint8_t **scriptsig, size_t *len)
+{
+    if (!p || index >= p->tx.nin || !p->in[index].finallen) return 0;
+    if (scriptsig) *scriptsig = p->in[index].final;
+    if (len) *len = p->in[index].finallen;
+    return 1;
+}
+
+int kw_psbt_out_redeem(const kw_psbt *p, size_t index, const uint8_t **script, size_t *len)
+{
+    if (!p || index >= p->tx.nout || !p->out[index].redeemlen) return 0;
+    if (script) *script = p->out[index].redeem;
+    if (len) *len = p->out[index].redeemlen;
+    return 1;
+}
+
+int kw_psbt_sighash(const kw_psbt *p, size_t index, uint32_t *hashtype)
+{
+    if (!p || index >= p->tx.nin || !p->in[index].has_sighash) return 0;
+    if (hashtype) *hashtype = p->in[index].sighash;
+    return 1;
 }

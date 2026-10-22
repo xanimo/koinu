@@ -26,39 +26,19 @@
 #define KW_PSBT_MAX_SIGS   8      /* partial signatures per input */
 #define KW_PSBT_SCRIPT_MAX 520    /* consensus limit on a redeem script */
 
-typedef struct {
-    uint8_t pubkey[33];
-    uint8_t sig[KW_EC_SIG_DER_MAX + 1];   /* DER plus the hashtype byte */
-    size_t  siglen;
-} kw_psbt_sig;
+/* Opaque. 182048 bytes of fixed-size arrays, which is not a thing to leave on a
+   caller's frame, and a layout that has changed twice: once when a psbt stopped
+   dropping fields it could not represent, and again when the signer started
+   taking its scriptCode from the previous transaction. A caller reads it
+   through the accessors below, so neither change is a caller's problem. */
+typedef struct kw_psbt kw_psbt;
 
-typedef struct {
-    uint8_t     *utxo;                    /* non-witness utxo, the whole prev tx */
-    size_t       utxolen;
-    kw_psbt_sig  sigs[KW_PSBT_MAX_SIGS];
-    size_t       nsigs;
-    uint32_t     sighash;
-    int          has_sighash;
-    uint8_t      redeem[KW_PSBT_SCRIPT_MAX];
-    size_t       redeemlen;
-    uint8_t      final[KW_TX_SCRIPTSIG_MAX];  /* scriptSig, once assembled */
-    size_t       finallen;
-} kw_psbt_in;
 
-typedef struct {
-    uint8_t redeem[KW_PSBT_SCRIPT_MAX];
-    size_t  redeemlen;
-} kw_psbt_out;
-
-typedef struct {
-    kw_tx       tx;                       /* the unsigned transaction */
-    kw_psbt_in  in[KW_TX_MAX_IN];
-    kw_psbt_out out[KW_TX_MAX_OUT];
-} kw_psbt;
-
-/* Zero a psbt. Every psbt must be freed, since a parsed one owns its utxos. */
-void kw_psbt_init(kw_psbt *p);
-void kw_psbt_free(kw_psbt *p);
+/* An empty psbt, or NULL if it cannot be allocated. free takes NULL. Every
+   psbt must be freed, which the type now makes hard to forget: a parsed one
+   owns a copy of each input's previous transaction. */
+kw_psbt *kw_psbt_new(void);
+void     kw_psbt_free(kw_psbt *p);
 
 /* Creator: wrap (tx) as a psbt, blanking each input's scriptSig as BIP174
    requires of the unsigned transaction. Returns 1, or 0 if (tx) already
@@ -99,8 +79,32 @@ int kw_psbt_finalize(kw_psbt *p, size_t index, const uint8_t *scriptsig, size_t 
    scriptSig on every input. Returns 1, or 0 if one is missing. */
 int kw_psbt_extract(const kw_psbt *p, kw_tx *tx);
 
+/* ── reading one ──────────────────────────────────────────────── */
+/* The embedded transaction answers how many inputs there are and what each
+   spends; kw_psbt_unsigned_tx is above.
+
+   Each of the four below borrows a pointer into the psbt, valid until the psbt
+   is changed or freed, and returns 0 when the field is absent rather than a
+   zero length. A caller that had to know an absent redeem script reads as
+   redeemlen == 0 is a caller that can mistake one for the other, which is how
+   kw_psbt_sign came to refuse every p2pkh input. */
+size_t kw_psbt_nsigs(const kw_psbt *p, size_t index);
+int kw_psbt_redeem(const kw_psbt *p, size_t index, const uint8_t **script, size_t *len);
+int kw_psbt_utxo(const kw_psbt *p, size_t index, const uint8_t **rawtx, size_t *len);
+int kw_psbt_final(const kw_psbt *p, size_t index, const uint8_t **scriptsig, size_t *len);
+int kw_psbt_out_redeem(const kw_psbt *p, size_t index, const uint8_t **script, size_t *len);
+
+/* The sighash type the psbt asks for, if it says so. Returns 0 when it does
+   not, leaving (hashtype) alone. */
+int kw_psbt_sighash(const kw_psbt *p, size_t index, uint32_t *hashtype);
+
 /* The BIP174 byte stream. Returns the length written, or 0 if it does not
-   fit. Parse returns 1, or 0 on a malformed, truncated, or segwit psbt. */
+   fit. Parse returns 1, or 0 on a malformed, truncated, or segwit psbt, and in
+   either case (p) ends up empty rather than half-filled.
+
+   Parse releases whatever (p) held first, so it takes a psbt from kw_psbt_new
+   or one already parsed, and not a struct a caller declared and never
+   initialised: there is nothing to tell those apart from inside. */
 size_t kw_psbt_serialize(const kw_psbt *p, uint8_t *out, size_t outcap);
 int    kw_psbt_parse(const uint8_t *in, size_t len, kw_psbt *p);
 

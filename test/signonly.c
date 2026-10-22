@@ -35,7 +35,7 @@ int main(void)
     char cx[KW_CODEX32_MAX_LEN * 3];
     size_t nshares = 0, ncx = 0, n;
     kw_tx tx;
-    kw_psbt p;
+    kw_psbt *p;
 
     if (!kw_ec_start()) { fprintf(stderr, "signonly: no curve\n"); return 1; }
     if (!kw_bip39_to_seed(mnemonic, "", seed)) { fprintf(stderr, "signonly: seed\n"); return 1; }
@@ -57,8 +57,9 @@ int main(void)
         return 1;
     }
     /* the psbt first: it wraps an unsigned transaction */
-    if (!kw_psbt_create(&p, &tx)) { fprintf(stderr, "signonly: psbt\n"); return 1; }
-    kw_psbt_free(&p);
+    p = kw_psbt_new();
+    if (!p || !kw_psbt_create(p, &tx)) { fprintf(stderr, "signonly: psbt\n"); return 1; }
+    kw_psbt_free(p);
     if (!kw_tx_sign_p2pkh(&tx, 0, child.key + 1, spk, sizeof spk)) {
         fprintf(stderr, "signonly: sign\n");
         return 1;

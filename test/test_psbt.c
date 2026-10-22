@@ -7,7 +7,7 @@
  * this is for do not classify), extract. Plus the refusals: a signed global
  * transaction, a segwit field, a truncated stream. */
 
-#include "psbt.h"
+#include "psbt_internal.h"   /* the layout: see the header for why */
 #include "ec.h"
 #include "hex.h"
 #include "sha2.h"
@@ -52,64 +52,68 @@ int main(void)
     kw_tx_add_output(&tx, 99000000ULL, spk, 25);
 
     /* creator + updater */
-    kw_psbt a;
-    if (!kw_psbt_create(&a, &tx)) { fprintf(stderr, "FAIL: create\n"); return 1; }
-    if (!kw_psbt_set_redeem(&a, 0, redeem, rl)) { fprintf(stderr, "FAIL: set redeem\n"); return 1; }
-    if (!kw_psbt_set_utxo(&a, 0, prevtx, prevlen)) { fprintf(stderr, "FAIL: set utxo\n"); return 1; }
+    kw_psbt *a = kw_psbt_new();
+    if (!a) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+    if (!kw_psbt_create(a, &tx)) { fprintf(stderr, "FAIL: create\n"); return 1; }
+    if (!kw_psbt_set_redeem(a, 0, redeem, rl)) { fprintf(stderr, "FAIL: set redeem\n"); return 1; }
+    if (!kw_psbt_set_utxo(a, 0, prevtx, prevlen)) { fprintf(stderr, "FAIL: set utxo\n"); return 1; }
 
     /* A signer with no utxo to check against, or one whose redeem script is not
        what that utxo pays, must not sign. Otherwise "sign vin 1 of our 2-of-2"
        can name one of the signer's own p2pkh coins with its scriptPubKey as the
        redeem script, and what comes back spends that coin. */
     {
-        kw_psbt noutxo;
-        if (!kw_psbt_create(&noutxo, &tx) || !kw_psbt_set_redeem(&noutxo, 0, redeem, rl)) {
+        kw_psbt *noutxo = kw_psbt_new();
+    if (!noutxo) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        if (!kw_psbt_create(noutxo, &tx) || !kw_psbt_set_redeem(noutxo, 0, redeem, rl)) {
             fprintf(stderr, "FAIL: build no-utxo psbt\n"); return 1;
         }
-        if (kw_psbt_sign(&noutxo, 0, skA, KW_SIGHASH_ALL) == 1) {
+        if (kw_psbt_sign(noutxo, 0, skA, KW_SIGHASH_ALL) == 1) {
             fprintf(stderr, "FAIL: signed without the utxo it spends\n"); return 1;
         }
-        kw_psbt_free(&noutxo);
+        kw_psbt_free(noutxo);
 
-        kw_psbt wrong;
-        if (!kw_psbt_create(&wrong, &tx) || !kw_psbt_set_utxo(&wrong, 0, prevtx, prevlen) ||
-            !kw_psbt_set_redeem(&wrong, 0, spk, 25)) {
+        kw_psbt *wrong = kw_psbt_new();
+    if (!wrong) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        if (!kw_psbt_create(wrong, &tx) || !kw_psbt_set_utxo(wrong, 0, prevtx, prevlen) ||
+            !kw_psbt_set_redeem(wrong, 0, spk, 25)) {
             fprintf(stderr, "FAIL: build mismatched psbt\n"); return 1;
         }
-        if (kw_psbt_sign(&wrong, 0, skA, KW_SIGHASH_ALL) == 1) {
+        if (kw_psbt_sign(wrong, 0, skA, KW_SIGHASH_ALL) == 1) {
             fprintf(stderr, "FAIL: signed a script the utxo does not pay\n"); return 1;
         }
-        kw_psbt_free(&wrong);
+        kw_psbt_free(wrong);
     }
 
     /* the unsigned tx reads back: what a signer must see before it signs */
-    const kw_tx *ut = kw_psbt_unsigned_tx(&a);
+    const kw_tx *ut = kw_psbt_unsigned_tx(a);
     if (!ut || ut->nin != 1 || ut->nout != 1 || ut->vout[0].value != 99000000ULL ||
         ut->vin[0].scriptlen != 0) { fprintf(stderr, "FAIL: unsigned tx accessor\n"); return 1; }
 
     /* each party signs its own copy, then the halves combine */
     uint8_t buf[8192];
-    size_t n = kw_psbt_serialize(&a, buf, sizeof buf);
+    size_t n = kw_psbt_serialize(a, buf, sizeof buf);
     if (!n) { fprintf(stderr, "FAIL: serialize\n"); return 1; }
-    kw_psbt b;
-    if (!kw_psbt_parse(buf, n, &b)) { fprintf(stderr, "FAIL: parse\n"); return 1; }
-    if (b.in[0].redeemlen != rl || memcmp(b.in[0].redeem, redeem, rl) != 0 ||
-        b.in[0].utxolen != prevlen) { fprintf(stderr, "FAIL: round trip fields\n"); return 1; }
+    kw_psbt *b = kw_psbt_new();
+    if (!b) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+    if (!kw_psbt_parse(buf, n, b)) { fprintf(stderr, "FAIL: parse\n"); return 1; }
+    if (b->in[0].redeemlen != rl || memcmp(b->in[0].redeem, redeem, rl) != 0 ||
+        b->in[0].utxolen != prevlen) { fprintf(stderr, "FAIL: round trip fields\n"); return 1; }
 
-    if (kw_psbt_sign(&a, 0, skA, KW_SIGHASH_ALL) != 1 ||
-        kw_psbt_sign(&b, 0, skB, KW_SIGHASH_ALL) != 1) { fprintf(stderr, "FAIL: sign\n"); return 1; }
+    if (kw_psbt_sign(a, 0, skA, KW_SIGHASH_ALL) != 1 ||
+        kw_psbt_sign(b, 0, skB, KW_SIGHASH_ALL) != 1) { fprintf(stderr, "FAIL: sign\n"); return 1; }
 
     /* Two psbts that disagree about the redeem script are not combinable. Taking
        the first drops the other party's script by argument order, which is the
        thing the parser refuses to do one layer down. */
     {
-        kw_psbt x = a, y = a;
+        kw_psbt x = *a, y = *a;
         x.in[0].redeemlen = 3; memcpy(x.in[0].redeem, "\x51\x52\x53", 3);
         y.in[0].redeemlen = 3; memcpy(y.in[0].redeem, "\x51\x52\x54", 3);
         if (kw_psbt_combine(&x, &y) != 0) {
             fprintf(stderr, "FAIL: combined two different redeem scripts\n"); return 1;
         }
-        kw_psbt z = a, w = a;                       /* identical still combines */
+        kw_psbt z = *a, w = *a;                       /* identical still combines */
         if (kw_psbt_combine(&z, &w) != 1) {
             fprintf(stderr, "FAIL: refused two identical psbts\n"); return 1;
         }
@@ -121,7 +125,7 @@ int main(void)
        a key in the script, or a real signature from a key outside it, went
        straight in. */
     {
-        kw_psbt dst = a, src = a;
+        kw_psbt dst = *a, src = *a;
         src.in[0].nsigs = 1;
         memcpy(src.in[0].sigs[0].pubkey, pubB, 33);
         memset(src.in[0].sigs[0].sig, 0x41, 20);
@@ -136,7 +140,7 @@ int main(void)
            were passed in: a flipped byte in the first --psbt combined with exit
            0 and the error, in the other order, named a different problem. */
         {
-            kw_psbt bad = a, good = a;
+            kw_psbt bad = *a, good = *a;
             bad.in[0].nsigs = 1;
             memcpy(bad.in[0].sigs[0].pubkey, pubB, 33);
             memset(bad.in[0].sigs[0].sig, 0x41, 20);
@@ -154,7 +158,7 @@ int main(void)
         if (!kw_tx_signature(&tx, 0, skC, redeem, rl, KW_SIGHASH_ALL, der, &dl)) {
             fprintf(stderr, "FAIL: sign with C\n"); return 1;
         }
-        kw_psbt dst2 = a, src2 = a;
+        kw_psbt dst2 = *a, src2 = *a;
         src2.in[0].nsigs = 1;
         memcpy(src2.in[0].sigs[0].pubkey, pubC, 33);
         memcpy(src2.in[0].sigs[0].sig, der, dl);
@@ -164,7 +168,7 @@ int main(void)
         }
 
         /* and an output's redeem script conflicts the way an input's does */
-        kw_psbt o1 = a, o2 = a;
+        kw_psbt o1 = *a, o2 = *a;
         o1.out[0].redeem[0] = 0x51; o1.out[0].redeemlen = 1;
         o2.out[0].redeem[0] = 0x52; o2.out[0].redeemlen = 1;
         if (kw_psbt_combine(&o1, &o2) != 0) {
@@ -176,7 +180,7 @@ int main(void)
        signed with a different one and relabelled. Rewriting the field returned a
        psbt claiming it had asked for what it got. */
     {
-        kw_psbt d = a;
+        kw_psbt d = *a;
         d.in[0].has_sighash = 1;
         d.in[0].sighash = 0x02;                      /* SIGHASH_NONE */
         if (kw_psbt_sign(&d, 0, skA, KW_SIGHASH_ALL) != 0) {
@@ -187,18 +191,18 @@ int main(void)
             return 1;
         }
         /* and the request it can meet still signs */
-        kw_psbt e = a;
+        kw_psbt e = *a;
         e.in[0].has_sighash = 1;
         e.in[0].sighash = KW_SIGHASH_ALL;
         if (kw_psbt_sign(&e, 0, skA, KW_SIGHASH_ALL) != 1) {
             fprintf(stderr, "FAIL: refused a sighash it can satisfy\n"); return 1;
         }
     }
-    if (a.in[0].nsigs != 1 || b.in[0].nsigs != 1) { fprintf(stderr, "FAIL: sig count\n"); return 1; }
+    if (a->in[0].nsigs != 1 || b->in[0].nsigs != 1) { fprintf(stderr, "FAIL: sig count\n"); return 1; }
 
-    if (!kw_psbt_combine(&a, &b)) { fprintf(stderr, "FAIL: combine\n"); return 1; }
-    if (a.in[0].nsigs != 2) { fprintf(stderr, "FAIL: combined sig count\n"); return 1; }
-    if (!kw_psbt_combine(&a, &b) || a.in[0].nsigs != 2) {
+    if (!kw_psbt_combine(a, b)) { fprintf(stderr, "FAIL: combine\n"); return 1; }
+    if (a->in[0].nsigs != 2) { fprintf(stderr, "FAIL: combined sig count\n"); return 1; }
+    if (!kw_psbt_combine(a, b) || a->in[0].nsigs != 2) {
         fprintf(stderr, "FAIL: combine is not idempotent\n"); return 1;
     }
 
@@ -206,12 +210,12 @@ int main(void)
        different things, or one of them is wrong. Keeping dst's is resolution by
        argument order, which is what every other field here refuses. */
     {
-        kw_psbt x = a, y = a;
+        kw_psbt x = *a, y = *a;
         y.in[0].sigs[0].sig[1] ^= 0x01;          /* same key, different signature */
         if (kw_psbt_combine(&x, &y) != 0) {
             fprintf(stderr, "FAIL: combined two signatures under one key\n"); return 1;
         }
-        kw_psbt z = a, w = a;                    /* byte-identical still combines */
+        kw_psbt z = *a, w = *a;                    /* byte-identical still combines */
         if (kw_psbt_combine(&z, &w) != 1 || z.in[0].nsigs != 2) {
             fprintf(stderr, "FAIL: identical signatures refused\n"); return 1;
         }
@@ -219,10 +223,10 @@ int main(void)
 
     /* both signatures verify against the sighash they claim to cover */
     uint8_t hash[32];
-    if (!kw_tx_sighash(&a.tx, 0, redeem, rl, KW_SIGHASH_ALL, hash)) { fprintf(stderr, "FAIL: sighash\n"); return 1; }
+    if (!kw_tx_sighash(&a->tx, 0, redeem, rl, KW_SIGHASH_ALL, hash)) { fprintf(stderr, "FAIL: sighash\n"); return 1; }
     for (size_t i = 0; i < 2; i++) {
         uint8_t pk[33], sig[80]; size_t sl = sizeof sig;
-        if (!kw_psbt_get_sig(&a, 0, i, pk, sig, &sl)) { fprintf(stderr, "FAIL: get sig\n"); return 1; }
+        if (!kw_psbt_get_sig(a, 0, i, pk, sig, &sl)) { fprintf(stderr, "FAIL: get sig\n"); return 1; }
         if (sig[sl - 1] != KW_SIGHASH_ALL) { fprintf(stderr, "FAIL: hashtype byte\n"); return 1; }
         if (!kw_ec_verify(pk, hash, sig, sl - 1)) { fprintf(stderr, "FAIL: sig verify\n"); return 1; }
         if (memcmp(pk, i == 0 ? pubA : pubB, 33) != 0) { fprintf(stderr, "FAIL: sig order\n"); return 1; }
@@ -233,30 +237,35 @@ int main(void)
     ss[k++] = 0x00;
     for (size_t i = 0; i < 2; i++) {
         uint8_t pk[33], sig[80]; size_t sl = sizeof sig;
-        kw_psbt_get_sig(&a, 0, i, pk, sig, &sl);
+        kw_psbt_get_sig(a, 0, i, pk, sig, &sl);
         ss[k++] = (uint8_t)sl; memcpy(ss + k, sig, sl); k += sl;
     }
     ss[k++] = (uint8_t)rl; memcpy(ss + k, redeem, rl); k += rl;
 
     kw_tx final;
-    if (kw_psbt_extract(&a, &final)) { fprintf(stderr, "FAIL: extracted without a scriptSig\n"); return 1; }
-    if (!kw_psbt_finalize(&a, 0, ss, k)) { fprintf(stderr, "FAIL: finalize\n"); return 1; }
-    if (!kw_psbt_extract(&a, &final)) { fprintf(stderr, "FAIL: extract\n"); return 1; }
+    if (kw_psbt_extract(a, &final)) { fprintf(stderr, "FAIL: extracted without a scriptSig\n"); return 1; }
+    if (!kw_psbt_finalize(a, 0, ss, k)) { fprintf(stderr, "FAIL: finalize\n"); return 1; }
+    if (!kw_psbt_extract(a, &final)) { fprintf(stderr, "FAIL: extract\n"); return 1; }
     if (final.vin[0].scriptlen != k || memcmp(final.vin[0].script, ss, k) != 0) {
         fprintf(stderr, "FAIL: extracted scriptSig\n"); return 1;
     }
 
     /* a finalized psbt round-trips with its scriptSig */
-    n = kw_psbt_serialize(&a, buf, sizeof buf);
-    kw_psbt c;
-    if (!n || !kw_psbt_parse(buf, n, &c) || c.in[0].finallen != k ||
-        c.in[0].nsigs != 2) { fprintf(stderr, "FAIL: final round trip\n"); return 1; }
+    n = kw_psbt_serialize(a, buf, sizeof buf);
+    kw_psbt *c = kw_psbt_new();
+    if (!c) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+    if (!n || !kw_psbt_parse(buf, n, c) || c->in[0].finallen != k ||
+        c->in[0].nsigs != 2) { fprintf(stderr, "FAIL: final round trip\n"); return 1; }
 
-    /* refusals */
-    kw_psbt d;
-    if (kw_psbt_create(&d, &final)) { fprintf(stderr, "FAIL: created from a signed tx\n"); return 1; }
-    if (kw_psbt_parse(buf, n - 1, &d)) { fprintf(stderr, "FAIL: truncated accepted\n"); return 1; }
-    if (kw_psbt_parse(buf, 4, &d)) { fprintf(stderr, "FAIL: no magic accepted\n"); return 1; }
+    /* refusals. A handle rather than a bare struct: parse releases what the
+       psbt held before filling it, so handing it an uninitialised frame means
+       free() on whatever was there, which is what a stack declaration here used
+       to do once kw_psbt stopped being something a caller allocates. */
+    kw_psbt *d = kw_psbt_new();
+    if (!d) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+    if (kw_psbt_create(d, &final)) { fprintf(stderr, "FAIL: created from a signed tx\n"); return 1; }
+    if (kw_psbt_parse(buf, n - 1, d)) { fprintf(stderr, "FAIL: truncated accepted\n"); return 1; }
+    if (kw_psbt_parse(buf, 4, d)) { fprintf(stderr, "FAIL: no magic accepted\n"); return 1; }
 
     /* a witness-utxo key must be refused, not skipped: dropping what a
        combiner does not understand loses the other side's data */
@@ -264,11 +273,11 @@ int main(void)
     memcpy(seg, buf, n);
     for (size_t i = 5; i + 1 < n; i++)
         if (seg[i] == 0x01 && seg[i+1] == 0x00) { seg[i+1] = 0x01; break; }  /* keylen 1, type 0 -> 1 */
-    if (kw_psbt_parse(seg, n, &d) && d.in[0].utxolen) {
+    if (kw_psbt_parse(seg, n, d) && d->in[0].utxolen) {
         fprintf(stderr, "FAIL: segwit field accepted\n"); return 1;
     }
 
-    kw_psbt_free(&a); kw_psbt_free(&b); kw_psbt_free(&c);
+    kw_psbt_free(a); kw_psbt_free(b); kw_psbt_free(c); kw_psbt_free(d);
 
     /* every psbt in the BIP174 test-vector section */
     int parsed = 0, refused = 0;
@@ -278,8 +287,9 @@ int main(void)
         uint8_t *raw = (uint8_t *)malloc(bl ? bl : 1);
         if (!raw || !kw_hex_decode(v->hex, hl, raw, bl)) { fprintf(stderr, "FAIL: vector %zu hex\n", i); return 1; }
 
-        kw_psbt vp;
-        int got = kw_psbt_parse(raw, bl, &vp);
+        kw_psbt *vp = kw_psbt_new();
+    if (!vp) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        int got = kw_psbt_parse(raw, bl, vp);
         if (got != v->parses) {
             fprintf(stderr, "FAIL: vector %zu (%s) %s\n", i, v->note,
                     got ? "parsed but should not" : "was refused but should parse");
@@ -288,27 +298,28 @@ int main(void)
         if (got) {
             /* what came back must survive a second trip unchanged */
             uint8_t re[16384];
-            size_t rn = kw_psbt_serialize(&vp, re, sizeof re);
-            kw_psbt again;
-            if (!rn || !kw_psbt_parse(re, rn, &again)) { fprintf(stderr, "FAIL: vector %zu reserialize\n", i); return 1; }
+            size_t rn = kw_psbt_serialize(vp, re, sizeof re);
+            kw_psbt *again = kw_psbt_new();
+    if (!again) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+            if (!rn || !kw_psbt_parse(re, rn, again)) { fprintf(stderr, "FAIL: vector %zu reserialize\n", i); return 1; }
             uint8_t t1[32], t2[32];
-            if (!kw_tx_txid(&vp.tx, t1) || !kw_tx_txid(&again.tx, t2) || memcmp(t1, t2, 32) != 0) {
+            if (!kw_tx_txid(&vp->tx, t1) || !kw_tx_txid(&again->tx, t2) || memcmp(t1, t2, 32) != 0) {
                 fprintf(stderr, "FAIL: vector %zu tx changed across a round trip\n", i); return 1;
             }
-            for (size_t k = 0; k < vp.tx.nin; k++) {
-                if (vp.in[k].nsigs != again.in[k].nsigs ||
-                    vp.in[k].redeemlen != again.in[k].redeemlen ||
-                    vp.in[k].utxolen != again.in[k].utxolen ||
-                    vp.in[k].finallen != again.in[k].finallen ||
-                    vp.in[k].has_sighash != again.in[k].has_sighash ||
-                    (vp.in[k].utxolen && memcmp(vp.in[k].utxo, again.in[k].utxo, vp.in[k].utxolen))) {
+            for (size_t k = 0; k < vp->tx.nin; k++) {
+                if (vp->in[k].nsigs != again->in[k].nsigs ||
+                    vp->in[k].redeemlen != again->in[k].redeemlen ||
+                    vp->in[k].utxolen != again->in[k].utxolen ||
+                    vp->in[k].finallen != again->in[k].finallen ||
+                    vp->in[k].has_sighash != again->in[k].has_sighash ||
+                    (vp->in[k].utxolen && memcmp(vp->in[k].utxo, again->in[k].utxo, vp->in[k].utxolen))) {
                     fprintf(stderr, "FAIL: vector %zu input %zu changed\n", i, k); return 1;
                 }
             }
-            kw_psbt_free(&again);
+            kw_psbt_free(again);
             parsed++;
         } else refused++;
-        kw_psbt_free(&vp);
+        kw_psbt_free(vp);
         free(raw);
     }
 

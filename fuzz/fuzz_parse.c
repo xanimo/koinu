@@ -120,14 +120,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         break;
     }
     case 1: {                                  /* a counterparty's psbt */
-        kw_psbt p;
-        if (kw_psbt_parse(in, len, &p)) {
+        kw_psbt *p = kw_psbt_new();
+        if (!p) break;
+        if (kw_psbt_parse(in, len, p)) {
             uint8_t out[32768];
-            kw_psbt_serialize(&p, out, sizeof out);
+            kw_psbt_serialize(p, out, sizeof out);
             uint8_t pk[33], sig[80]; size_t sl = sizeof sig;
-            kw_psbt_get_sig(&p, 0, 0, pk, sig, &sl);
+            kw_psbt_get_sig(p, 0, 0, pk, sig, &sl);
         }
-        kw_psbt_free(&p);
+        kw_psbt_free(p);
         break;
     }
     case 2: {                                  /* a p2p frame */

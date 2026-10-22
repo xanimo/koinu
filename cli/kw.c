@@ -3537,7 +3537,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
     kw_bip32_key acct;
     kw_utxoset us;
     kw_tx tx;
-    kw_psbt p;
+    kw_psbt *p = NULL;
     kw_scan_addr *watch = NULL;
     uint8_t dspk[25], chspk[25];
     uint8_t seed[64];
@@ -3721,8 +3721,10 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
         goto out;
     }
 
-    if (!kw_psbt_create(&p, &tx)) { fprintf(stderr, "kw: cannot wrap the transaction\n"); goto out; }
+    p = kw_psbt_new();
+    if (!p) { fprintf(stderr, "kw: out of memory\n"); goto out; }
     have_psbt = 1;
+    if (!kw_psbt_create(p, &tx)) { fprintf(stderr, "kw: cannot wrap the transaction\n"); goto out; }
     /* Every input carries the transaction that funded it. Without this the
        signer has nothing to check the amount against, which is the whole of why
        the utxo set keeps them. */
@@ -3733,7 +3735,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
                 memcmp(us.u[u].txid, tx.vin[i].prevout, 32) == 0) { e = &us.u[u]; break; }
         }
         if (!e || !e->prevtx) { fprintf(stderr, "kw: input %d has no transaction behind it\n", i); goto out; }
-        if (!kw_psbt_set_utxo(&p, (size_t)i, e->prevtx, e->prevtxlen)) {
+        if (!kw_psbt_set_utxo(p, (size_t)i, e->prevtx, e->prevtxlen)) {
             fprintf(stderr, "kw: input %d: the set's transaction is not the one being spent\n", i);
             goto out;
         }
@@ -3741,7 +3743,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
 
     {
         uint8_t raw[32768];
-        size_t n = kw_psbt_serialize(&p, raw, sizeof raw);
+        size_t n = kw_psbt_serialize(p, raw, sizeof raw);
         char *hex;
 
         if (!n) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
@@ -3768,7 +3770,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
     rc = 0;
 
 out:
-    if (have_psbt) kw_psbt_free(&p);
+    if (have_psbt) kw_psbt_free(p);
     if (have_us) kw_utxoset_free(&us);
     free(watch);
     kw_secure_zero(&acct, sizeof acct);
@@ -3787,15 +3789,22 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     uint8_t raw[32768], seed[64];
     kw_bip32_key master, *keys = NULL;
     uint8_t (*h160)[20] = NULL;
-    kw_psbt p;
+    kw_psbt *p = NULL;
+    const kw_tx *utx;
     size_t n;
     int rc = 1, have_psbt = 0, nkeys = 0, signed_n = 0, skipped = 0, m = 0;
 
     if (!path || !psbt_arg) { usage(); return 2; }
     n = read_hex_arg(psbt_arg, "--psbt", raw, sizeof raw);
     if (!n) return 1;
-    if (!kw_psbt_parse(raw, n, &p)) { fprintf(stderr, "kw: --psbt does not parse\n"); return 1; }
+    p = kw_psbt_new();
+    if (!p) { fprintf(stderr, "kw: out of memory\n"); return 1; }
     have_psbt = 1;
+    if (!kw_psbt_parse(raw, n, p)) {
+        fprintf(stderr, "kw: --psbt does not parse\n");
+        kw_psbt_free(p);
+        return 1;
+    }
 
     kw_secure_keep(seed, sizeof seed);
     if (!open_seed(path, pass_arg, seed)) goto out;
@@ -3820,25 +3829,27 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
             m++;
         }
 
-    for (size_t i = 0; i < p.tx.nin; i++) {
+    /* The unsigned transaction is read through the accessor, so the psbt's own
+       layout is none of this function's business. */
+    utx = kw_psbt_unsigned_tx(p);
+    for (size_t i = 0; i < utx->nin; i++) {
         kw_tx prev;
         const uint8_t *u = NULL;
         size_t ulen = 0, used;
+        uint32_t vout = utx->vin[i].vout;
         int j = -1;
 
-        u = p.in[i].utxo;
-        ulen = p.in[i].utxolen;
-        if (!u || !ulen) {
+        if (!kw_psbt_utxo(p, i, &u, &ulen)) {
             fprintf(stderr, "kw: input %zu carries no transaction, so its amount cannot "
                             "be checked and it is not signed\n", i);
             skipped++;
             continue;
         }
         used = kw_tx_parse(u, ulen, &prev);
-        if (!used || used != ulen || p.tx.vin[i].vout >= prev.nout) { skipped++; continue; }
+        if (!used || used != ulen || vout >= prev.nout) { skipped++; continue; }
         {
-            const uint8_t *sc = prev.vout[p.tx.vin[i].vout].script;
-            size_t sl = prev.vout[p.tx.vin[i].vout].scriptlen;
+            const uint8_t *sc = prev.vout[vout].script;
+            size_t sl = prev.vout[vout].scriptlen;
             if (sl != 25) { skipped++; continue; }
             for (int t = 0; t < m; t++)
                 if (memcmp(h160[t], sc + 3, 20) == 0) { j = t; break; }
@@ -3846,7 +3857,7 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
         if (j < 0) { skipped++; continue; }
         /* kw_psbt_sign checks the transaction hashes to the outpoint and that
            the output pays this key before it signs. */
-        if (kw_psbt_sign(&p, i, keys[j].key + 1, KW_SIGHASH_ALL) != 1) {
+        if (kw_psbt_sign(p, i, keys[j].key + 1, KW_SIGHASH_ALL) != 1) {
             fprintf(stderr, "kw: input %zu would not sign\n", i);
             goto out;
         }
@@ -3858,7 +3869,7 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
             uint8_t pub[33], sig[KW_EC_SIG_DER_MAX + 1], ss[KW_TX_SCRIPTSIG_MAX];
             size_t siglen = sizeof sig, sl = 0;
 
-            if (!kw_psbt_get_sig(&p, i, 0, pub, sig, &siglen)) {
+            if (!kw_psbt_get_sig(p, i, 0, pub, sig, &siglen)) {
                 fprintf(stderr, "kw: input %zu signed and then had no signature\n", i);
                 goto out;
             }
@@ -3872,7 +3883,7 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
             ss[sl++] = 33;
             memcpy(ss + sl, pub, 33);
             sl += 33;
-            if (!kw_psbt_finalize(&p, i, ss, sl)) {
+            if (!kw_psbt_finalize(p, i, ss, sl)) {
                 fprintf(stderr, "kw: input %zu would not finalize\n", i);
                 goto out;
             }
@@ -3888,14 +3899,14 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
 
     {
         uint8_t out_raw[32768];
-        size_t on = kw_psbt_serialize(&p, out_raw, sizeof out_raw);
+        size_t on = kw_psbt_serialize(p, out_raw, sizeof out_raw);
         char *hex;
 
         if (!on) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
         hex = (char *)malloc(2 * on + 1);
         if (!hex) { fprintf(stderr, "kw: out of memory\n"); goto out; }
         kw_hex_encode(out_raw, on, hex, 2 * on + 1);
-        printf("signed  %d of %zu input(s)", signed_n, p.tx.nin);
+        printf("signed  %d of %zu input(s)", signed_n, utx->nin);
         if (skipped) printf(", %d left for another signer", skipped);
         printf("\n");
         printf("psbt    %s\n", hex);
@@ -3913,7 +3924,7 @@ out:
     kw_secure_zero(&master, sizeof master);
     kw_secure_forget(&master, sizeof master);
     kw_secure_forget(seed, sizeof seed);
-    if (have_psbt) kw_psbt_free(&p);
+    if (have_psbt) kw_psbt_free(p);
     return rc;
 }
 
@@ -3939,14 +3950,22 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
         return psbt_sign_keystore(cp, path, pass_arg, psbt_arg, gap);
 
     uint8_t raw[32768];
-    kw_psbt p;
+    kw_psbt *p;
+
+    /* 182kB of fixed arrays, so it is allocated rather than left on this frame.
+       Allocated before the dispatch and freed on one path, since every branch
+       below either uses it or returns through out:. */
+    p = kw_psbt_new();
+    if (!p) { fprintf(stderr, "kw: out of memory\n"); return 1; }
 
     if (!strcmp(sub, "create")) {
         size_t n = read_hex_arg(tx_arg, "--tx", raw, sizeof raw);
-        if (!n) return 1;
         kw_tx tx;
-        if (kw_tx_parse(raw, n, &tx) != n) { fprintf(stderr, "kw: --tx is not a transaction\n"); return 1; }
-        if (!kw_psbt_create(&p, &tx)) { fprintf(stderr, "kw: --tx already carries a scriptSig\n"); return 1; }
+        int crc = 1;
+
+        if (!n) goto out_create;
+        if (kw_tx_parse(raw, n, &tx) != n) { fprintf(stderr, "kw: --tx is not a transaction\n"); goto out_create; }
+        if (!kw_psbt_create(p, &tx)) { fprintf(stderr, "kw: --tx already carries a scriptSig\n"); goto out_create; }
         /* the updater's job: the previous transaction each input spends, which is
            what lets a signer check that the redeem script it is handed is the one
            the coin is actually locked to */
@@ -3954,46 +3973,45 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
             uint8_t u[16384];
             size_t un = read_hex_arg(utxo_arg, "--utxo", u, sizeof u);
             size_t at = vin < 0 ? 0 : (size_t)vin;
-            if (!un || !kw_psbt_set_utxo(&p, at, u, un)) {
+            if (!un || !kw_psbt_set_utxo(p, at, u, un)) {
                 fprintf(stderr, "kw: --utxo is not a transaction this psbt has an input for\n");
-                kw_psbt_free(&p);
-                return 1;
+                goto out_create;
             }
         }
-        int rc = print_psbt(&p);
-        kw_psbt_free(&p);
-        return rc;
+        crc = print_psbt(p);
+    out_create:
+        kw_psbt_free(p);
+        return crc;
     }
 
     size_t n = read_hex_arg(psbt_arg, "--psbt", raw, sizeof raw);
-    if (!n) return 1;
-    if (!kw_psbt_parse(raw, n, &p)) { fprintf(stderr, "kw: --psbt is not a psbt kw can represent\n"); return 1; }
-
     int rc = 1;
+    if (!n) goto out;
+    if (!kw_psbt_parse(raw, n, p)) { fprintf(stderr, "kw: --psbt is not a psbt kw can represent\n"); goto out; }
     if (!strcmp(sub, "tx")) {
         /* the unsigned transaction, so a signer can see what it is signing */
         uint8_t t[16384];
-        size_t tn = kw_tx_serialize(kw_psbt_unsigned_tx(&p), t, sizeof t);
+        size_t tn = kw_tx_serialize(kw_psbt_unsigned_tx(p), t, sizeof t);
         if (tn) {
             char hex[32770]; kw_hex_encode(t, tn, hex, sizeof hex);
             printf("%s\n", hex); rc = 0;
         }
     } else if (!strcmp(sub, "sign")) {
-        if (vin < 0 || (size_t)vin >= p.tx.nin) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
+        if (vin < 0 || (size_t)vin >= kw_psbt_unsigned_tx(p)->nin) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
         if (redeem_arg) {
             uint8_t r[KW_PSBT_SCRIPT_MAX];
             size_t rl = read_hex_arg(redeem_arg, "--redeem", r, sizeof r);
-            if (!rl || !kw_psbt_set_redeem(&p, (size_t)vin, r, rl)) goto out;
+            if (!rl || !kw_psbt_set_redeem(p, (size_t)vin, r, rl)) goto out;
         }
         if (utxo_arg) {
             uint8_t u[16384];
             size_t un = read_hex_arg(utxo_arg, "--utxo", u, sizeof u);
-            if (!un || !kw_psbt_set_utxo(&p, (size_t)vin, u, un)) goto out;
+            if (!un || !kw_psbt_set_utxo(p, (size_t)vin, u, un)) goto out;
         }
         uint8_t sk[32]; int comp = 0;
         kw_secure_keep(sk, sizeof sk);
         if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); goto out; }
-        int s = kw_psbt_sign(&p, (size_t)vin, sk, KW_SIGHASH_ALL);
+        int s = kw_psbt_sign(p, (size_t)vin, sk, KW_SIGHASH_ALL);
         kw_secure_forget(sk, sizeof sk);
         if (s != 1) {
             fprintf(stderr, s == -1 ? "kw: input already holds the maximum signatures\n"
@@ -4002,15 +4020,15 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
                                       "utxo pays\n");
             goto out;
         }
-        rc = print_psbt(&p);
+        rc = print_psbt(p);
     } else if (!strcmp(sub, "sigs")) {
         /* pubkey and signature per line, for a caller assembling its own
            scriptSig because its script does not classify */
-        for (size_t i = 0; i < p.tx.nin; i++) {
+        for (size_t i = 0; i < kw_psbt_unsigned_tx(p)->nin; i++) {
             if (vin >= 0 && (size_t)vin != i) continue;
             for (size_t k = 0;; k++) {
                 uint8_t pk[33], sig[80]; size_t sl = sizeof sig;
-                if (!kw_psbt_get_sig(&p, i, k, pk, sig, &sl)) break;
+                if (!kw_psbt_get_sig(p, i, k, pk, sig, &sl)) break;
                 char ph[67], sh[161];
                 kw_hex_encode(pk, 33, ph, sizeof ph);
                 kw_hex_encode(sig, sl, sh, sizeof sh);
@@ -4022,22 +4040,27 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
         for (int i = 0; i < nextra; i++) {
             uint8_t o[32768];
             size_t on = read_hex_arg(extra[i], "--psbt", o, sizeof o);
-            kw_psbt q;
-            if (!on || !kw_psbt_parse(o, on, &q)) { fprintf(stderr, "kw: bad --psbt to combine\n"); goto out; }
-            int okc = kw_psbt_combine(&p, &q);
-            kw_psbt_free(&q);
+            kw_psbt *q = kw_psbt_new();
+            if (!q) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+            if (!on || !kw_psbt_parse(o, on, q)) {
+                fprintf(stderr, "kw: bad --psbt to combine\n");
+                kw_psbt_free(q);
+                goto out;
+            }
+            int okc = kw_psbt_combine(p, q);
+            kw_psbt_free(q);
             if (!okc) { fprintf(stderr, "kw: those psbts describe different transactions\n"); goto out; }
         }
-        rc = print_psbt(&p);
+        rc = print_psbt(p);
     } else if (!strcmp(sub, "finalize")) {
         uint8_t ss[KW_TX_SCRIPT_MAX];
         size_t sl = read_hex_arg(script_arg, "--scriptsig", ss, sizeof ss);
-        if (vin < 0 || (size_t)vin >= p.tx.nin) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
-        if (!sl || !kw_psbt_finalize(&p, (size_t)vin, ss, sl)) goto out;
-        rc = print_psbt(&p);
+        if (vin < 0 || (size_t)vin >= kw_psbt_unsigned_tx(p)->nin) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
+        if (!sl || !kw_psbt_finalize(p, (size_t)vin, ss, sl)) goto out;
+        rc = print_psbt(p);
     } else if (!strcmp(sub, "extract")) {
         kw_tx t;
-        if (!kw_psbt_extract(&p, &t)) { fprintf(stderr, "kw: every input needs a final scriptSig first\n"); goto out; }
+        if (!kw_psbt_extract(p, &t)) { fprintf(stderr, "kw: every input needs a final scriptSig first\n"); goto out; }
         uint8_t b[16384];
         size_t bn = kw_tx_serialize(&t, b, sizeof b);
         if (bn) {
@@ -4047,7 +4070,7 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
     } else { usage(); rc = 2; }
 
 out:
-    kw_psbt_free(&p);
+    kw_psbt_free(p);
     return rc;
 }
 

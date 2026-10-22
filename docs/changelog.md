@@ -32,6 +32,25 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* psbt: opaque, and read through accessors
+  kw_psbt was a transparent 182048-byte struct callers put on their frames, and
+  its layout has changed twice. It is a handle now, from kw_psbt_new, and seven
+  accessors cover every field a caller read; each returns 0 for an absent field
+  rather than a zero length, since a caller that has to know an absent redeem
+  script reads as redeemlen == 0 can mistake one for the other, which is how
+  kw_psbt_sign came to refuse every p2pkh input.
+
+  The test had been shallow-copying the struct twenty times, sharing the heap
+  pointers its previous transactions live behind and freeing none of the copies.
+  That was safe only because combine replaces a utxo when the destination has
+  none, and these always had one. The type makes it impossible rather than
+  coincidental.
+
+  crypto/psbt_internal.h carries the layout for this project's tests and is not
+  installed: 11 of the 13 internal writes in test_psbt forge a signature under
+  another party's pubkey or a sighash the signer never asked for, which arrive
+  as bytes, so the faithful test splices the pair into a serialized psbt. That
+  is not done and the header says so.
 * bip32: lock the intermediate keys a path walk materialises
   m/44'/coin'/account'/change/index produces a private key at every step, and
   the walker kept each on an unlocked page for the length of the walk, zeroing

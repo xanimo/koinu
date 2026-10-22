@@ -70,7 +70,7 @@ assuming: the point is that the tail is known, not that the file changed.
 
 Nothing is tagged until all of these pass on the commit being tagged:
 
-    make check          43/43 suites
+    make check          45/45 suites
     make asan           exit 0, which now means what it says: the sanitized
                         builds carry -fno-sanitize-recover=undefined, so a
                         ubsan report ends the run instead of printing and
