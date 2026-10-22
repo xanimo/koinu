@@ -32,6 +32,19 @@ Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
 ## What's Changed
+* bip32: lock the intermediate keys a path walk materialises
+  m/44'/coin'/account'/change/index produces a private key at every step, and
+  the walker kept each on an unlocked page for the length of the walk, zeroing
+  it afterwards. Zeroing is not the same as keeping the page off a disk, and no
+  caller could fix it, since it never sees those keys. The hmac output whose
+  left half becomes the child secret and the copy of a parent's secret that a
+  hardened index makes were unlocked for the same reason.
+
+  The threat model said the child keys derived from the seed are locked and
+  those are those keys, so the document was ahead of the code. Locked once for
+  the length of the function and forgotten on one path, so the early returns
+  cannot leave a lock behind. 200 derivations in one run raise no lock
+  complaint: the counting is per page and these share two.
 * kw: sign --raw, so its output goes straight into send
   sign prints five lines and send --tx - reads one of hex, so the two could not
   be joined without an awk in between. --raw puts the transaction alone on

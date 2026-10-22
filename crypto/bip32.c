@@ -72,18 +72,33 @@ int kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *
     const uint32_t last = index >= KW_BIP32_HARDENED ? UINT32_MAX : KW_BIP32_HARDENED - 1;
 
     for (uint32_t i = index; ; i++) {
+        /* All three hold key material for the length of one derivation, and
+           zeroing them is not the same as keeping them off the disk: a hardened
+           index copies the parent's secret into (data), (I) is the hmac output
+           whose left half becomes the child secret, and (c) is the child. The
+           threat model says the child keys derived from the seed are locked, and
+           these are those keys; the caller cannot lock them because it never
+           sees them. */
         uint8_t data[37], I[64];
+        kw_bip32_key c;
+
+        kw_secure_keep(data, sizeof data);
+        kw_secure_keep(I, sizeof I);
+        kw_secure_keep(&c, sizeof c);
+
         if (i >= KW_BIP32_HARDENED) {
             data[0] = 0x00;
             memcpy(data + 1, parent->key + 1, 32);      /* the secret */
         } else if (!kw_bip32_pubkey(parent, data)) {    /* compressed pub */
             kw_secure_zero(data, sizeof data);
+            kw_secure_forget(data, sizeof data);
+            kw_secure_forget(I, sizeof I);
+            kw_secure_forget(&c, sizeof c);
             return 0;
         }
         be32(data + 33, i);
         kw_hmac_sha512(parent->chain_code, 32, data, sizeof data, I);
 
-        kw_bip32_key c;
         memset(&c, 0, sizeof c);
         c.is_private = 1;
         c.key[0] = 0x00;
@@ -102,6 +117,9 @@ int kw_bip32_ckd_priv(const kw_bip32_key *parent, uint32_t index, kw_bip32_key *
         kw_secure_zero(I, sizeof I);
         kw_secure_zero(data, sizeof data);
         kw_secure_zero(&c, sizeof c);
+        kw_secure_forget(I, sizeof I);
+        kw_secure_forget(data, sizeof data);
+        kw_secure_forget(&c, sizeof c);
         if (tweaked) return 1;
         if (i == last) return 0;
     }
@@ -219,38 +237,54 @@ int kw_bip32_parse(const char *str, kw_bip32_version ver, kw_bip32_key *out)
 int kw_bip32_derive_path(const kw_bip32_key *master, const char *path, kw_bip32_key *out)
 {
     const char *p = path;
+    kw_bip32_key cur, next;
+    int rc = 0;
+
     if (*p == 'm' || *p == 'M') p++;
     if (*p == '/') p++;
-    else if (*p != '\0') return 0;     /* must start with m, m/, or empty */
+    else if (*p != '\0') return 0;    /* must start with m, m/, or empty */
 
-    kw_bip32_key cur = *master;
+    /* Every step of m/44'/coin'/account'/change/index is a private key when the
+       master is, and each lived on an unlocked page for the length of the walk.
+       Zeroed afterwards, which does nothing about the page having reached swap
+       in between. Kept for the whole function and forgotten once, so the early
+       returns below cannot leave a lock behind. */
+    kw_secure_keep(&cur, sizeof cur);
+    kw_secure_keep(&next, sizeof next);
+    cur = *master;
+
     while (*p) {
         uint32_t index = 0;
-        int digits = 0;
+        int digits = 0, ok;
+
         while (*p >= '0' && *p <= '9') {
             uint32_t d = (uint32_t)(*p - '0');
             /* checked before the multiply: index * 10 wrapped past 2^32 first, so
                m/10000000000 came back as m/1410065408 rather than refused */
-            if (index > (KW_BIP32_HARDENED - 1 - d) / 10) { kw_secure_zero(&cur, sizeof cur); return 0; }
+            if (index > (KW_BIP32_HARDENED - 1 - d) / 10) goto out;
             index = index * 10 + d;
             p++; digits++;
         }
-        if (!digits) { kw_secure_zero(&cur, sizeof cur); return 0; }
+        if (!digits) goto out;
         if (*p == '\'' || *p == 'h' || *p == 'H') { index += KW_BIP32_HARDENED; p++; }
 
-        kw_bip32_key next;
-        int ok = cur.is_private ? kw_bip32_ckd_priv(&cur, index, &next)
-                                : kw_bip32_ckd_pub(&cur, index, &next);
-        if (!ok) { kw_secure_zero(&cur, sizeof cur); return 0; }
-        kw_secure_zero(&cur, sizeof cur);
+        ok = cur.is_private ? kw_bip32_ckd_priv(&cur, index, &next)
+                            : kw_bip32_ckd_pub(&cur, index, &next);
+        if (!ok) goto out;
         cur = next;
         kw_secure_zero(&next, sizeof next);
 
         if (*p == '/') p++;
-        else if (*p != '\0') { kw_secure_zero(&cur, sizeof cur); return 0; }
+        else if (*p != '\0') goto out;
     }
 
     *out = cur;
+    rc = 1;
+
+out:
     kw_secure_zero(&cur, sizeof cur);
-    return 1;
+    kw_secure_zero(&next, sizeof next);
+    kw_secure_forget(&cur, sizeof cur);
+    kw_secure_forget(&next, sizeof next);
+    return rc;
 }

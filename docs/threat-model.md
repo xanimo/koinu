@@ -184,6 +184,13 @@ stolen keystore without its passphrase yields nothing and a lost mnemonic cannot
 be recovered from the keystore.
 
 What is mlock'd is the seed, the master and child BIP32 keys derived from it,
+including the intermediates: walking m/44'/coin'/account'/change/index
+materialises a private key at every step, and each of those used to sit on an
+unlocked page for the length of the walk, zeroed afterwards, which says nothing
+about the page having reached swap in between. A caller could not fix it because
+it never sees them. The hmac output whose left half becomes a child secret, and
+the copy of a parent's secret a hardened index makes, are locked for the same
+reason. Also
 the key the keystore derives from a passphrase, a WIF decoded for a sweep or a
 co-signature, and the buffer a passphrase or mnemonic is read into. The master
 xprv is the seed in another encoding, so calling the seed the only secret and
