@@ -21,6 +21,7 @@
 #define KOINU_PSBT_INTERNAL_H
 
 #include "psbt.h"
+#include "tx_internal.h"   /* kw_psbt embeds a kw_tx */
 
 typedef struct {
     uint8_t pubkey[33];

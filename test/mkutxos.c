@@ -42,7 +42,7 @@ int main(int argc, char **argv)
         uint8_t spk[KW_SPK_MAX], raw[4096];
         size_t spklen = strlen(spkhex) / 2, rawlen;
         char prev[65];
-        kw_tx tx;
+        kw_tx *tx;
         int k;
 
         if (spklen == 0 || spklen > KW_SPK_MAX || strlen(spkhex) % 2 ||
@@ -58,13 +58,15 @@ int main(int argc, char **argv)
         prev[64] = '\0';
         snprintf(prev + 60, 5, "%04x", (unsigned)(i + 1) & 0xffffu);
 
-        kw_tx_init(&tx);
-        if (!kw_tx_add_input(&tx, prev, 0) ||
-            !kw_tx_add_output(&tx, value, spk, spklen)) {
+        tx = kw_tx_new();
+        if (!tx) { fprintf(stderr, "mkutxos: out of memory\n"); return 1; }
+        if (!kw_tx_add_input(tx, prev, 0) ||
+            !kw_tx_add_output(tx, value, spk, spklen)) {
             fprintf(stderr, "mkutxos: build\n");
             return 1;
         }
-        rawlen = kw_tx_serialize(&tx, raw, sizeof raw);
+        rawlen = kw_tx_serialize(tx, raw, sizeof raw);
+        kw_tx_free(tx);
         if (!rawlen) { fprintf(stderr, "mkutxos: serialize\n"); return 1; }
 
         if (!kw_utxoset_apply_tx(&us, &ws, raw, rawlen, height)) {

@@ -66,39 +66,41 @@ int main(void)
 
     /* a transaction spending that outpoint removes the UTXO. */
     {
-        kw_tx tx;
-        kw_tx_init(&tx);
-        if (!kw_tx_add_input(&tx, CB_TXID, 0)) { fprintf(stderr, "FAIL: add input\n"); return 1; }
+        kw_tx *tx = kw_tx_new();
+        if (!tx) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        if (!kw_tx_add_input(tx, CB_TXID, 0)) { fprintf(stderr, "FAIL: add input\n"); return 1; }
         uint8_t other[20]; memset(other, 0x11, 20);
-        if (!kw_tx_add_output_p2pkh(&tx, CB_VALUE - 100000000ULL, other)) {
+        if (!kw_tx_add_output_p2pkh(tx, CB_VALUE - 100000000ULL, other)) {
             fprintf(stderr, "FAIL: add output\n"); return 1;
         }
         uint8_t raw[512];
-        size_t n = kw_tx_serialize(&tx, raw, sizeof raw);
+        size_t n = kw_tx_serialize(tx, raw, sizeof raw);
         if (!n) { fprintf(stderr, "FAIL: serialize spend\n"); return 1; }
         if (!kw_utxoset_apply_tx(&us, &ws, raw, n, 2)) { fprintf(stderr, "FAIL: apply spend\n"); return 1; }
         if (kw_utxoset_count(&us) != 0 || kw_utxoset_balance(&us) != 0) {
             fprintf(stderr, "FAIL: spend did not clear (count %zu)\n", kw_utxoset_count(&us)); return 1;
         }
+        kw_tx_free(tx);
     }
 
     /* an output to an unwatched script adds nothing; one to the watched script
        is tracked again. */
     {
-        kw_tx tx;
-        kw_tx_init(&tx);
-        kw_tx_add_input(&tx, CB_TXID, 0);
+        kw_tx *tx = kw_tx_new();
+        if (!tx) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        kw_tx_add_input(tx, CB_TXID, 0);
         uint8_t other[20]; memset(other, 0x22, 20);
-        kw_tx_add_output_p2pkh(&tx, 100000000ULL, other);          /* unwatched */
-        kw_tx_add_output(&tx, 200000000ULL, spk, spklen);          /* watched */
+        kw_tx_add_output_p2pkh(tx, 100000000ULL, other);          /* unwatched */
+        kw_tx_add_output(tx, 200000000ULL, spk, spklen);          /* watched */
         uint8_t raw[512];
-        size_t n = kw_tx_serialize(&tx, raw, sizeof raw);
+        size_t n = kw_tx_serialize(tx, raw, sizeof raw);
         if (!kw_utxoset_apply_tx(&us, &ws, raw, n, 3)) { fprintf(stderr, "FAIL: apply mixed\n"); return 1; }
         if (kw_utxoset_count(&us) != 1 || kw_utxoset_balance(&us) != 200000000ULL) {
             fprintf(stderr, "FAIL: only watched output tracked (count %zu bal %llu)\n",
                 kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us)); return 1;
         }
         if (us.u[0].vout != 1) { fprintf(stderr, "FAIL: watched output index\n"); return 1; }
+        kw_tx_free(tx);
     }
 
     /* a malformed (truncated) transaction is rejected. */

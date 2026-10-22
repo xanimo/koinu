@@ -60,8 +60,9 @@ int main(int argc, char **argv)
         const char *dest = pos[4];
         uint64_t fee = strtoull(pos[5], NULL, 10);
 
-        kw_tx tx; kw_tx_init(&tx);
-        if (!kw_tx_add_input(&tx, txid, vout)) { fprintf(stderr, "bad txid\n"); goto out; }
+        kw_tx *tx = kw_tx_new();
+        if (!tx) { fprintf(stderr, "out of memory\n"); goto out; }
+        if (!kw_tx_add_input(tx, txid, vout)) { fprintf(stderr, "bad txid\n"); kw_tx_free(tx); goto out; }
 
         uint8_t pay[64]; size_t pl = 0;
         if (!kw_base58check_decode(dest, pay, sizeof pay, &pl) || pl != 21) { fprintf(stderr, "bad dest\n"); goto out; }
@@ -70,19 +71,20 @@ int main(int argc, char **argv)
         else if (pay[0] == cp->p2sh) { dspk[0]=0xa9;dspk[1]=0x14; memcpy(dspk+2,pay+1,20); dspk[22]=0x87; dl=23; }
         else { fprintf(stderr, "dest not this network\n"); goto out; }
         if (amount <= fee) { fprintf(stderr, "amount <= fee\n"); goto out; }
-        kw_tx_add_output(&tx, amount - fee, dspk, dl);
+        kw_tx_add_output(tx, amount - fee, dspk, dl);
 
         uint8_t sigA[73], sigB[73]; size_t la = sizeof sigA, lb = sizeof sigB;
-        if (!kw_tx_signature(&tx, 0, sk1, redeem, rl, KW_SIGHASH_ALL, sigA, &la) ||
-            !kw_tx_signature(&tx, 0, sk2, redeem, rl, KW_SIGHASH_ALL, sigB, &lb)) { fprintf(stderr, "sign failed\n"); goto out; }
+        if (!kw_tx_signature(tx, 0, sk1, redeem, rl, KW_SIGHASH_ALL, sigA, &la) ||
+            !kw_tx_signature(tx, 0, sk2, redeem, rl, KW_SIGHASH_ALL, sigB, &lb)) { fprintf(stderr, "sign failed\n"); goto out; }
         const uint8_t *sigs[2] = { sigA, sigB }; size_t lens[2] = { la, lb };
-        if (!kw_tx_set_multisig(&tx, 0, sigs, lens, 2, redeem, rl)) { fprintf(stderr, "assemble failed\n"); goto out; }
+        if (!kw_tx_set_multisig(tx, 0, sigs, lens, 2, redeem, rl)) { fprintf(stderr, "assemble failed\n"); goto out; }
 
         uint8_t raw[16384];
-        size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);
+        size_t rn = kw_tx_serialize(tx, raw, sizeof raw);
         if (!rn) { fprintf(stderr, "serialize failed\n"); goto out; }
         char hex[32770]; kw_hex_encode(raw, rn, hex, sizeof hex);
         printf("%s\n", hex);
+        kw_tx_free(tx);
         rc = 0;
     } else fprintf(stderr, "bad args\n");
 

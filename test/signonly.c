@@ -34,7 +34,7 @@ int main(void)
     char shares[3][KW_SLIP39_MNEMONIC_MAX];
     char cx[KW_CODEX32_MAX_LEN * 3];
     size_t nshares = 0, ncx = 0, n;
-    kw_tx tx;
+    kw_tx *tx;
     kw_psbt *p;
 
     if (!kw_ec_start()) { fprintf(stderr, "signonly: no curve\n"); return 1; }
@@ -49,18 +49,19 @@ int main(void)
     spk[23] = 0x88;
     spk[24] = 0xac;
 
-    kw_tx_init(&tx);
-    if (!kw_tx_add_input(&tx,
+    tx = kw_tx_new();
+    if (!tx) { fprintf(stderr, "signonly: out of memory\n"); return 1; }
+    if (!kw_tx_add_input(tx,
             "1111111111111111111111111111111111111111111111111111111111111111", 0) ||
-        !kw_tx_add_output(&tx, 1000000, spk, sizeof spk)) {
+        !kw_tx_add_output(tx, 1000000, spk, sizeof spk)) {
         fprintf(stderr, "signonly: build\n");
         return 1;
     }
     /* the psbt first: it wraps an unsigned transaction */
     p = kw_psbt_new();
-    if (!p || !kw_psbt_create(p, &tx)) { fprintf(stderr, "signonly: psbt\n"); return 1; }
+    if (!p || !kw_psbt_create(p, tx)) { fprintf(stderr, "signonly: psbt\n"); return 1; }
     kw_psbt_free(p);
-    if (!kw_tx_sign_p2pkh(&tx, 0, child.key + 1, spk, sizeof spk)) {
+    if (!kw_tx_sign_p2pkh(tx, 0, child.key + 1, spk, sizeof spk)) {
         fprintf(stderr, "signonly: sign\n");
         return 1;
     }
@@ -82,7 +83,7 @@ int main(void)
         kw_watchset ws;
         kw_utxoset us;
 
-        n = kw_tx_serialize(&tx, raw, sizeof raw);
+        n = kw_tx_serialize(tx, raw, sizeof raw);
         if (!n) { fprintf(stderr, "signonly: serialize\n"); return 1; }
         if (!kw_watchset_init(&ws) || !kw_utxoset_init(&us) ||
             !kw_watchset_add(&ws, spk, sizeof spk) ||
@@ -95,6 +96,7 @@ int main(void)
         kw_watchset_free(&ws);
     }
 
+    kw_tx_free(tx);
     kw_ec_stop();
     printf("signonly ok: %zu-byte spend signed, 3 slip39 and 3 codex32 shares, "
            "no net objects linked\n", n);

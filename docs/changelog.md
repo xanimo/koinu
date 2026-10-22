@@ -31,7 +31,28 @@ the signing half are separate invocations now:
 Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
+`kw_tx` and `kw_psbt` are opaque. `kw_tx t; kw_tx_init(&t);` becomes
+`kw_tx *t = kw_tx_new();` with a `kw_tx_free`, and a field read becomes
+`kw_tx_nin`, `kw_tx_nout`, `kw_tx_output`, `kw_tx_input_prevout` or
+`kw_tx_input_script`. Build with `-Werror=incompatible-pointer-types`: a `&t`
+left behind compiles and signs the wrong bytes.
+
 ## What's Changed
+* tx: opaque, and read through accessors
+  kw_tx was a transparent 63264-byte struct, which a caller declared on its
+  frame and read vin[i].script out of directly. It is a handle now, from
+  kw_tx_new, and five accessors cover every field a caller read. kw_tx_free
+  zeroes before releasing, since a signed transaction carries signatures.
+
+  Two Werror flags come with it. &handle where handle is wanted is kw_tx **
+  against kw_tx *, which was a warning in a build that emits none anyone reads,
+  and it compiles into a call that hashes the wrong bytes: that is how four
+  cosign sites and one in a fuzz harness went unnoticed. Promoted to errors
+  along with int-conversion, which is the same mistake spelled differently.
+
+  crypto/tx_internal.h carries the layout for the library's own code and for the
+  three tests that check the serializer and the sighash against byte vectors.
+  It is not installed.
 * psbt: opaque, and read through accessors
   kw_psbt was a transparent 182048-byte struct callers put on their frames, and
   its layout has changed twice. It is a handle now, from kw_psbt_new, and seven

@@ -34,7 +34,7 @@
 #include "hex.h"
 #include "peer.h"
 #include "spv.h"
-#include "tx.h"
+#include "tx_internal.h"   /* reads vin[i] to classify each spend */
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -31,7 +31,13 @@ CFLAGS   ?= -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter
 # An implicit declaration links against the wrong prototype and returns the
 # wrong type at the ABI, which is a bug at runtime rather than a warning. Stop
 # the build on it. Overridden, not appended, so it survives a CFLAGS= override.
-override CFLAGS += -Werror=implicit-function-declaration
+#
+# A pointer-type mismatch is the same kind of thing, and the opaque handles
+# invite it: &handle is kw_tx ** where kw_tx * is wanted, which compiles, runs,
+# and hashes the wrong bytes. A warning in a build this size is a warning
+# nobody reads.
+override CFLAGS += -Werror=implicit-function-declaration \
+                   -Werror=incompatible-pointer-types -Werror=int-conversion
 
 SECP_DIR = depends/secp256k1
 SECP_LIB = $(SECP_DIR)/.libs/libsecp256k1.a

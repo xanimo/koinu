@@ -112,11 +112,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     switch (which % 16) {
     case 0: {                                  /* a transaction off the wire */
-        kw_tx tx;
-        if (kw_tx_parse(in, len, &tx) > 0) {
+        kw_tx *tx = kw_tx_new();
+        if (!tx) break;
+        if (kw_tx_parse(in, len, tx) > 0) {
             uint8_t out[16384];
-            kw_tx_serialize(&tx, out, sizeof out);
+            kw_tx_serialize(tx, out, sizeof out);
         }
+        kw_tx_free(tx);
         break;
     }
     case 1: {                                  /* a counterparty's psbt */

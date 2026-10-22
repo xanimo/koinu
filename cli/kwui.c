@@ -624,15 +624,16 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         return;
     }
 
-    kw_tx tx; kw_tx_init(&tx);
+    kw_tx *tx = kw_tx_new();
+    if (!tx) { kw_secure_forget(seed, sizeof seed); return; }
     for (int i = 0; i < nin; i++) {
         const kw_utxo *u = &us->u[order[i]];
         char disp[65]; uint8_t d[32];
         for (int b = 0; b < 32; b++) d[b] = u->txid[31 - b];
         kw_hex_encode(d, 32, disp, sizeof disp);
-        kw_tx_add_input(&tx, disp, u->vout);
+        kw_tx_add_input(tx, disp, u->vout);
     }
-    kw_tx_add_output(&tx, want, dspk, dl);
+    kw_tx_add_output(tx, want, dspk, dl);
     kw_bip32_key master;
     kw_secure_keep(&master, sizeof master);
     int ok = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
@@ -661,7 +662,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
             if (rows[i].change == 1 && rows[i].index == ci) { ri = i; break; }
         if (ri < 0) for (int i = 0; i < nrows; i++) if (rows[i].change == 1) { ri = i; break; }
         if (ri >= 0) {
-            kw_tx_add_output(&tx, change, rows[ri].spk, 25);
+            kw_tx_add_output(tx, change, rows[ri].spk, 25);
             snprintf(caddr, sizeof caddr, "%s", rows[ri].addr);
         } else with_change = 0;
     }
@@ -683,16 +684,20 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
             ok = 0;
             break;
         }
-        ok = kw_tx_sign_p2pkh(&tx, (size_t)i, key.key + 1, u->spk, 25);   /* 0x00 || d */
+        ok = kw_tx_sign_p2pkh(tx, (size_t)i, key.key + 1, u->spk, 25);   /* 0x00 || d */
         kw_secure_zero(&key, sizeof key);
         kw_secure_forget(&key, sizeof key);
     }
     kw_secure_forget(&master, sizeof master);
     kw_secure_forget(seed, sizeof seed);
-    if (!ok) { ask_line("   signing failed. enter to go back ", yes, sizeof yes); return; }
+    if (!ok) {
+        kw_tx_free(tx);
+        ask_line("   signing failed. enter to go back ", yes, sizeof yes);
+        return;
+    }
 
     uint8_t raw[16384];
-    size_t rn = kw_tx_serialize(&tx, raw, sizeof raw);
+    size_t rn = kw_tx_serialize(tx, raw, sizeof raw);
     char path[4300];
     snprintf(path, sizeof path, "%s.tx", utxos);
     /* O_EXCL and 0600, as kw does for a keystore: a signed spend that has not
@@ -703,6 +708,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         char m[4400];
         snprintf(m, sizeof m, "   %s already exists, so nothing was written."
                               " broadcast or remove it first. enter to go back ", path);
+        kw_tx_free(tx);
         ask_line(m, yes, sizeof yes);
         return;
     }
@@ -717,7 +723,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         kw_journal_entry je;
         uint8_t txid[32];
         kw_journal_path(utxos, jpath, sizeof jpath);
-        kw_tx_txid(&tx, txid);
+        kw_tx_txid(tx, txid);
         memset(&je, 0, sizeof je);
         je.when = (uint64_t)time(NULL);
         je.dir = KW_JOURNAL_OUT;
@@ -747,6 +753,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
         if (o) fclose(o);
         ask_line("   could not write the transaction. enter to go back ", yes, sizeof yes);
     }
+    kw_tx_free(tx);
 }
 
 

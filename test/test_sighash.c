@@ -18,7 +18,7 @@
 
 #include "ec.h"
 #include "hex.h"
-#include "tx.h"
+#include "tx_internal.h"   /* reads vin[i].script to feed the sighash */
 
 #include <stdio.h>
 #include <stdlib.h>

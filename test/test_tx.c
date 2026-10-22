@@ -7,7 +7,7 @@
  * deterministic, low-S ECDSA, so a correct legacy sighash reproduces the exact
  * bytes. A 1-in/1-out P2PKH spend, SIGHASH_ALL. */
 
-#include "tx.h"
+#include "tx_internal.h"   /* the layout: see the header for why */
 #include "address.h"
 #include "ripemd160.h"
 #include "ec.h"

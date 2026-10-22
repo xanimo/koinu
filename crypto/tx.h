@@ -25,28 +25,37 @@
 #define KW_TX_SCRIPTSIG_MAX 1650
 #define KW_SIGHASH_ALL   1
 
-typedef struct {
-    uint8_t  prevout[32];                 /* internal byte order */
-    uint32_t vout;
-    uint8_t  script[KW_TX_SCRIPTSIG_MAX]; /* scriptSig; empty until signed */
-    size_t   scriptlen;
-    uint32_t sequence;
-} kw_txin;
+/* Opaque. 63264 bytes of fixed arrays, which is not a thing to leave on a
+   caller's frame beside anything else: cmd_sign used to hold one of these and a
+   32-entry array of extended keys at once. Read through the accessors below.
 
-typedef struct {
-    uint64_t value;
-    uint8_t  script[KW_TX_SCRIPT_MAX];    /* scriptPubKey */
-    size_t   scriptlen;
-} kw_txout;
+   The layout is in crypto/tx_internal.h, which this project's own code and
+   tests include and which is not installed. */
+typedef struct kw_tx kw_tx;
 
-typedef struct {
-    uint32_t version;
-    kw_txin  vin[KW_TX_MAX_IN];
-    size_t   nin;
-    kw_txout vout[KW_TX_MAX_OUT];
-    size_t   nout;
-    uint32_t locktime;
-} kw_tx;
+/* An empty transaction, version 1 and no inputs, or NULL. free takes NULL. */
+kw_tx *kw_tx_new(void);
+void   kw_tx_free(kw_tx *tx);
+
+/* ── reading one ──────────────────────────────────────────────── */
+uint32_t kw_tx_version(const kw_tx *tx);
+uint32_t kw_tx_locktime(const kw_tx *tx);
+size_t   kw_tx_nin(const kw_tx *tx);
+size_t   kw_tx_nout(const kw_tx *tx);
+
+/* Output (i): what it pays and to what script. The script is borrowed and
+   valid until the transaction changes or is freed. Returns 0 if there is no
+   such output. */
+int kw_tx_output(const kw_tx *tx, size_t i, uint64_t *value,
+                 const uint8_t **spk, size_t *spklen);
+
+/* Input (i): the outpoint it spends, (txid) in internal byte order. */
+int kw_tx_input_prevout(const kw_tx *tx, size_t i, uint8_t txid[32], uint32_t *vout);
+
+/* Input (i)'s scriptSig, which is empty until it is signed. Returns 0 when
+   there is no such input or it carries none, rather than a zero length. */
+int kw_tx_input_script(const kw_tx *tx, size_t i, const uint8_t **ss, size_t *len);
+
 
 /* version 1, no inputs or outputs, locktime 0. */
 void kw_tx_init(kw_tx *tx);

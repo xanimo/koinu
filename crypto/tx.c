@@ -2,11 +2,13 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
-#include "tx.h"
+#include "tx_internal.h"
 #include "sha2.h"
 #include "ripemd160.h"
 #include "ec.h"
 #include "mem.h"
+
+#include <stdlib.h>
 #include "hex.h"
 
 #include <string.h>
@@ -36,6 +38,55 @@ void kw_tx_init(kw_tx *tx)
     memset(tx, 0, sizeof *tx);
     tx->version = 1;
     tx->locktime = 0;
+}
+
+kw_tx *kw_tx_new(void)
+{
+    kw_tx *tx = (kw_tx *)malloc(sizeof *tx);
+
+    if (tx) kw_tx_init(tx);
+    return tx;
+}
+
+void kw_tx_free(kw_tx *tx)
+{
+    /* Nothing owned beyond the allocation: every script is a fixed array. The
+       wipe is because an unsigned transaction carries no secret but a signed one
+       carries signatures, and a freed page is a page somebody else gets. */
+    if (!tx) return;
+    kw_secure_zero(tx, sizeof *tx);
+    free(tx);
+}
+
+uint32_t kw_tx_version(const kw_tx *tx)  { return tx ? tx->version : 0; }
+uint32_t kw_tx_locktime(const kw_tx *tx) { return tx ? tx->locktime : 0; }
+size_t   kw_tx_nin(const kw_tx *tx)      { return tx ? tx->nin : 0; }
+size_t   kw_tx_nout(const kw_tx *tx)     { return tx ? tx->nout : 0; }
+
+int kw_tx_output(const kw_tx *tx, size_t i, uint64_t *value,
+                 const uint8_t **spk, size_t *spklen)
+{
+    if (!tx || i >= tx->nout) return 0;
+    if (value) *value = tx->vout[i].value;
+    if (spk) *spk = tx->vout[i].script;
+    if (spklen) *spklen = tx->vout[i].scriptlen;
+    return 1;
+}
+
+int kw_tx_input_prevout(const kw_tx *tx, size_t i, uint8_t txid[32], uint32_t *vout)
+{
+    if (!tx || i >= tx->nin) return 0;
+    if (txid) memcpy(txid, tx->vin[i].prevout, 32);
+    if (vout) *vout = tx->vin[i].vout;
+    return 1;
+}
+
+int kw_tx_input_script(const kw_tx *tx, size_t i, const uint8_t **ss, size_t *len)
+{
+    if (!tx || i >= tx->nin || !tx->vin[i].scriptlen) return 0;
+    if (ss) *ss = tx->vin[i].script;
+    if (len) *len = tx->vin[i].scriptlen;
+    return 1;
 }
 
 int kw_tx_add_input(kw_tx *tx, const char *txid_hex, uint32_t vout)

@@ -96,12 +96,14 @@ int main(void)
         uint8_t spk[64];
         size_t spklen = (size_t)kw_test_unhex(CB_SPK, spk);
 
-        kw_tx tx; kw_tx_init(&tx);
-        kw_tx_add_input(&tx, CB_TXID, 0);
+        kw_tx *tx = kw_tx_new();
+        if (!tx) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        kw_tx_add_input(tx, CB_TXID, 0);
         uint8_t other[20]; memset(other, 0x11, 20);
-        kw_tx_add_output_p2pkh(&tx, 1000000000ULL, other);
+        kw_tx_add_output_p2pkh(tx, 1000000000ULL, other);
         uint8_t spend[512];
-        size_t slen = kw_tx_serialize(&tx, spend, sizeof spend);
+        size_t slen = kw_tx_serialize(tx, spend, sizeof spend);
+        kw_tx_free(tx);
 
         uint8_t blk[2048]; size_t n = 0;
         memset(blk, 0, KW_HEADER_LEN); n = KW_HEADER_LEN;
@@ -214,13 +216,14 @@ int main(void)
         n = KW_HEADER_LEN;
         blk[n++] = 1;
         size_t txat = n;
-        kw_tx t;
-        kw_tx_init(&t);
+        kw_tx *t = kw_tx_new();
+        if (!t) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
         /* a coinbase, since a block's first transaction is one */
-        kw_tx_add_input(&t, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
+        kw_tx_add_input(t, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
         uint8_t h20[20]; memset(h20, 0x42, 20);
-        kw_tx_add_output_p2pkh(&t, 500000000000ULL, h20);
-        size_t tl = kw_tx_serialize(&t, blk + n, sizeof blk - n);
+        kw_tx_add_output_p2pkh(t, 500000000000ULL, h20);
+        size_t tl = kw_tx_serialize(t, blk + n, sizeof blk - n);
+        kw_tx_free(t);
         if (!tl) { fprintf(stderr, "FAIL: could not build the fabricated tx\n"); return 1; }
         n += tl;
 
@@ -255,14 +258,15 @@ int main(void)
             size_t bl[3];
             uint8_t roots[3][32];
             for (int q = 0; q < 3; q++) {
-                kw_tx x;
-                kw_tx_init(&x);
+                kw_tx *x = kw_tx_new();
+                if (!x) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
                 if (q == 0)
-                    kw_tx_add_input(&x, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
+                    kw_tx_add_input(x, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
                 else
-                    kw_tx_add_input(&x, "00000000000000000000000000000000000000000000000000000000000000ff", (uint32_t)q);
-                kw_tx_add_output_p2pkh(&x, 1000000ULL + (uint64_t)q, h20);
-                bl[q] = kw_tx_serialize(&x, body[q], sizeof body[q]);
+                    kw_tx_add_input(x, "00000000000000000000000000000000000000000000000000000000000000ff", (uint32_t)q);
+                kw_tx_add_output_p2pkh(x, 1000000ULL + (uint64_t)q, h20);
+                bl[q] = kw_tx_serialize(x, body[q], sizeof body[q]);
+                kw_tx_free(x);
                 if (!bl[q]) { fprintf(stderr, "FAIL: build tx %d\n", q); return 1; }
                 kw_hash256(body[q], bl[q], roots[q]);
             }
@@ -349,12 +353,14 @@ int main(void)
         }
 
         /* and a block whose first transaction is not a coinbase is refused */
-        kw_tx nc; kw_tx_init(&nc);
-        kw_tx_add_input(&nc, "00000000000000000000000000000000000000000000000000000000000000ff", 0);
+        kw_tx *nc = kw_tx_new();
+        if (!nc) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+        kw_tx_add_input(nc, "00000000000000000000000000000000000000000000000000000000000000ff", 0);
         uint8_t h22[20]; memset(h22, 0x44, 20);
-        kw_tx_add_output_p2pkh(&nc, 100000000ULL, h22);
+        kw_tx_add_output_p2pkh(nc, 100000000ULL, h22);
         uint8_t body[256];
-        size_t bl = kw_tx_serialize(&nc, body, sizeof body);
+        size_t bl = kw_tx_serialize(nc, body, sizeof body);
+        kw_tx_free(nc);
         uint8_t nb[512]; size_t nn = KW_HEADER_LEN;
         memset(nb, 0, KW_HEADER_LEN); nb[0] = 1;
         nb[nn++] = 1;

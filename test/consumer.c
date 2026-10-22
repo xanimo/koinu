@@ -22,7 +22,7 @@ int main(void)
     kw_slip39_group g = { 2, 3 };
     char shares[3][KW_SLIP39_MNEMONIC_MAX], cx[3 * KW_CODEX32_MAX_LEN], addr[64];
     size_t n = 0, blen = 0, ns = 0, nc = 0, raw_n;
-    kw_tx tx;
+    kw_tx *tx;
     uint8_t raw[4096], pub[33];
 
     if (!kw_ec_start()) { fprintf(stderr, "consumer: no curve\n"); return 1; }
@@ -46,14 +46,16 @@ int main(void)
     memset(spk + 3, 0x42, 20);
     spk[23] = 0x88;
     spk[24] = 0xac;
-    kw_tx_init(&tx);
-    if (!kw_tx_add_input(&tx,
+    tx = kw_tx_new();
+    if (!tx) { fprintf(stderr, "consumer: out of memory\n"); return 1; }
+    if (!kw_tx_add_input(tx,
             "1111111111111111111111111111111111111111111111111111111111111111", 0) ||
-        !kw_tx_add_output(&tx, 1000000, spk, sizeof spk) ||
-        !kw_tx_sign_p2pkh(&tx, 0, child.key + 1, spk, sizeof spk)) {
+        !kw_tx_add_output(tx, 1000000, spk, sizeof spk) ||
+        !kw_tx_sign_p2pkh(tx, 0, child.key + 1, spk, sizeof spk)) {
         fprintf(stderr, "consumer: sign\n"); return 1;
     }
-    raw_n = kw_tx_serialize(&tx, raw, sizeof raw);
+    raw_n = kw_tx_serialize(tx, raw, sizeof raw);
+    kw_tx_free(tx);
     if (!raw_n) { fprintf(stderr, "consumer: serialize\n"); return 1; }
 
     if (kw_slip39_split(seed, sizeof seed, "", 0, 1, &g, 1,
