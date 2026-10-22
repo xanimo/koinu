@@ -76,11 +76,12 @@ static long cf_round(const kw_chainparams *cp, const kw_headerstore *s,
     kw_peer p;
     kw_peer_from_fd(&p, magic, sv[0]);
     p.cp = cp;
-    kw_utxoset us; kw_utxoset_init(&us);
+    kw_utxoset *us = kw_utxoset_new();
+    if (!us) return 1;
     kw_watchset ws; kw_watchset_init(&ws);      /* nothing watched: no block is fetched */
-    long r = kw_cf_sync(&p, s, &us, &ws, 1);
+    long r = kw_cf_sync(&p, s, us, &ws, 1);
     kw_watchset_free(&ws);
-    kw_utxoset_free(&us);
+    kw_utxoset_free(us);
     kw_peer_close(&p);
     close(sv[1]);
     return r;

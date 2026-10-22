@@ -148,13 +148,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         break;
     }
     case 4: {                                  /* a block, scanned for our scripts */
-        kw_utxoset us; kw_watchset ws;
-        kw_utxoset_init(&us); kw_watchset_init(&ws);
+        kw_utxoset *us = kw_utxoset_new(); kw_watchset ws;
+        if (!us) break;
+        kw_watchset_init(&ws);
         uint8_t spk[25] = { 0x76, 0xa9, 0x14 };
         memset(spk + 3, 0x42, 20); spk[23] = 0x88; spk[24] = 0xac;
         kw_watchset_add(&ws, spk, sizeof spk);
-        kw_block_scan(in, len, &us, &ws, 1);
-        kw_watchset_free(&ws); kw_utxoset_free(&us);
+        kw_block_scan(in, len, us, &ws, 1);
+        kw_watchset_free(&ws); kw_utxoset_free(us);
         break;
     }
     case 5: {                                  /* a compact filter and its message */
@@ -202,8 +203,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         fclose(f);
 
         if (which % 16 == 6) {
-            kw_utxoset us;
-            if (kw_utxoset_init(&us)) { kw_utxoset_load(&us, path, NULL); kw_utxoset_free(&us); }
+            kw_utxoset *us = kw_utxoset_new();
+            if (us) { kw_utxoset_load(us, path, NULL); kw_utxoset_free(us); }
         } else if (which % 16 == 7) {
             kw_journal j;
             if (kw_journal_init(&j)) { kw_journal_load(&j, path); kw_journal_free(&j); }

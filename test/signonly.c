@@ -81,18 +81,18 @@ int main(void)
     {
         uint8_t raw[4096];
         kw_watchset ws;
-        kw_utxoset us;
+        kw_utxoset *us = kw_utxoset_new();
 
         n = kw_tx_serialize(tx, raw, sizeof raw);
         if (!n) { fprintf(stderr, "signonly: serialize\n"); return 1; }
-        if (!kw_watchset_init(&ws) || !kw_utxoset_init(&us) ||
+        if (!us || !kw_watchset_init(&ws) ||
             !kw_watchset_add(&ws, spk, sizeof spk) ||
-            !kw_utxoset_apply_tx(&us, &ws, raw, n, 1) ||
-            kw_utxoset_count(&us) != 1) {
+            !kw_utxoset_apply_tx(us, &ws, raw, n, 1) ||
+            kw_utxoset_count(us) != 1) {
             fprintf(stderr, "signonly: utxo\n");
             return 1;
         }
-        kw_utxoset_free(&us);
+        kw_utxoset_free(us);
         kw_watchset_free(&ws);
     }
 

@@ -21,7 +21,7 @@
 int main(int argc, char **argv)
 {
     kw_watchset ws;
-    kw_utxoset us;
+    kw_utxoset *us;
     int i, n;
 
     if (argc < 5 || (argc - 2) % 3) {
@@ -30,7 +30,7 @@ int main(int argc, char **argv)
     }
     n = (argc - 2) / 3;
 
-    if (!kw_watchset_init(&ws) || !kw_utxoset_init(&us)) {
+    if (!kw_watchset_init(&ws) || !(us = kw_utxoset_new())) {
         fprintf(stderr, "mkutxos: init\n");
         return 1;
     }
@@ -69,19 +69,19 @@ int main(int argc, char **argv)
         kw_tx_free(tx);
         if (!rawlen) { fprintf(stderr, "mkutxos: serialize\n"); return 1; }
 
-        if (!kw_utxoset_apply_tx(&us, &ws, raw, rawlen, height)) {
+        if (!kw_utxoset_apply_tx(us, &ws, raw, rawlen, height)) {
             fprintf(stderr, "mkutxos: apply\n");
             return 1;
         }
     }
 
-    if (kw_utxoset_count(&us) != (size_t)n) {
-        fprintf(stderr, "mkutxos: built %zu of %d entries\n", kw_utxoset_count(&us), n);
+    if (kw_utxoset_count(us) != (size_t)n) {
+        fprintf(stderr, "mkutxos: built %zu of %d entries\n", kw_utxoset_count(us), n);
         return 1;
     }
-    if (!kw_utxoset_save(&us, argv[1])) { fprintf(stderr, "mkutxos: save\n"); return 1; }
+    if (!kw_utxoset_save(us, argv[1])) { fprintf(stderr, "mkutxos: save\n"); return 1; }
 
-    kw_utxoset_free(&us);
+    kw_utxoset_free(us);
     kw_watchset_free(&ws);
     return 0;
 }

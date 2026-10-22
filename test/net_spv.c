@@ -60,15 +60,16 @@ int main(int argc, char **argv)
     printf("synced %ld headers\n", nh);
 
     kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, sizeof spk);
-    kw_utxoset us; kw_utxoset_init(&us);
+    kw_utxoset *us = kw_utxoset_new();
+    if (!us) return 1;
 
-    long nb = kw_spv_sync_blocks(&p, &s, &us, &ws, 1);   /* store index 0 is block height 1 */
+    long nb = kw_spv_sync_blocks(&p, &s, us, &ws, 1);   /* store index 0 is block height 1 */
     if (nb < 0) { fprintf(stderr, "block sync failed\n"); kw_headerstore_free(&s); kw_peer_close(&p); return 1; }
 
     printf("scanned %ld blocks, %zu utxos, balance %llu koinu\n",
-           nb, kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
+           nb, kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us));
 
-    kw_utxoset_free(&us); kw_watchset_free(&ws);
+    kw_utxoset_free(us); kw_watchset_free(&ws);
     kw_headerstore_free(&s); kw_peer_close(&p);
     return 0;
 }

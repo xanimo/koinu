@@ -31,13 +31,26 @@ the signing half are separate invocations now:
 Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
-`kw_tx` and `kw_psbt` are opaque. `kw_tx t; kw_tx_init(&t);` becomes
+`kw_tx`, `kw_psbt` and `kw_utxoset` are opaque. `kw_tx t; kw_tx_init(&t);` becomes
 `kw_tx *t = kw_tx_new();` with a `kw_tx_free`, and a field read becomes
 `kw_tx_nin`, `kw_tx_nout`, `kw_tx_output`, `kw_tx_input_prevout` or
-`kw_tx_input_script`. Build with `-Werror=incompatible-pointer-types`: a `&t`
+`kw_tx_input_script`. `kw_utxoset us; kw_utxoset_init(&us);` becomes
+`kw_utxoset *us = kw_utxoset_new();`, and `us.u[i]` becomes
+`kw_utxoset_at(us, i)`. Build with `-Werror=incompatible-pointer-types`: a `&t`
 left behind compiles and signs the wrong bytes.
 
 ## What's Changed
+* utxo: the set is opaque, and read an entry at a time
+  kw_utxoset was a transparent struct holding a pointer to an array that grows
+  and a transaction per entry, which a caller declared by value and indexed
+  into. It is a handle from kw_utxoset_new now, and kw_utxoset_at hands out one
+  entry. kw_utxo itself stays a plain record: what a caller wants of the set is
+  an entry's value, script and height, not its array.
+
+  kw_utxoset_init is gone. Seven of its callers in kw ignored the return, so an
+  allocation failure left a set whose array was NULL and whose count read 0,
+  which is a wallet reporting an empty balance rather than a failure; each one
+  checks now.
 * tx: opaque, and read through accessors
   kw_tx was a transparent 63264-byte struct, which a caller declared on its
   frame and read vin[i].script out of directly. It is a handle now, from

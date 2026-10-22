@@ -1167,21 +1167,22 @@ static void record_receives(const kw_chainparams *cp, const kw_scan_addr *tbl,
     }
 
     int added = 0;
-    for (size_t u = 0; u < us->count; u++) {
-        if (kw_journal_has(&j, us->u[u].txid, us->u[u].vout, KW_JOURNAL_IN)) continue;
+    for (size_t u = 0; u < kw_utxoset_count(us); u++) {
+        const kw_utxo *c = kw_utxoset_at(us, u);
+        if (kw_journal_has(&j, c->txid, c->vout, KW_JOURNAL_IN)) continue;
         kw_journal_entry e;
         memset(&e, 0, sizeof e);
         e.when = (uint64_t)time(NULL);
         e.dir = KW_JOURNAL_IN;
-        memcpy(e.txid, us->u[u].txid, 32);
-        e.vout = us->u[u].vout;
-        e.height = us->u[u].height;
-        e.amount = us->u[u].value;
+        memcpy(e.txid, c->txid, 32);
+        e.vout = c->vout;
+        e.height = c->height;
+        e.amount = c->value;
         snprintf(e.addr, sizeof e.addr, "-");
         for (int chg = 0; chg <= 1; chg++)
             for (int q = 0; q < watched && q < per_chain; q++) {
                 const kw_scan_addr *a = &tbl[(size_t)chg * per_chain + q];
-                if (a->ok && us->u[u].spklen == 25 && memcmp(us->u[u].spk, a->spk, 25) == 0) {
+                if (a->ok && c->spklen == 25 && memcmp(c->spk, a->spk, 25) == 0) {
                     snprintf(e.addr, sizeof e.addr, "%s", a->addr);
                     chg = 2;
                     break;
@@ -1272,7 +1273,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     int rc = 1;
     long nh = 0;
     int watched = gap;
-    kw_utxoset us; int have_us = 0;
+    kw_utxoset *us = NULL; int have_us = 0;
 
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto done; }
 
@@ -1300,8 +1301,13 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         /* the watchset's order is the order they went in, so a seen flag maps
            back to the index that produced it */
 
-        if (have_us) kw_utxoset_free(&us);
-        kw_utxoset_init(&us); have_us = 1;
+        if (have_us) kw_utxoset_free(us);
+        us = kw_utxoset_new();
+        if (!us) {
+            free(h160map); free(idxmap); kw_watchset_free(&ws);
+            fprintf(stderr, "kw: out of memory\n"); kw_headerstore_free(&s); have_us = 0; goto done;
+        }
+        have_us = 1;
 
         /* The history is written as the blocks go past, because a spend is only
            visible there: the set that comes out the other end has nothing to say
@@ -1316,17 +1322,17 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
             hc.jpath = jpath; hc.cp = cp; hc.tbl = watch;
             hc.per_chain = watch_cap; hc.watched = watched; hc.j = &hj;
             hc.in = 0; hc.out = 0; hc.failed = 0;
-            kw_utxoset_observe(&us, &hw);
+            kw_utxoset_observe(us, &hw);
         } else {
             fprintf(stderr, "kw: %s is not readable as a journal, so this scan "
                             "records no history\n", jpath);
         }
 
-        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
-                : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
-                : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, &ws, 1, filters_path)
+                : use_cf ? kw_cf_sync(&p, &s, us, &ws, 1)
+                : kw_spv_sync_blocks(&p, &s, us, &ws, 1);
 
-        kw_utxoset_observe(&us, NULL);
+        kw_utxoset_observe(us, NULL);
         if (history_ok) {
             if (hc.failed) fprintf(stderr, "kw: could not append to %s\n", jpath);
             else if (hc.in || hc.out)
@@ -1364,15 +1370,15 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     uint32_t scanned_to = (uint32_t)s.count;     /* the chain's height, not this run's delta */
     kw_headerstore_free(&s);
 
-    if (kw_utxoset_save(&us, utxos_path)) {
+    if (kw_utxoset_save(us, utxos_path)) {
         kw_scanmeta_write(utxos_path, p.peer_feerate, watched, scanned_to);
         /* the walk above records both directions; this catches a set loaded from
            a file written before that existed */
-        record_receives(cp, watch, watch_cap, watched, &us, utxos_path);
-        uint64_t held = kw_utxoset_balance(&us);
-        uint64_t spendable = kw_utxoset_spendable(cp, &us, scanned_to);
+        record_receives(cp, watch, watch_cap, watched, us, utxos_path);
+        uint64_t held = kw_utxoset_balance(us);
+        uint64_t spendable = kw_utxoset_spendable(cp, us, scanned_to);
         printf("scanned %ld headers, %zu utxos, balance %llu koinu\n",
-               nh, kw_utxoset_count(&us), (unsigned long long)held);
+               nh, kw_utxoset_count(us), (unsigned long long)held);
         if (spendable != held)
             printf("  of which %llu koinu is spendable; the rest is coinbase the chain "
                    "will not let go of yet\n", (unsigned long long)spendable);
@@ -1383,7 +1389,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
 
 done:
     free(watch);
-    if (have_us) kw_utxoset_free(&us);
+    if (have_us) kw_utxoset_free(us);
     kw_peer_close(&p);
     return rc;
 }
@@ -1453,7 +1459,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     int nin = 0;
     uint64_t total_in = 0;
 
-    kw_utxoset us; int have_us = 0;
+    kw_utxoset *us = NULL; int have_us = 0;
     kw_bip32_key *keymap = NULL; uint8_t (*h160map)[20] = NULL; int keymap_n = 0;
     unsigned immature_skipped = 0;
 
@@ -1484,9 +1490,10 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             char defpath[4096];
             const char *up = utxos_path;
             if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
-            kw_utxoset_init(&us);
-            if (kw_utxoset_load(&us, up, NULL)) have_us = 1;
-            else kw_utxoset_free(&us);
+            us = kw_utxoset_new();
+            if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+            if (kw_utxoset_load(us, up, NULL)) have_us = 1;
+            else { kw_utxoset_free(us); us = NULL; }
             if (have_us) kw_scanmeta_read(up, NULL, NULL, &input_tip);
         }
         /* manual: the operator names each outpoint and its key index */
@@ -1521,8 +1528,10 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 }
                 for (int b = 0; b < 32; b++) tint[b] = tdisp[31 - b];
                 const kw_utxo *known = NULL;
-                for (size_t u = 0; u < us.count; u++)
-                    if (us.u[u].vout == vout && memcmp(us.u[u].txid, tint, 32) == 0) { known = &us.u[u]; break; }
+                for (size_t u = 0; u < kw_utxoset_count(us); u++) {
+                    const kw_utxo *c = kw_utxoset_at(us, u);
+                    if (c->vout == vout && memcmp(c->txid, tint, 32) == 0) { known = c; break; }
+                }
                 if (known && known->value != amt) {
                     fprintf(stderr, "kw: --input %s:%u holds %llu koinu in the tracked set, "
                                     "not the %llu given; the difference would go to the miner\n",
@@ -1578,10 +1587,12 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
         char defpath[4096];
         const char *up = utxos_path;
         if (!up) { snprintf(defpath, sizeof defpath, "%s.utxos", path); up = defpath; }
-        kw_utxoset_init(&us); have_us = 1;
+        us = kw_utxoset_new();
+        if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+        have_us = 1;
         {
             kw_utxoset_err uw = KW_UTXOSET_OK;
-            if (!kw_utxoset_load(&us, up, &uw)) {
+            if (!kw_utxoset_load(us, up, &uw)) {
                 if (uw == KW_UTXOSET_NOFILE)
                     fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up);
                 else
@@ -1614,9 +1625,9 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
                 m++;
             }
 
-        for (size_t u = 0; u < us.count; u++) {
+        for (size_t u = 0; u < kw_utxoset_count(us); u++) {
             if (total_in >= send_amt + (fixed_fee ? fee : est_fee(nin, 2, rate))) break;
-            const kw_utxo *e = &us.u[u];
+            const kw_utxo *e = kw_utxoset_at(us, u);
             if (e->spklen != 25 || e->spk[0] != 0x76 || e->spk[1] != 0xa9 || e->spk[2] != 0x14 ||
                 e->spk[23] != 0x88 || e->spk[24] != 0xac) continue;     /* only p2pkh */
             /* A coinbase the chain will not let go of yet. The node refuses the
@@ -1682,7 +1693,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
             if (!addr_to_spk(cp, change_arg, cspk, &cl)) { fprintf(stderr, "kw: bad --change address\n"); goto out; }
         } else {
             int cx = 0;
-            uint32_t ci = kw_change_index(&master, cp, have_us ? &us : NULL, jpath, change_scan, &cx);
+            uint32_t ci = kw_change_index(&master, cp, have_us ? us : NULL, jpath, change_scan, &cx);
             if (cx) fprintf(stderr, "kw: all %d change indices used, reusing 0\n", change_scan);
             kw_bip32_key ck;
             if (!kw_bip44_derive(&master, cp->bip44_coin, 0, 1, ci, &ck)) { fprintf(stderr, "kw: cannot derive change\n"); goto out; }
@@ -1840,7 +1851,7 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
 out:
     if (keymap) { kw_secure_forget(keymap, (size_t)keymap_n * sizeof *keymap); free(keymap); }
     free(h160map);
-    if (have_us) kw_utxoset_free(&us);
+    if (have_us) kw_utxoset_free(us);
     kw_tx_free(tx);
     kw_tx_free(back);
     kw_secure_forget(seed, sizeof seed);
@@ -1901,7 +1912,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
     uint8_t spk[64];
     size_t spklen = 0;
     kw_watchset ws;
-    kw_utxoset us;
+    kw_utxoset *us = NULL;
     kw_peer p;
     int rc = 1, have_us = 0, conn;
     uint32_t tip = 0;
@@ -1945,11 +1956,12 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
             goto out;
         }
 
-        kw_utxoset_init(&us);
+        us = kw_utxoset_new();
+        if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
         have_us = 1;
-        nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
-           : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1)
-           : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, &ws, 1, filters_path)
+           : use_cf ? kw_cf_sync(&p, &s, us, &ws, 1)
+           : kw_spv_sync_blocks(&p, &s, us, &ws, 1);
         tip = (uint32_t)s.count;
         kw_headerstore_free(&s);
         if (nb < 0) {
@@ -1958,7 +1970,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
         }
     }
 
-    if (!kw_utxoset_save(&us, utxos_arg)) {
+    if (!kw_utxoset_save(us, utxos_arg)) {
         fprintf(stderr, "kw: cannot write %s\n", utxos_arg);
         goto out;
     }
@@ -1970,11 +1982,11 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
         uint64_t total = 0;
         size_t u;
 
-        for (u = 0; u < us.count; u++) total += us.u[u].value;
-        printf("found %zu utxos, %llu koinu, at height %u\n", kw_utxoset_count(&us),
+        for (u = 0; u < kw_utxoset_count(us); u++) total += kw_utxoset_at(us, u)->value;
+        printf("found %zu utxos, %llu koinu, at height %u\n", kw_utxoset_count(us),
                (unsigned long long)total, tip);
         printf("utxos %s\n", utxos_arg);
-        if (us.count == 0)
+        if (kw_utxoset_count(us) == 0)
             fprintf(stderr, "kw: nothing at that address, so there is nothing to sign\n");
         else
             fprintf(stderr, "kw: sign it where the key is and the network is not:\n"
@@ -1983,7 +1995,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
     rc = 0;
 
 out:
-    if (have_us) kw_utxoset_free(&us);
+    if (have_us) kw_utxoset_free(us);
     kw_peer_close(&p);
     kw_watchset_free(&ws);
     return rc;
@@ -1999,7 +2011,7 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
     uint8_t prevspk[KW_TX_MAX_IN][25];
     size_t dl = 0, publen, u;
     char tob[160], *daddr;
-    kw_utxoset us;
+    kw_utxoset *us = NULL;
     kw_tx *tx = NULL;
     int rc = 1, comp = 0, nin = 0, foreign = 0, immature = 0, have_us = 0, i;
     uint64_t total_in = 0, rate = KW_MIN_RELAY_FEE_PER_KB, fee, out_amt, fixed = 0;
@@ -2016,11 +2028,12 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
         return 1;
     }
 
-    kw_utxoset_init(&us);
+    us = kw_utxoset_new();
+    if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
     have_us = 1;
     {
         kw_utxoset_err uw = KW_UTXOSET_OK;
-        if (!kw_utxoset_load(&us, utxos_arg, &uw)) {
+        if (!kw_utxoset_load(us, utxos_arg, &uw)) {
             if (uw == KW_UTXOSET_NOFILE)
                 fprintf(stderr, "kw: nothing at %s; run the --watch step against a "
                                 "node first\n", utxos_arg);
@@ -2056,8 +2069,8 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
 
     tx = kw_tx_new();
     if (!tx) { fprintf(stderr, "kw: out of memory\n"); goto out; }
-    for (u = 0; u < us.count && nin < KW_TX_MAX_IN; u++) {
-        const kw_utxo *e = &us.u[u];
+    for (u = 0; u < kw_utxoset_count(us) && nin < KW_TX_MAX_IN; u++) {
+        const kw_utxo *e = kw_utxoset_at(us, u);
         char disphex[65];
         uint8_t disp[32];
         int b;
@@ -2092,14 +2105,14 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
             snprintf(keyaddr, sizeof keyaddr, "(unencodable)");
         fprintf(stderr, "kw: %d of %zu utxos in %s are not locked to this key, so they "
                         "are left out.\n    This key spends %s, which is the address the "
-                        "--watch step wanted\n", foreign, us.count, utxos_arg, keyaddr);
+                        "--watch step wanted\n", foreign, kw_utxoset_count(us), utxos_arg, keyaddr);
     }
     if (immature)
         fprintf(stderr, "kw: leaving %d coinbase output(s) the chain has not released "
                         "yet\n", immature);
     if (nin == 0) { fprintf(stderr, "kw: nothing to sweep\n"); goto out; }
-    if ((size_t)nin + (size_t)immature + (size_t)foreign < us.count)
-        fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, us.count);
+    if ((size_t)nin + (size_t)immature + (size_t)foreign < kw_utxoset_count(us))
+        fprintf(stderr, "kw: sweeping %d of %zu utxos (input limit)\n", nin, kw_utxoset_count(us));
 
     /* an uncompressed pubkey adds 32 bytes to each input's scriptSig */
     fee = have_fixed ? fixed
@@ -2137,7 +2150,7 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
 
 out:
     kw_tx_free(tx);
-    if (have_us) kw_utxoset_free(&us);
+    if (have_us) kw_utxoset_free(us);
     kw_secure_forget(sk, sizeof sk);
     return rc;
 }
@@ -2349,7 +2362,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); return 1; }
 
     int rc = 1;
-    kw_utxoset us; int have_us = 0;
+    kw_utxoset *us = NULL; int have_us = 0;
     size_t tipheight = 0;
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
 
@@ -2393,17 +2406,21 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     }
 
     /* full scan: build the utxo set from the whole chain and test membership */
-    kw_utxoset_init(&us); have_us = 1;
+    us = kw_utxoset_new();
+    if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+    have_us = 1;
     {
-        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, &us, &ws, 1, filters_path)
-                : use_cf ? kw_cf_sync(&p, &s, &us, &ws, 1) : kw_spv_sync_blocks(&p, &s, &us, &ws, 1);
+        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, &ws, 1, filters_path)
+                : use_cf ? kw_cf_sync(&p, &s, us, &ws, 1) : kw_spv_sync_blocks(&p, &s, us, &ws, 1);
         kw_headerstore_free(&s);
         if (nb < 0) { fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block"); goto out; }
     }
     {
         const kw_utxo *found = NULL;
-        for (size_t u = 0; u < us.count; u++)
-            if (us.u[u].vout == vout && memcmp(us.u[u].txid, txint, 32) == 0) { found = &us.u[u]; break; }
+        for (size_t u = 0; u < kw_utxoset_count(us); u++) {
+            const kw_utxo *c = kw_utxoset_at(us, u);
+            if (c->vout == vout && memcmp(c->txid, txint, 32) == 0) { found = c; break; }
+        }
         if (found) {
             long depth = (long)tipheight - (long)found->height + 1;
             int immature = !kw_utxo_mature(cp, found, (uint32_t)tipheight);
@@ -2418,7 +2435,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
         }
     }
 out:
-    if (have_us) kw_utxoset_free(&us);
+    if (have_us) kw_utxoset_free(us);
     kw_peer_close(&p);
     kw_watchset_free(&ws);
     return rc;
@@ -3594,7 +3611,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
                       const char *change_arg, int gap)
 {
     kw_bip32_key acct;
-    kw_utxoset us;
+    kw_utxoset *us = NULL;
     kw_tx *tx = NULL;
     kw_psbt *p = NULL;
     kw_scan_addr *watch = NULL;
@@ -3643,9 +3660,10 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
     }
     snprintf(jpath, sizeof jpath, "%s.journal", up);
 
-    kw_utxoset_init(&us);
+    us = kw_utxoset_new();
+    if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
     have_us = 1;
-    if (!kw_utxoset_load(&us, up, &uw)) {
+    if (!kw_utxoset_load(us, up, &uw)) {
         if (uw == KW_UTXOSET_NOFILE)
             fprintf(stderr, "kw: no utxo set at %s (run kw scan)\n", up);
         else
@@ -3711,7 +3729,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
         }
         snprintf(chaddr, sizeof chaddr, "%s", change_arg);
     } else {
-        chidx = kw_change_index_pub(&acct, cp, &us, jpath, derive_n, &exhausted);
+        chidx = kw_change_index_pub(&acct, cp, us, jpath, derive_n, &exhausted);
         if (exhausted)
             fprintf(stderr, "kw: every change address within %d is used, so this one "
                             "repeats\n", derive_n);
@@ -3726,8 +3744,8 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
 
     tx = kw_tx_new();
     if (!tx) { fprintf(stderr, "kw: out of memory\n"); goto out; }
-    for (size_t u = 0; u < us.count; u++) {
-        const kw_utxo *e = &us.u[u];
+    for (size_t u = 0; u < kw_utxoset_count(us); u++) {
+        const kw_utxo *e = kw_utxoset_at(us, u);
         char disphex[65];
         uint8_t disp[32];
         int j = -1, b;
@@ -3793,8 +3811,9 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
         uint8_t pid[32];
         uint32_t pvout = 0;
         kw_tx_input_prevout(tx, (size_t)i, pid, &pvout);
-        for (size_t u = 0; u < us.count; u++) {
-            if (us.u[u].vout == pvout && memcmp(us.u[u].txid, pid, 32) == 0) { e = &us.u[u]; break; }
+        for (size_t u = 0; u < kw_utxoset_count(us); u++) {
+            const kw_utxo *c = kw_utxoset_at(us, u);
+            if (c->vout == pvout && memcmp(c->txid, pid, 32) == 0) { e = c; break; }
         }
         if (!e || !e->prevtx) { fprintf(stderr, "kw: input %d has no transaction behind it\n", i); goto out; }
         if (!kw_psbt_set_utxo(p, (size_t)i, e->prevtx, e->prevtxlen)) {
@@ -3834,7 +3853,7 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
 out:
     kw_tx_free(tx);
     if (have_psbt) kw_psbt_free(p);
-    if (have_us) kw_utxoset_free(&us);
+    if (have_us) kw_utxoset_free(us);
     free(watch);
     kw_secure_zero(&acct, sizeof acct);
     return rc;

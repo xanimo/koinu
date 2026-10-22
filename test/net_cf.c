@@ -76,16 +76,17 @@ int main(int argc, char **argv)
     if (nh < 0) { fprintf(stderr, "header sync failed\n"); return 1; }
     printf("synced %ld headers in %.1fs\n", nh, since(t0));
 
-    kw_utxoset us; kw_utxoset_init(&us);
+    kw_utxoset *us = kw_utxoset_new();
+    if (!us) return 1;
     struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
-    long nb = kw_cf_sync(&p, &s, &us, &ws, 1);
+    long nb = kw_cf_sync(&p, &s, us, &ws, 1);
     if (nb < 0) { fprintf(stderr, "cf sync failed (does the peer serve BIP157?)\n"); return 1; }
     printf("cf sync in %.1fs: %ld blocks matched and scanned\n", since(t1), nb);
 
     printf("result: %zu utxos, balance %llu koinu\n",
-           kw_utxoset_count(&us), (unsigned long long)kw_utxoset_balance(&us));
+           kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us));
 
-    kw_utxoset_free(&us); kw_watchset_free(&ws);
+    kw_utxoset_free(us); kw_watchset_free(&ws);
     kw_headerstore_free(&s); kw_peer_close(&p);
     return 0;
 }

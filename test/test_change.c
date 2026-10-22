@@ -64,14 +64,15 @@ int main(void)
        exists for it. It used to leave the journal struct uninitialised and free
        it anyway, which is a free of whatever the stack held. */
     dirty_stack();
-    kw_utxoset empty; kw_utxoset_init(&empty);
-    if (kw_change_index(&master, cp, &empty, NULL, 8, NULL) != 0)
+    kw_utxoset *empty = kw_utxoset_new();
+    if (!empty) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
+    if (kw_change_index(&master, cp, empty, NULL, 8, NULL) != 0)
         { fprintf(stderr, "FAIL: nothing used, want index 0\n"); return 1; }
     dirty_stack();
     if (kw_change_index(&master, cp, NULL, NULL, 8, NULL) != 0)
         { fprintf(stderr, "FAIL: no utxo set and no journal, want index 0\n"); return 1; }
     dirty_stack();
-    if (kw_change_index(&master, cp, &empty, "/nonexistent/journal", 8, NULL) != 0)
+    if (kw_change_index(&master, cp, empty, "/nonexistent/journal", 8, NULL) != 0)
         { fprintf(stderr, "FAIL: absent journal, want index 0\n"); return 1; }
 
     /* an index the utxo set holds coins at is used */
@@ -79,8 +80,8 @@ int main(void)
     char addr0[64], addr1[64];
     change_spk(&master, cp, 0, spk0, addr0);
     change_spk(&master, cp, 1, spk1, addr1);
-    add_utxo(&empty, spk0, 0);
-    if (kw_change_index(&master, cp, &empty, NULL, 8, NULL) != 1)
+    add_utxo(empty, spk0, 0);
+    if (kw_change_index(&master, cp, empty, NULL, 8, NULL) != 1)
         { fprintf(stderr, "FAIL: index 0 holds coins, want index 1\n"); return 1; }
 
     /* and one the journal names, whether or not it still holds anything */
@@ -94,7 +95,7 @@ int main(void)
     snprintf(e.addr, sizeof e.addr, "%s", addr1);
     if (!kw_journal_append(jp, &e)) { fprintf(stderr, "FAIL: could not write a journal\n"); return 1; }
 
-    if (kw_change_index(&master, cp, &empty, jp, 8, NULL) != 2)
+    if (kw_change_index(&master, cp, empty, jp, 8, NULL) != 2)
         { fprintf(stderr, "FAIL: 0 held and 1 journaled, want index 2\n"); return 1; }
     /* the journal alone is enough: no utxo set at all */
     if (kw_change_index(&master, cp, NULL, jp, 8, NULL) != 0)
@@ -104,13 +105,13 @@ int main(void)
        says so, since reusing an address silently is the thing rotation exists to
        avoid */
     int cx = -1;
-    if (kw_change_index(&master, cp, &empty, NULL, 1, &cx) != 0)
+    if (kw_change_index(&master, cp, empty, NULL, 1, &cx) != 0)
         { fprintf(stderr, "FAIL: only index 0 in reach and it is used, want 0\n"); return 1; }
     if (!cx) { fprintf(stderr, "FAIL: index 0 reused without reporting it\n"); return 1; }
-    if (kw_change_index(&master, cp, &empty, NULL, 0, &cx) != 0)
+    if (kw_change_index(&master, cp, empty, NULL, 0, &cx) != 0)
         { fprintf(stderr, "FAIL: nothing in reach, want 0\n"); return 1; }
     if (!cx) { fprintf(stderr, "FAIL: nothing in reach without reporting it\n"); return 1; }
-    if (kw_change_index(&master, cp, &empty, NULL, 8, &cx) != 1)
+    if (kw_change_index(&master, cp, empty, NULL, 8, &cx) != 1)
         { fprintf(stderr, "FAIL: index 1 free, want 1\n"); return 1; }
     if (cx) { fprintf(stderr, "FAIL: reported exhausted with a free index\n"); return 1; }
 
@@ -130,8 +131,8 @@ int main(void)
         }
         for (i = 0; i <= 8; i++) {
             int ea = -1, eb = -1;
-            uint32_t a = kw_change_index(&master, cp, &empty, jp, i, &ea);
-            uint32_t b = kw_change_index_pub(&acct_pub, cp, &empty, jp, i, &eb);
+            uint32_t a = kw_change_index(&master, cp, empty, jp, i, &ea);
+            uint32_t b = kw_change_index_pub(&acct_pub, cp, empty, jp, i, &eb);
             if (a != b || ea != eb) {
                 fprintf(stderr, "FAIL: with %d in reach the keyed path picked %u "
                                 "(exhausted %d) and the watch-only path %u (%d)\n",
@@ -142,7 +143,7 @@ int main(void)
         kw_secure_zero(&acct, sizeof acct);
     }
 
-    kw_utxoset_free(&empty);
+    kw_utxoset_free(empty);
     remove(jp);
     kw_ec_stop();
     printf("change ok: null journal and null utxo set, held index skipped, "

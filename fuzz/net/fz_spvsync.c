@@ -86,17 +86,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     kw_watchset ws; kw_watchset_init(&ws);
     kw_watchset_add(&ws, NB_SPK_A, 25);
     if (cfg & 1) kw_watchset_add(&ws, NB_SPK_B, 25);
-    kw_utxoset us; kw_utxoset_init(&us);
+    kw_utxoset *us = kw_utxoset_new();
+    if (!us) return 1;
 
     nf_peer pp; kw_peer lp; memset(&pp, 0, sizeof pp);
     nf_peer_open(&pp, &lp, CP);
     struct vctx x = { c, 0 };
     nf_script(&in, &pp, CP->magic, 40, st_op, &x);
     nf_peer_start(&pp);
-    long ret = kw_spv_sync_blocks(&lp, &s, &us, &ws, 1);
+    long ret = kw_spv_sync_blocks(&lp, &s, us, &ws, 1);
     kw_peer_close(&lp);
     nf_peer_finish(&pp);
-    if (getenv("NF_DEBUG")) fprintf(stderr, "nb=%d ret=%ld utxos=%zu total=%llu\n", c->nb, ret, us.count, (unsigned long long)us.total);
+    if (getenv("NF_DEBUG")) fprintf(stderr, "nb=%d ret=%ld utxos=%zu total=%llu\n", c->nb, ret, kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us));
 
     if (ret >= 0) {
         if (ret != (long)s.count) NF_FAIL("V1 returned %ld for %zu headers", ret, s.count);
@@ -117,19 +118,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             }
         int nl = 0; for (int k = 0; k < no; k++) if (o[k].live) o[nl++] = o[k];
         uint64_t tot = 0;
-        ou *g = (ou *)calloc(us.count + 1, sizeof *g);
-        for (size_t i = 0; i < us.count; i++) {
-            memcpy(g[i].txid, us.u[i].txid, 32); g[i].vout = us.u[i].vout; g[i].value = us.u[i].value; g[i].h = us.u[i].height;
-            tot += us.u[i].value;
+        ou *g = (ou *)calloc(kw_utxoset_count(us) + 1, sizeof *g);
+        for (size_t i = 0; i < kw_utxoset_count(us); i++) {
+            const kw_utxo *c = kw_utxoset_at(us, i);
+            memcpy(g[i].txid, c->txid, 32); g[i].vout = c->vout; g[i].value = c->value; g[i].h = c->height;
+            tot += c->value;
         }
-        if (tot != us.total) NF_FAIL("V3 total %llu, sum %llu", (unsigned long long)us.total, (unsigned long long)tot);
-        if (rep) { for (int k = 0; k < nl; k++) o[k].h = 0; for (size_t i = 0; i < us.count; i++) g[i].h = 0; }
-        qsort(o, (size_t)nl, sizeof *o, ou_cmp); qsort(g, us.count, sizeof *g, ou_cmp);
-        if ((size_t)nl != us.count) NF_FAIL("V2 %zu utxos, replay has %d", us.count, nl);
+        if (tot != kw_utxoset_balance(us)) NF_FAIL("V3 total %llu, sum %llu", (unsigned long long)kw_utxoset_balance(us), (unsigned long long)tot);
+        if (rep) { for (int k = 0; k < nl; k++) o[k].h = 0; for (size_t i = 0; i < kw_utxoset_count(us); i++) g[i].h = 0; }
+        qsort(o, (size_t)nl, sizeof *o, ou_cmp); qsort(g, kw_utxoset_count(us), sizeof *g, ou_cmp);
+        if ((size_t)nl != kw_utxoset_count(us)) NF_FAIL("V2 %zu utxos, replay has %d", kw_utxoset_count(us), nl);
         for (int k = 0; k < nl; k++) if (ou_cmp(&o[k], &g[k])) NF_FAIL("V2 utxo %d differs from the replay", k);
         free(o); free(g);
     }
-    kw_utxoset_free(&us); kw_watchset_free(&ws);
+    kw_utxoset_free(us); kw_watchset_free(&ws);
     kw_headerstore_free(&s);
     nb_free_chain(c); free(c);
     return 0;

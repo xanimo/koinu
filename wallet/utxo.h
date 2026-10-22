@@ -101,19 +101,24 @@ typedef struct {
     void *ctx;
 } kw_utxo_watcher;
 
-typedef struct {
-    kw_utxo *u; size_t count, cap; uint64_t total;
-    const kw_utxo_watcher *watch;        /* NULL unless a caller is keeping a record */
-} kw_utxoset;
+/* Opaque: it owns an array that grows and a transaction per entry, which is not
+   an object to hold by value. wallet/utxo_internal.h carries the layout for this
+   project's own code. */
+typedef struct kw_utxoset kw_utxoset;
 
 /* Watch (us) for the life of a scan, or NULL to stop. The set keeps the pointer,
    so (w) has to outlive the scan. */
 void kw_utxoset_observe(kw_utxoset *us, const kw_utxo_watcher *w);
 
-int      kw_utxoset_init(kw_utxoset *us);
-void     kw_utxoset_free(kw_utxoset *us);
-size_t   kw_utxoset_count(const kw_utxoset *us);
-uint64_t kw_utxoset_balance(const kw_utxoset *us);
+/* An empty set. NULL on allocation failure; free takes NULL. */
+kw_utxoset *kw_utxoset_new(void);
+void        kw_utxoset_free(kw_utxoset *us);
+size_t      kw_utxoset_count(const kw_utxoset *us);
+uint64_t    kw_utxoset_balance(const kw_utxoset *us);
+
+/* Entry (i), or NULL past the end. Borrowed, and valid until the set changes:
+   applying a transaction or adding an entry can move the array. */
+const kw_utxo *kw_utxoset_at(const kw_utxoset *us, size_t i);
 
 /* What the set holds that can be spent at (tip_height), which is the number a
    balance should show: counting an immature coinbase promises money the chain

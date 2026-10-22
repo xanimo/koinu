@@ -155,11 +155,13 @@ static uint64_t tally_rows(const kw_utxoset *us, row *rows, int n)
     for (int i = 0; i < n; i++) {
         rows[i].balance = 0;
         rows[i].nutxo = 0;
-        for (size_t u = 0; u < us->count; u++)
-            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk, rows[i].spk, 25) == 0) {
-                rows[i].balance += us->u[u].value;
+        for (size_t u = 0; u < kw_utxoset_count(us); u++) {
+            const kw_utxo *c = kw_utxoset_at(us, u);
+            if (c->spklen == 25 && memcmp(c->spk, rows[i].spk, 25) == 0) {
+                rows[i].balance += c->value;
                 rows[i].nutxo++;
             }
+        }
         total += rows[i].balance;
     }
     return total;
@@ -317,7 +319,8 @@ static void addr_view(const kw_chainparams *cp, const row *r, const kw_utxoset *
     int top = 0;
     for (;;) {
         int nmine = 0;
-        for (size_t u = 0; u < us->count; u++) if (pays(&us->u[u], r->spk)) nmine++;
+        for (size_t u = 0; u < kw_utxoset_count(us); u++)
+            if (pays(kw_utxoset_at(us, u), r->spk)) nmine++;
 
         int per = page_rows() - 4;
         if (per < 1) per = 1;
@@ -338,13 +341,14 @@ static void addr_view(const kw_chainparams *cp, const row *r, const kw_utxoset *
         } else {
             printf("   %-8s %-20s %6s %18s\r\n", "height", "txid", "vout", "value");
             int shown = 0, seen = 0;
-            for (size_t u = 0; u < us->count && shown < per; u++) {
-                if (!pays(&us->u[u], r->spk)) continue;
+            for (size_t u = 0; u < kw_utxoset_count(us) && shown < per; u++) {
+                const kw_utxo *c = kw_utxoset_at(us, u);
+                if (!pays(c, r->spk)) continue;
                 if (seen++ < top) continue;
                 char t[32], v[32];
-                txid_short(us->u[u].txid, t, sizeof t);
-                fmt_doge(us->u[u].value, v, sizeof v);
-                printf("   %-8u %-20s %6u %18s\r\n", us->u[u].height, t, us->u[u].vout, v);
+                txid_short(c->txid, t, sizeof t);
+                fmt_doge(c->value, v, sizeof v);
+                printf("   %-8u %-20s %6u %18s\r\n", c->height, t, c->vout, v);
                 shown++;
             }
             if (nmine > per)
@@ -379,14 +383,15 @@ static int by_height_desc(const void *a, const void *b)
 
 static void coins_view(const kw_utxoset *us, const row *rows, int nrows)
 {
-    struct coin *c = us->count ? (struct coin *)calloc(us->count, sizeof *c) : NULL;
-    if (us->count && !c) return;
-    for (size_t u = 0; u < us->count; u++) { c[u].height = us->u[u].height; c[u].at = u; }
-    if (us->count) qsort(c, us->count, sizeof *c, by_height_desc);
+    size_t n_us = kw_utxoset_count(us);
+    struct coin *c = n_us ? (struct coin *)calloc(n_us, sizeof *c) : NULL;
+    if (n_us && !c) return;
+    for (size_t u = 0; u < n_us; u++) { c[u].height = kw_utxoset_at(us, u)->height; c[u].at = u; }
+    if (n_us) qsort(c, n_us, sizeof *c, by_height_desc);
 
     int top = 0;
     for (;;) {
-        int n = (int)us->count, per = page_rows() - 1;
+        int n = (int)n_us, per = page_rows() - 1;
         if (per < 1) per = 1;
         if (top > n - per) top = n - per;
         if (top < 0) top = 0;
@@ -394,7 +399,7 @@ static void coins_view(const kw_utxoset *us, const row *rows, int nrows)
         printf("\033[H\033[2J\033[1m coins\033[0m   %d unspent output(s), newest first\r\n\r\n", n);
         printf("   %-8s %-20s %6s %18s %s\r\n", "height", "txid", "vout", "value", "address");
         for (int i = top; i < n && i < top + per; i++) {
-            const kw_utxo *u = &us->u[c[i].at];
+            const kw_utxo *u = kw_utxoset_at(us, c[i].at);
             const char *addr = "(not a watched address)";
             for (int r = 0; r < nrows; r++) if (pays(u, rows[r].spk)) { addr = rows[r].addr; break; }
             char t[32], v[32];
@@ -546,22 +551,25 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
        afford. */
     int order[KW_TX_MAX_IN]; int nin = 0;
     uint64_t in_total = 0, fee = 0;
-    char *used = us->count ? (char *)calloc(us->count, 1) : NULL;
-    if (us->count && !used) {
+    size_t n_us = kw_utxoset_count(us);
+    char *used = n_us ? (char *)calloc(n_us, 1) : NULL;
+    if (n_us && !used) {
         ask_line("   out of memory. enter to go back ", to, sizeof to);
         return;
     }
     while (nin < KW_TX_MAX_IN) {
         int pick = -1;
         uint32_t best_h = 0xffffffffu;
-        for (size_t u = 0; u < us->count; u++)
-            if (!used[u] && us->u[u].spklen == 25 && us->u[u].height <= best_h &&
-                kw_utxo_mature(cp, &us->u[u], scan_tip)) {
-                best_h = us->u[u].height; pick = (int)u;
+        for (size_t u = 0; u < n_us; u++) {
+            const kw_utxo *c = kw_utxoset_at(us, u);
+            if (!used[u] && c->spklen == 25 && c->height <= best_h &&
+                kw_utxo_mature(cp, c, scan_tip)) {
+                best_h = c->height; pick = (int)u;
             }
+        }
         if (pick < 0) break;
         used[pick] = 1; order[nin++] = pick;
-        in_total += us->u[pick].value;
+        in_total += kw_utxoset_at(us, (size_t)pick)->value;
         fee = kw_est_fee(nin, 2, KW_MIN_RELAY_FEE_PER_KB);
         if (in_total >= want + fee) break;
     }
@@ -627,7 +635,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     kw_tx *tx = kw_tx_new();
     if (!tx) { kw_secure_forget(seed, sizeof seed); return; }
     for (int i = 0; i < nin; i++) {
-        const kw_utxo *u = &us->u[order[i]];
+        const kw_utxo *u = kw_utxoset_at(us, (size_t)order[i]);
         char disp[65]; uint8_t d[32];
         for (int b = 0; b < 32; b++) d[b] = u->txid[31 - b];
         kw_hex_encode(d, 32, disp, sizeof disp);
@@ -668,7 +676,7 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     }
 
     for (int i = 0; i < nin && ok; i++) {
-        const kw_utxo *u = &us->u[order[i]];
+        const kw_utxo *u = kw_utxoset_at(us, (size_t)order[i]);
         int ri = -1;
         for (int r = 0; r < nrows; r++)
             if (memcmp(rows[r].spk, u->spk, 25) == 0) { ri = r; break; }
@@ -826,7 +834,7 @@ int main(int argc, char **argv)
 
     char defpath[4200];
     if (!utxos) { snprintf(defpath, sizeof defpath, "%s.utxos", ks); utxos = defpath; }
-    kw_utxoset us; kw_utxoset_init(&us);
+    kw_utxoset *us = kw_utxoset_new();
     /* Absent is not fatal, since a wallet that has never scanned has no coins. A file
        that exists and does not load is different: the set is whatever was read before
        the bad line, and showing that as a balance is showing the wrong number without
@@ -836,7 +844,7 @@ int main(int argc, char **argv)
         FILE *probe = fopen(utxos, "r");
         if (probe) {
             fclose(probe);
-            if (!kw_utxoset_load(&us, utxos, NULL)) utxos_partial = 1;
+            if (!kw_utxoset_load(us, utxos, NULL)) utxos_partial = 1;
         }
     }
 
@@ -852,13 +860,13 @@ int main(int argc, char **argv)
 
     /* two chains, receive and change */
     row *rows = (row *)calloc((size_t)gap * 2, sizeof *rows);
-    if (!rows) { kw_utxoset_free(&us); kw_secure_forget(seed, sizeof seed); return 1; }
+    if (!rows) { kw_utxoset_free(us); kw_secure_forget(seed, sizeof seed); return 1; }
     uint64_t total = 0;
-    int n = build_rows(cp, seed, gap, &us, rows, gap * 2, &total);
+    int n = build_rows(cp, seed, gap, us, rows, gap * 2, &total);
     kw_secure_forget(seed, sizeof seed);     /* addresses are derived; the seed is done */
 
     int *vis = (int *)calloc((size_t)(n > 0 ? n : 1), sizeof *vis);
-    if (!vis) { free(rows); kw_utxoset_free(&us); kw_ec_stop(); return 1; }
+    if (!vis) { free(rows); kw_utxoset_free(us); kw_ec_stop(); return 1; }
 
     screen_enter();
     int top = 0, sel = 0, used_only = 0, running = 1;
@@ -868,7 +876,7 @@ int main(int argc, char **argv)
         if (sel >= nvis) sel = nvis ? nvis - 1 : 0;
 
         draw(cp, rows, vis, nvis, top, sel, total,
-             kw_utxoset_spendable(cp, &us, scan_tip), us.count, used_only, ks, utxos_partial);
+             kw_utxoset_spendable(cp, us, scan_tip), kw_utxoset_count(us), used_only, ks, utxos_partial);
         int c = getchar();
         switch (c) {
         case 'q': case 3: case EOF: running = 0; break;
@@ -879,24 +887,24 @@ int main(int argc, char **argv)
             /* kw scan writes the file this reads, so a refresh is a reload. Into
                a fresh set, since load appends, and the old one is only dropped
                once the new one is read: a truncated file leaves what was there. */
-            kw_utxoset fresh;
-            if (!kw_utxoset_init(&fresh)) break;
-            if (kw_utxoset_load(&fresh, utxos, NULL)) {
-                kw_utxoset_free(&us);
+            kw_utxoset *fresh = kw_utxoset_new();
+            if (!fresh) break;
+            if (kw_utxoset_load(fresh, utxos, NULL)) {
+                kw_utxoset_free(us);
                 us = fresh;
-                total = tally_rows(&us, rows, n);
+                total = tally_rows(us, rows, n);
                 utxos_partial = 0;
             } else {
-                kw_utxoset_free(&fresh);
+                kw_utxoset_free(fresh);
                 utxos_partial = 1;          /* the old view stands, and says so */
             }
             break;
         }
-        case 's': send_flow(cp, ks, utxos, scan_tip, &us, rows, n); break;
-        case 'c': coins_view(&us, rows, n); break;
+        case 's': send_flow(cp, ks, utxos, scan_tip, us, rows, n); break;
+        case 'c': coins_view(us, rows, n); break;
         case 'h': history_view(utxos); break;
         case '\n': case '\r':
-            if (nvis) addr_view(cp, &rows[vis[sel]], &us);
+            if (nvis) addr_view(cp, &rows[vis[sel]], us);
             break;
         case '\033':                       /* arrow keys arrive as ESC [ A/B */
             if (getchar() == '[') {
@@ -916,7 +924,7 @@ int main(int argc, char **argv)
     free(vis);
 
     free(rows);
-    kw_utxoset_free(&us);
+    kw_utxoset_free(us);
     kw_ec_stop();
     return 0;
 }

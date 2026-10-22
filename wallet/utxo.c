@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
-#include "utxo.h"
+#include "utxo_internal.h"
 #include "tx.h"
 #include "hex.h"
 #include "sha2.h"
@@ -68,21 +68,28 @@ void kw_utxoset_observe(kw_utxoset *us, const kw_utxo_watcher *w)
     if (us) us->watch = w;
 }
 
-int kw_utxoset_init(kw_utxoset *us)
+kw_utxoset *kw_utxoset_new(void)
 {
-    us->count = 0;
-    us->total = 0;
-    us->watch = NULL;
+    kw_utxoset *us = (kw_utxoset *)calloc(1, sizeof *us);
+    if (!us) return NULL;
     us->cap = 16;
     us->u = (kw_utxo *)malloc(us->cap * sizeof *us->u);
-    return us->u != NULL;
+    if (!us->u) { free(us); return NULL; }
+    return us;
 }
 
 void kw_utxoset_free(kw_utxoset *us)
 {
+    if (!us) return;
     for (size_t i = 0; i < us->count; i++) free(us->u[i].prevtx);
     free(us->u);
-    us->u = NULL; us->count = us->cap = 0;
+    free(us);
+}
+
+const kw_utxo *kw_utxoset_at(const kw_utxoset *us, size_t i)
+{
+    if (!us || i >= us->count) return NULL;
+    return &us->u[i];
 }
 
 size_t kw_utxoset_count(const kw_utxoset *us) { return us->count; }

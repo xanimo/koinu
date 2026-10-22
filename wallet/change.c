@@ -44,8 +44,10 @@ static uint32_t change_pick(const kw_chainparams *cp, const kw_utxoset *us,
         kw_hash160(pub, 33, h);
         al = kw_address_p2pkh(pub, cp->p2pkh, addr, sizeof addr);
 
-        for (u = 0; us && u < us->count && !used; u++)
-            if (us->u[u].spklen == 25 && memcmp(us->u[u].spk + 3, h, 20) == 0) used = 1;
+        for (u = 0; us && u < kw_utxoset_count(us) && !used; u++) {
+            const kw_utxo *e2 = kw_utxoset_at(us, u);
+            if (e2->spklen == 25 && memcmp(e2->spk + 3, h, 20) == 0) used = 1;
+        }
         for (e = 0; have_j && al && e < j.count && !used; e++)
             if (strcmp(j.e[e].addr, addr) == 0) used = 1;
 
