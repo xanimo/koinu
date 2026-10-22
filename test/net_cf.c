@@ -10,6 +10,7 @@
  * balance and the wall time of each phase. */
 
 #include "cf.h"
+#include "log.h"
 #include "sync.h"
 #include "peer.h"
 #include "headers.h"
@@ -37,6 +38,13 @@ static double since(struct timespec a) {
     return (double)(b.tv_sec - a.tv_sec) + (double)(b.tv_nsec - a.tv_nsec) / 1e9;
 }
 
+/* net_cf is a diagnostic, so it asks for everything the library has to say. */
+static void log_to_stderr(void *ctx, kw_log_level level, const char *line)
+{
+    (void)ctx;
+    fprintf(stderr, level == KW_LOG_TRACE ? "%s\n" : "net_cf: %s\n", line);
+}
+
 int main(int argc, char **argv)
 {
     const kw_chainparams *cp = &KW_DOGE_MAINNET;
@@ -55,7 +63,7 @@ int main(int argc, char **argv)
     if (port < 0) port = cp->p2p_port;
     if (naddr == 0) { fprintf(stderr, "usage: net_cf [--regtest] host port <address> [address ...]\n"); return 1; }
 
-    kw_net_verbose = 1;
+    kw_log_set(log_to_stderr, NULL);
     kw_watchset ws; kw_watchset_init(&ws);
     for (int i = 0; i < naddr; i++) {
         uint8_t spk[25];

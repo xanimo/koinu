@@ -58,6 +58,7 @@
 /pow_chain
 /test/test_auxpow
 /net_auxpow
+/net_powtail
 /test/test_powq
 /gen_checkpoints
 /mkvectors_chain

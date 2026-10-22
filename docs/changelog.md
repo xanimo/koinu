@@ -40,7 +40,13 @@ one-shot form has to split it and pass `--utxos`.
 left behind compiles and signs the wrong bytes.
 
 ## What's Changed
-* utxo: the set is opaque, and read an entry at a time
+* build: the hand-run diagnostics are built by the gate
+  net_cf had assigned a global deleted five commits earlier and fz_kwdflow the
+  same, because nothing compiled either: each needs a live peer, so they are
+  built on demand and the demand came after the change. make tools builds the
+  twelve of them without running any, and CI runs it on both compilers and on
+  32-bit. make fuzz-net was already in the release gate and would have caught
+  fz_kwdflow at a release rather than at a push., and read an entry at a time
   kw_utxoset was a transparent struct holding a pointer to an array that grows
   and a transaction per entry, which a caller declared by value and indexed
   into. It is a handle from kw_utxoset_new now, and kw_utxoset_at hands out one

@@ -132,7 +132,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     (void)argc; (void)argv;
     nf_genesis(CPK, nf_gen);
     nb_mine_headers = 1;
-    if (getenv("NF_VERBOSE")) kw_net_verbose = 1;
+    if (getenv("NF_VERBOSE")) want_trace = 1;   /* kwd.c's own, included above */
     const char *d = getenv("FZ_TMP");
     snprintf(fpath, sizeof fpath, "%s/kwd-%d.cf", d ? d : "/tmp", (int)getpid());
     signal(SIGPIPE, SIG_IGN);

@@ -317,6 +317,13 @@ pow_chain: test/pow_chain.o $(LIB)
 net_sync: test/net_sync.o $(LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_sync.o $(LIB)
 
+# The hand-run diagnostics, built but not run: each needs a peer, so a change
+# that breaks one is otherwise invisible until someone reaches for it. net_cf
+# went five commits referencing a global that had been deleted.
+TOOLS = net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow \
+        net_powtail net_services pow_chain gen_checkpoints mkvectors_chain
+tools: $(TOOLS)
+
 # live SPV balance tool, built on demand, not part of `make check`
 net_spv: test/net_spv.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_spv.o $(LIB) $(SECP_LIB)
@@ -516,4 +523,4 @@ clean:
 distclean: clean
 	-cd $(SECP_DIR) && $(MAKE) distclean
 
-.PHONY: split all check asan clean distclean
+.PHONY: split all check asan tools clean distclean

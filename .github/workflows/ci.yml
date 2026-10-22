@@ -77,6 +77,17 @@ jobs:
             make check CC=${{ matrix.cc }}
           fi
 
+      # built, not run: each wants a live peer. A link error here is a change
+      # that broke a diagnostic nobody compiles until they need it.
+      - name: tools
+        run: |
+          if [ "${{ matrix.bits32 }}" = "true" ]; then
+            make tools CC=${{ matrix.cc }} \
+              CFLAGS="-std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -m32"
+          else
+            make tools CC=${{ matrix.cc }}
+          fi
+
   sanitizers:
     runs-on: ubuntu-24.04
     steps:
