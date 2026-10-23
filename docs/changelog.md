@@ -40,6 +40,12 @@ one-shot form has to split it and pass `--utxos`.
 left behind compiles and signs the wrong bytes.
 
 ## What's Changed
+* build: a second install with a different PREFIX wrote the first one's .pc
+  The generated .pc depends on PREFIX, which is not an input make can see, so
+  the file was up to date whatever the prefix was: `make install PREFIX=/opt/a`
+  then `make install PREFIX=/usr` installed a .pc still naming /opt/a, and
+  pkg-config pointed a consumer at headers that were not there. The prefix goes
+  through a stamp file now, so changing it rebuilds the .pc.
 * build: make check compiles and replays the fuzz harnesses
   Nothing in the fast loop built them, and the libFuzzer ones want a compiler
   the gate does not require, so a header change that broke fuzz_parse and two

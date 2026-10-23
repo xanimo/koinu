@@ -122,7 +122,14 @@ SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
             crypto/siphash.h crypto/slip39.h crypto/tx.h \
             wallet/change.h wallet/fee.h wallet/journal.h wallet/utxo.h
 
-%.pc: %.pc.in include/kw_version.h
+# The prefix is a prerequisite, through a stamp file, because it is not one of
+# the inputs make can see: two installs with different PREFIX values put the
+# first one's paths in the second one's .pc.
+.PHONY: force
+.pcprefix: force
+	@printf '%s\n' '$(PREFIX)' | cmp -s - $@ 2>/dev/null || printf '%s\n' '$(PREFIX)' > $@
+
+%.pc: %.pc.in include/kw_version.h .pcprefix
 	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@VERSION@|$(KW_VER)|g' $< > $@
 
 install: $(SIGN_LIB) $(CHAIN_LIB) koinu-sign.pc koinu-chain.pc kw kwd kwui
@@ -536,7 +543,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) .pcprefix koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
