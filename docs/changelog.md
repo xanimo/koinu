@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-23
+
 ## Upgrading
 
 Rescan. The utxo set is v2 and carries the transaction behind every output, so a
@@ -31,15 +33,23 @@ the signing half are separate invocations now:
 Passing `--watch` and `--wif` in one run is refused. A caller doing the old
 one-shot form has to split it and pass `--utxos`.
 
-`kw_tx`, `kw_psbt` and `kw_utxoset` are opaque. `kw_tx t; kw_tx_init(&t);` becomes
-`kw_tx *t = kw_tx_new();` with a `kw_tx_free`, and a field read becomes
-`kw_tx_nin`, `kw_tx_nout`, `kw_tx_output`, `kw_tx_input_prevout` or
-`kw_tx_input_script`. `kw_utxoset us; kw_utxoset_init(&us);` becomes
-`kw_utxoset *us = kw_utxoset_new();`, and `us.u[i]` becomes
-`kw_utxoset_at(us, i)`. Build with `-Werror=incompatible-pointer-types`: a `&t`
-left behind compiles and signs the wrong bytes.
+`kw_tx`, `kw_psbt`, `kw_utxoset`, `kw_watchset` and `kw_journal` are opaque.
+Each `kw_x y; kw_x_init(&y);` becomes `kw_x *y = kw_x_new();` with a matching
+free, and a field read becomes an accessor: `kw_tx_nin`, `kw_tx_nout`,
+`kw_tx_output`, `kw_tx_input_prevout`, `kw_tx_input_script`,
+`kw_utxoset_count`, `kw_utxoset_at`, `kw_watchset_count`, `kw_watchset_seen`,
+`kw_journal_count` and `kw_journal_at`. Build with
+`-Werror=incompatible-pointer-types`: a `&y` left behind compiles and signs the
+wrong bytes. docs/abi.md says which types a soname freezes and which it does
+not.
 
 ## What's Changed
+* chainparams: anchor 6425000
+  The chain passed the next 25000-height anchor, so the tail a sync has to check
+  the slow way had grown to 26751 headers. gen_checkpoints reproduces all 257
+  committed entries exactly and adds this one. The filter anchors sit every
+  100000 and the last is 6400000, which the tip at 6426751 has not passed, so
+  that table is unchanged.
 * build: libkoinu-sign.so.0 and libkoinu-chain.so.0, with docs/abi.md
   The soname was waiting on the handles, and they are done, so there is a
   shared library and a written promise. kw_tx, kw_psbt, kw_utxoset, kw_watchset
@@ -95,7 +105,8 @@ left behind compiles and signs the wrong bytes.
   built on demand and the demand came after the change. make tools builds the
   twelve of them without running any, and CI runs it on both compilers and on
   32-bit. make fuzz-net was already in the release gate and would have caught
-  fz_kwdflow at a release rather than at a push., and read an entry at a time
+  fz_kwdflow at a release rather than at a push.
+* utxo: the set is opaque, and read an entry at a time
   kw_utxoset was a transparent struct holding a pointer to an array that grows
   and a transaction per entry, which a caller declared by value and indexed
   into. It is a handle from kw_utxoset_new now, and kw_utxoset_at hands out one
@@ -215,7 +226,7 @@ left behind compiles and signs the wrong bytes.
   as they came and PROVENANCE's hashes still describe them. test_split.sh fails
   on any exported name outside kw_ and KW_, and links a program that keeps five
   of them for itself.
-* psbt: an ordinary spend crosses as a psbt, built without a key and signed
+* psbt: a spend built without a key and signed without a socket
   without a socket
   kw psbt build takes the account public key and the utxo set, chooses the
   coins, picks the change index by the rule a keyed build uses, settles the fee
@@ -289,6 +300,25 @@ left behind compiles and signs the wrong bytes.
   not locked to the key it holds, which the single run could not get wrong and
   so never checked. The threat model says what is enforced per command and what
   separate executables would make structural.
+* kwui: bound the send destination by what the journal can record
+  send_flow read the destination into 80 bytes more than the journal's address
+  field holds, so an address too long for it was recorded truncated rather than
+  refused, and the change rotation reads that field back. The buffer is the
+  journal's size now, so a paste too long fails addr_to_spk and says so. No
+  base58check address comes near either bound.
+* docs: say that --recursive is not optional
+  A plain clone leaves depends/secp256k1 empty and make stops on a missing
+  secp256k1.h, which reads as a broken build rather than a missing submodule.
+  Names the fix for a clone that already exists, since that is the case the flag
+  cannot help.
+* test: clear the five warnings a clean build still prints
+  kw_outpoint_status has four members and test_spv initialised three of them by
+  position, so -Wmissing-field-initializers fired at four sites; `{ 0 }` says the
+  same thing and keeps saying it when the struct grows. locked_bytes read into
+  buf + held with a length of sizeof buf - held - 1, and nothing in the loop told
+  the compiler held stays under the buffer, so -Wstringop-overflow could not rule
+  out the underflow. The bound is in the condition now and an over-long line is
+  dropped rather than stopping the read.
 * slip39: split the seed into shares, and combine a threshold back
   A written mnemonic is one copy, so losing the wallet and having it stolen are
   the same number. `kw backup split` makes SLIP-39 shares of the 64-byte seed
@@ -306,6 +336,75 @@ left behind compiles and signs the wrong bytes.
   and nothing in the format says a set reconstructs the seed it came from.
   `backup combine` reads the format off the shares. Every BIP-93 vector passes,
   including all 55 that must be refused and every derived share byte for byte.
+* gitignore wallet data, as a backstop against a stray add
+  Keystores, utxo sets, journals and header caches are ignored, so a `git add`
+  with a wide pattern in a working directory cannot commit a wallet.
+* kw: watch a wallet from its account xpub, with no keys on that machine
+  Signing already happened where no socket was open, since `kw sign` writes a
+  file and `kw send` broadcasts it, but the online side had nothing to watch
+  with: the choice was the keystore on the connected machine or no watching at
+  all. `export xpub` prints the account public key for m/44'/coin'/account' and
+  `scan --xpub` derives every address under it with no keystore, no passphrase
+  and no secret in the process, change and index being unhardened so a public
+  parent walks them. An extended private key is refused there, and giving both a
+  keystore and an xpub is refused rather than one quietly winning.
+* scan: record what left as well as what arrived, so the journal is a history
+  The utxo set answers what a wallet holds, and a coin received and then spent is
+  not in it while a payment out leaves nothing behind at all, so a wallet
+  restored from its words could say what it holds and not what it has done. The
+  scan already walks both directions and the removal was silent. A utxo set
+  carries an optional observer now, which is where the scan hangs a journal
+  writer, and the entries dedup on (txid, vout, direction), so the rescans the
+  gap rule triggers do not double anything.
+* kw: ask for some of the words back before the keystore exists
+  The cheapest moment to catch a phrase written down wrong is while it is still
+  on the screen, and `kw new` never looked. It asks for four of the 24 words by
+  position, three of 12, with three attempts, and seals nothing if they do not
+  come back: the words were never written anywhere, so a refusal costs a keystore
+  that did not exist. Skipped when stdin is not a terminal, which is every script
+  and every test, and said on stderr rather than silently.
+* kw: backup verify, so a phrase can be checked without being restored
+  Coins lost to key handling are mostly lost to a backup nobody checked, and
+  checking one meant restoring it somewhere: the words and a wallet in one place
+  at one time, which is the situation a backup exists to avoid. `backup verify`
+  derives the seed the typed words give, opens the keystore and compares the two
+  with kw_memcmp_ct. Neither is printed and nothing is written. A match exits 0,
+  a mismatch exits 3 and says that a wallet sealed with a seed passphrase needs
+  one here too. With no `--keystore` it prints the master fingerprint and the
+  first address, which are not secrets, so a paper backup can be checked against
+  an address already known.
+* kw: a BIP39 passphrase, so a stolen phrase does not spend
+  kw_bip39_to_seed was called with an empty passphrase on both paths, so the
+  words were the whole secret and anyone who read them spent the wallet.
+  `--seed-passphrase` on new and restore goes into the seed derivation, which
+  makes the words alone restore a different wallet. It is a different secret from
+  `--passphrase`, which seals the keystore, and the help says so, because
+  confusing the two would cost someone their coins. Nothing checks it: every
+  passphrase yields a valid wallet, so a wrong one restores an empty wallet
+  rather than reporting a mistake, and a forgotten one is as final as a lost
+  phrase. The first address printed at restore is the only check there is.
+* kw: sign reports what it signed, read back out of the bytes
+  sign printed a fee of total_in - send_amt - change and an address from the
+  request, so the summary and the transaction were two statements of the same
+  intention rather than one checking the other: a builder that paid the wrong
+  amount, the wrong script, or an extra output would have printed the right
+  numbers anyway. The outputs are decoded from the serialized transaction now and
+  printed by index, and the fee is the selected inputs less the decoded output
+  total. Four refusals come with it, each a mistake that cannot be taken back
+  once broadcast: an output count that is not what was built, a destination
+  script or amount that is not what was asked for, a change output that is not
+  the address this wallet derived, and outputs worth more than the inputs.
+* docs: say where the boundary is before saying anything else
+  The threat model described what is verified and what is trusted, spread over
+  the sections that cover each, so a reader deciding whether to run this had to
+  assemble the answer themselves. It opens with the boundary in four sentences
+  now: a compromised kwd cannot sign, a compromised machine running kw can, no
+  wallet can undo a payment its owner approved, and a seed lost with the wallet
+  file is gone because the keystore holds the seed and not the words. Also what
+  it will not grow: server-side recovery, a login, telemetry, or any convenience
+  that needs the key process to reach the network.
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.3.0...v0.4.0
 
 ## [0.3.0] - 2026-10-10
 
