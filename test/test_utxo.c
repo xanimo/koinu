@@ -35,14 +35,14 @@ int main(void)
     uint8_t spk[64];
     size_t spklen = (size_t)kw_test_unhex(CB_SPK, spk);
 
-    kw_watchset ws;
-    if (!kw_watchset_init(&ws) || !kw_watchset_add(&ws, spk, spklen)) {
+    kw_watchset *ws;
+    if (!(ws = kw_watchset_new()) || !kw_watchset_add(ws, spk, spklen)) {
         fprintf(stderr, "FAIL: watchset\n"); return 1;
     }
     /* The set is malloc'd and the scan reads this flag to find the highest used
        index: unset, heap left over from the derivation marks addresses paid that
        never were, and each one costs a whole-chain rescan. */
-    if (ws.w[0].seen != 0) {
+    if (kw_watchset_seen(ws, 0) != 0) {
         fprintf(stderr, "FAIL: a freshly added script is already marked seen\n"); return 1;
     }
 
@@ -51,7 +51,7 @@ int main(void)
 
     /* the coinbase pays our watched script in vout[0]; vout[1] is an OP_RETURN
        we do not watch. one UTXO, its value, appears. */
-    if (!kw_utxoset_apply_tx(us, &ws, cb, cblen, 1)) { fprintf(stderr, "FAIL: apply coinbase\n"); return 1; }
+    if (!kw_utxoset_apply_tx(us, ws, cb, cblen, 1)) { fprintf(stderr, "FAIL: apply coinbase\n"); return 1; }
     if (kw_utxoset_count(us) != 1) { fprintf(stderr, "FAIL: count %zu\n", kw_utxoset_count(us)); return 1; }
     if (kw_utxoset_balance(us) != CB_VALUE) { fprintf(stderr, "FAIL: balance %llu\n",
         (unsigned long long)kw_utxoset_balance(us)); return 1; }
@@ -76,7 +76,7 @@ int main(void)
         uint8_t raw[512];
         size_t n = kw_tx_serialize(tx, raw, sizeof raw);
         if (!n) { fprintf(stderr, "FAIL: serialize spend\n"); return 1; }
-        if (!kw_utxoset_apply_tx(us, &ws, raw, n, 2)) { fprintf(stderr, "FAIL: apply spend\n"); return 1; }
+        if (!kw_utxoset_apply_tx(us, ws, raw, n, 2)) { fprintf(stderr, "FAIL: apply spend\n"); return 1; }
         if (kw_utxoset_count(us) != 0 || kw_utxoset_balance(us) != 0) {
             fprintf(stderr, "FAIL: spend did not clear (count %zu)\n", kw_utxoset_count(us)); return 1;
         }
@@ -94,7 +94,7 @@ int main(void)
         kw_tx_add_output(tx, 200000000ULL, spk, spklen);          /* watched */
         uint8_t raw[512];
         size_t n = kw_tx_serialize(tx, raw, sizeof raw);
-        if (!kw_utxoset_apply_tx(us, &ws, raw, n, 3)) { fprintf(stderr, "FAIL: apply mixed\n"); return 1; }
+        if (!kw_utxoset_apply_tx(us, ws, raw, n, 3)) { fprintf(stderr, "FAIL: apply mixed\n"); return 1; }
         if (kw_utxoset_count(us) != 1 || kw_utxoset_balance(us) != 200000000ULL) {
             fprintf(stderr, "FAIL: only watched output tracked (count %zu bal %llu)\n",
                 kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us)); return 1;
@@ -104,7 +104,7 @@ int main(void)
     }
 
     /* a malformed (truncated) transaction is rejected. */
-    if (kw_utxoset_apply_tx(us, &ws, cb, cblen - 5, 4)) { fprintf(stderr, "FAIL: truncated accepted\n"); return 1; }
+    if (kw_utxoset_apply_tx(us, ws, cb, cblen - 5, 4)) { fprintf(stderr, "FAIL: truncated accepted\n"); return 1; }
 
     /* save and reload preserves the set exactly. */
     {
@@ -208,7 +208,7 @@ int main(void)
     }
 
     kw_utxoset_free(us);
-    kw_watchset_free(&ws);
+    kw_watchset_free(ws);
 
     /* A value that would carry the total past what a uint64 holds is refused, so no
        later sum of a subset can wrap. Dogecoin issues forever and its supply is
@@ -283,7 +283,7 @@ int main(void)
        into a 998 DOGE fee that the wallet reported as 0.000192. */
     {
         kw_utxoset *b;
-        kw_watchset bw;
+        kw_watchset *bw;
         char path[256];
         FILE *f;
         long vpos = -1;
@@ -292,11 +292,11 @@ int main(void)
         snprintf(path, sizeof path, "/tmp/kwutxo-bind-%d", (int)getpid());
 
         /* a watch set of its own: the one above was freed */
-        if (!kw_watchset_init(&bw) || !kw_watchset_add(&bw, spk, spklen)) {
+        if (!(bw = kw_watchset_new()) || !kw_watchset_add(bw, spk, spklen)) {
             fprintf(stderr, "FAIL: bind watchset\n"); return 1; }
 
         if (!(b = kw_utxoset_new())) { fprintf(stderr, "FAIL: bind init\n"); return 1; }
-        if (!kw_utxoset_apply_tx(b, &bw, cb, cblen, 1)) {
+        if (!kw_utxoset_apply_tx(b, bw, cb, cblen, 1)) {
             fprintf(stderr, "FAIL: bind apply\n"); return 1; }
         if (!kw_utxoset_save(b, path)) { fprintf(stderr, "FAIL: bind save\n"); return 1; }
         kw_utxoset_free(b);
@@ -361,7 +361,7 @@ int main(void)
             uint32_t vo;
 
             if (!(b = kw_utxoset_new())) { fprintf(stderr, "FAIL: bind init 5\n"); return 1; }
-            if (!kw_utxoset_apply_tx(b, &bw, cb, cblen, 1)) {
+            if (!kw_utxoset_apply_tx(b, bw, cb, cblen, 1)) {
                 fprintf(stderr, "FAIL: bind apply 2\n"); return 1; }
             {
                 const kw_utxo *e = kw_utxoset_at(b, 0);
@@ -389,7 +389,7 @@ int main(void)
             if (kw_utxo_bind(id, vo, value, bspk, bspklen, cb, cblen)) {
                 fprintf(stderr, "FAIL: bind accepted a wrong txid\n"); return 1; }
         }
-        kw_watchset_free(&bw);
+        kw_watchset_free(bw);
     }
 
     printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"

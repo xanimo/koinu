@@ -20,7 +20,7 @@
 
 int main(int argc, char **argv)
 {
-    kw_watchset ws;
+    kw_watchset *ws;
     kw_utxoset *us;
     int i, n;
 
@@ -30,7 +30,7 @@ int main(int argc, char **argv)
     }
     n = (argc - 2) / 3;
 
-    if (!kw_watchset_init(&ws) || !(us = kw_utxoset_new())) {
+    if (!(ws = kw_watchset_new()) || !(us = kw_utxoset_new())) {
         fprintf(stderr, "mkutxos: init\n");
         return 1;
     }
@@ -50,7 +50,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "mkutxos: bad script %s\n", spkhex);
             return 1;
         }
-        if (!kw_watchset_add(&ws, spk, spklen)) { fprintf(stderr, "mkutxos: watch\n"); return 1; }
+        if (!kw_watchset_add(ws, spk, spklen)) { fprintf(stderr, "mkutxos: watch\n"); return 1; }
 
         /* A distinct prevout per entry, so each funding transaction has its own
            txid and the set holds separate outpoints. */
@@ -69,7 +69,7 @@ int main(int argc, char **argv)
         kw_tx_free(tx);
         if (!rawlen) { fprintf(stderr, "mkutxos: serialize\n"); return 1; }
 
-        if (!kw_utxoset_apply_tx(us, &ws, raw, rawlen, height)) {
+        if (!kw_utxoset_apply_tx(us, ws, raw, rawlen, height)) {
             fprintf(stderr, "mkutxos: apply\n");
             return 1;
         }
@@ -82,6 +82,6 @@ int main(int argc, char **argv)
     if (!kw_utxoset_save(us, argv[1])) { fprintf(stderr, "mkutxos: save\n"); return 1; }
 
     kw_utxoset_free(us);
-    kw_watchset_free(&ws);
+    kw_watchset_free(ws);
     return 0;
 }

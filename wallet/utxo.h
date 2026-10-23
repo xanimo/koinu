@@ -21,22 +21,28 @@
 #define KW_UTXO_PREVTX_MAX 1000000
 
 /* ── watch set ───────────────────────────────────────────────── */
-/* (seen) is set the first time an output pays this script. bip44 counts an
-   address as used once it has ever appeared on chain, and the unspent set
-   cannot answer that: an address paid and then spent from is absent from it and
-   reads as fresh, which stopped the gap walk early and under-reported a
-   balance. */
-typedef struct { uint8_t spk[KW_SPK_MAX]; size_t len; int seen; } kw_watch;
-typedef struct { kw_watch *w; size_t count, cap; } kw_watchset;
+/* Opaque for the same reason the utxo set is: the library owns an array that
+   grows, and a lookup this walks linearly is one a later version indexes. */
+typedef struct kw_watchset kw_watchset;
 
-int  kw_watchset_init(kw_watchset *ws);
+/* An empty watch set. NULL on allocation failure; free takes NULL. */
+kw_watchset *kw_watchset_new(void);
+void         kw_watchset_free(kw_watchset *ws);
+
 /* Add a scriptPubKey to watch. Returns 1, or 0 if too long or out of memory. */
 int  kw_watchset_add(kw_watchset *ws, const uint8_t *spk, size_t len);
 int  kw_watchset_has(const kw_watchset *ws, const uint8_t *spk, size_t len);
 
 /* The index of (spk) in the set, or -1. Used by the scan to mark it seen. */
 long kw_watchset_find(const kw_watchset *ws, const uint8_t *spk, size_t len);
-void kw_watchset_free(kw_watchset *ws);
+
+/* How many scripts are watched, in the order they went in, and whether an
+   output has ever paid the one at (i). bip44 counts an address as used once it
+   has appeared on chain at all, which the unspent set cannot answer: an address
+   paid and then spent from is absent from it and reads as fresh, which stopped
+   the gap walk early and under-reported a balance. */
+size_t kw_watchset_count(const kw_watchset *ws);
+int    kw_watchset_seen(const kw_watchset *ws, size_t i);
 
 /* ── UTXO set ────────────────────────────────────────────────── */
 /* Dogecoin's COINBASE_MATURITY lives in the chain parameters, because core picks

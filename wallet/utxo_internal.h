@@ -14,6 +14,11 @@
 
 #include "utxo.h"
 
+/* (seen) is set the first time an output pays this script. */
+typedef struct { uint8_t spk[KW_SPK_MAX]; size_t len; int seen; } kw_watch;
+
+struct kw_watchset { kw_watch *w; size_t count, cap; };
+
 struct kw_utxoset {
     kw_utxo *u; size_t count, cap; uint64_t total;
     const kw_utxo_watcher *watch;        /* NULL unless a caller is keeping a record */

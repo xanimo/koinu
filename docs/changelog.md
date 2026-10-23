@@ -40,6 +40,16 @@ one-shot form has to split it and pass `--utxos`.
 left behind compiles and signs the wrong bytes.
 
 ## What's Changed
+* utxo, journal: the watch set and the journal are opaque too
+  Both were a pointer to a library-owned array and its two sizes, declared by
+  value on a caller's frame, so a lookup this walks linearly is one no later
+  version can index without breaking every caller. kw_watchset_new and
+  kw_journal_new replace the init pair; kw_watchset_count/_seen and
+  kw_journal_count/_at cover what a caller read. kw_watch is internal, and
+  kw_journal_entry stays public since a caller writes one and reads it back.
+
+  This is the last of them: what the installed headers still spell out are
+  records a caller legitimately holds, which is what an abi promise can name.
 * build: the hand-run diagnostics are built by the gate
   net_cf had assigned a global deleted five commits earlier and fz_kwdflow the
   same, because nothing compiled either: each needs a live peer, so they are

@@ -64,11 +64,12 @@ int main(int argc, char **argv)
     if (naddr == 0) { fprintf(stderr, "usage: net_cf [--regtest] host port <address> [address ...]\n"); return 1; }
 
     kw_log_set(log_to_stderr, NULL);
-    kw_watchset ws; kw_watchset_init(&ws);
+    kw_watchset *ws = kw_watchset_new();
+    if (!ws) return 1;
     for (int i = 0; i < naddr; i++) {
         uint8_t spk[25];
         if (!addr_to_spk(addrs[i], spk)) { fprintf(stderr, "bad address %s\n", addrs[i]); return 1; }
-        kw_watchset_add(&ws, spk, sizeof spk);
+        kw_watchset_add(ws, spk, sizeof spk);
     }
 
     kw_peer p;
@@ -87,14 +88,14 @@ int main(int argc, char **argv)
     kw_utxoset *us = kw_utxoset_new();
     if (!us) return 1;
     struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
-    long nb = kw_cf_sync(&p, &s, us, &ws, 1);
+    long nb = kw_cf_sync(&p, &s, us, ws, 1);
     if (nb < 0) { fprintf(stderr, "cf sync failed (does the peer serve BIP157?)\n"); return 1; }
     printf("cf sync in %.1fs: %ld blocks matched and scanned\n", since(t1), nb);
 
     printf("result: %zu utxos, balance %llu koinu\n",
            kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us));
 
-    kw_utxoset_free(us); kw_watchset_free(&ws);
+    kw_utxoset_free(us); kw_watchset_free(ws);
     kw_headerstore_free(&s); kw_peer_close(&p);
     return 0;
 }

@@ -83,9 +83,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     kw_headerstore s; kw_headerstore_init(&s);
     for (int b = 0; b < c->nb; b++) kw_headerstore_append(&s, &c->hdr[b]);
-    kw_watchset ws; kw_watchset_init(&ws);
-    kw_watchset_add(&ws, NB_SPK_A, 25);
-    if (cfg & 1) kw_watchset_add(&ws, NB_SPK_B, 25);
+    kw_watchset *ws = kw_watchset_new();
+    if (!ws) return 1;
+    kw_watchset_add(ws, NB_SPK_A, 25);
+    if (cfg & 1) kw_watchset_add(ws, NB_SPK_B, 25);
     kw_utxoset *us = kw_utxoset_new();
     if (!us) return 1;
 
@@ -94,7 +95,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     struct vctx x = { c, 0 };
     nf_script(&in, &pp, CP->magic, 40, st_op, &x);
     nf_peer_start(&pp);
-    long ret = kw_spv_sync_blocks(&lp, &s, us, &ws, 1);
+    long ret = kw_spv_sync_blocks(&lp, &s, us, ws, 1);
     kw_peer_close(&lp);
     nf_peer_finish(&pp);
     if (getenv("NF_DEBUG")) fprintf(stderr, "nb=%d ret=%ld utxos=%zu total=%llu\n", c->nb, ret, kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us));
@@ -131,7 +132,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         for (int k = 0; k < nl; k++) if (ou_cmp(&o[k], &g[k])) NF_FAIL("V2 utxo %d differs from the replay", k);
         free(o); free(g);
     }
-    kw_utxoset_free(us); kw_watchset_free(&ws);
+    kw_utxoset_free(us); kw_watchset_free(ws);
     kw_headerstore_free(&s);
     nb_free_chain(c); free(c);
     return 0;

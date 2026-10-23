@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 bluezr */
 
-#include "journal.h"
+#include "journal_internal.h"
 #include "hex.h"
 
 #include <fcntl.h>
@@ -11,18 +11,24 @@
 #include <string.h>
 #include <unistd.h>
 
-int kw_journal_init(kw_journal *j)
+kw_journal *kw_journal_new(void)
 {
-    if (!j) return 0;
-    j->e = NULL; j->count = 0; j->cap = 0;
-    return 1;
+    return (kw_journal *)calloc(1, sizeof(kw_journal));
 }
 
 void kw_journal_free(kw_journal *j)
 {
     if (!j) return;
     free(j->e);
-    j->e = NULL; j->count = 0; j->cap = 0;
+    free(j);
+}
+
+size_t kw_journal_count(const kw_journal *j) { return j ? j->count : 0; }
+
+const kw_journal_entry *kw_journal_at(const kw_journal *j, size_t i)
+{
+    if (!j || i >= j->count) return NULL;
+    return &j->e[i];
 }
 
 char *kw_journal_path(const char *utxos, char *out, size_t cap)
@@ -138,10 +144,10 @@ int kw_journal_has(const kw_journal *j, const uint8_t txid[32], uint32_t vout, i
 int kw_journal_record(const char *path, const kw_journal_entry *e)
 {
     if (!path || !e) return 0;
-    kw_journal j;
-    if (!kw_journal_init(&j)) return 0;
-    if (!kw_journal_load(&j, path)) { kw_journal_free(&j); return 0; }
-    int have = kw_journal_has(&j, e->txid, e->vout, e->dir);
-    kw_journal_free(&j);
+    kw_journal *j = kw_journal_new();
+    if (!j) return 0;
+    if (!kw_journal_load(j, path)) { kw_journal_free(j); return 0; }
+    int have = kw_journal_has(j, e->txid, e->vout, e->dir);
+    kw_journal_free(j);
     return have ? 1 : kw_journal_append(path, e);
 }

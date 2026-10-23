@@ -432,14 +432,14 @@ static void coins_view(const kw_utxoset *us, const row *rows, int nrows)
 static void history_view(const char *utxos)
 {
     char jpath[4200];
-    kw_journal j;
+    kw_journal *j = kw_journal_new();
     kw_journal_path(utxos, jpath, sizeof jpath);
-    if (!kw_journal_init(&j)) return;
-    int loaded = kw_journal_load(&j, jpath);
+    if (!j) return;
+    int loaded = kw_journal_load(j, jpath);
 
     int top = 0;
     for (;;) {
-        int n = (int)j.count, per = page_rows() - 1;
+        int n = (int)kw_journal_count(j), per = page_rows() - 1;
         if (per < 1) per = 1;
         if (top > n - per) top = n - per;
         if (top < 0) top = 0;
@@ -456,7 +456,7 @@ static void history_view(const char *utxos)
             printf("   %-3s %-8s %-20s %18s %s\r\n", "dir", "height", "txid", "amount", "address");
             /* the file is append-ordered, so newest first is the reverse of it */
             for (int i = 0; i < per && top + i < n; i++) {
-                const kw_journal_entry *e = &j.e[n - 1 - (top + i)];
+                const kw_journal_entry *e = kw_journal_at(j, (size_t)(n - 1 - (top + i)));
                 char t[32], v[32], h[16];
                 txid_short(e->txid, t, sizeof t);
                 fmt_doge(e->amount, v, sizeof v);
@@ -484,7 +484,7 @@ static void history_view(const char *utxos)
             if (d == 'A' && top > 0) top--;
         }
     }
-    kw_journal_free(&j);
+    kw_journal_free(j);
 }
 
 /* Read a line in cooked mode, so the terminal handles editing. */

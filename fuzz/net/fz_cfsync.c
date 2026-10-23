@@ -193,13 +193,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         fh = (uint8_t (*)[32])malloc(1000 * 32);
         fret = kw_cf_fetch_headers(&lp, &s, 1, fs0, fs1, fprev, fh);
     } else {
-        kw_utxoset *us = kw_utxoset_new(); kw_watchset ws;
+        kw_utxoset *us = kw_utxoset_new(); kw_watchset *ws = kw_watchset_new();
         if (!us) return 0;
-        kw_watchset_init(&ws);
-        kw_watchset_add(&ws, NB_SPK_A, 25);
-        ret = kw_cf_sync(&lp, &s, us, &ws, 1);
+        kw_watchset_add(ws, NB_SPK_A, 25);
+        ret = kw_cf_sync(&lp, &s, us, ws, 1);
         if (ret > c->nb) NF_FAIL("cf_sync scanned %ld of %d blocks", ret, c->nb);
-        kw_utxoset_free(us); kw_watchset_free(&ws);
+        kw_utxoset_free(us); kw_watchset_free(ws);
     }
     kw_peer_close(&lp);
     nf_peer_finish(&pp);

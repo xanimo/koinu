@@ -16,12 +16,14 @@
 #include <unistd.h>
 
 /* ── watch set ───────────────────────────────────────────────── */
-int kw_watchset_init(kw_watchset *ws)
+kw_watchset *kw_watchset_new(void)
 {
-    ws->count = 0;
+    kw_watchset *ws = (kw_watchset *)calloc(1, sizeof *ws);
+    if (!ws) return NULL;
     ws->cap = 8;
     ws->w = (kw_watch *)malloc(ws->cap * sizeof *ws->w);
-    return ws->w != NULL;
+    if (!ws->w) { free(ws); return NULL; }
+    return ws;
 }
 
 int kw_watchset_add(kw_watchset *ws, const uint8_t *spk, size_t len)
@@ -58,8 +60,17 @@ int kw_watchset_has(const kw_watchset *ws, const uint8_t *spk, size_t len)
 
 void kw_watchset_free(kw_watchset *ws)
 {
+    if (!ws) return;
     free(ws->w);
-    ws->w = NULL; ws->count = ws->cap = 0;
+    free(ws);
+}
+
+size_t kw_watchset_count(const kw_watchset *ws) { return ws ? ws->count : 0; }
+
+int kw_watchset_seen(const kw_watchset *ws, size_t i)
+{
+    if (!ws || i >= ws->count) return 0;
+    return ws->w[i].seen;
 }
 
 /* ── UTXO set ────────────────────────────────────────────────── */

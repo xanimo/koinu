@@ -1158,18 +1158,18 @@ static void record_receives(const kw_chainparams *cp, const kw_scan_addr *tbl,
     char jpath[4200];
     kw_journal_path(utxos, jpath, sizeof jpath);
 
-    kw_journal j;
-    if (!kw_journal_init(&j)) return;
-    if (!kw_journal_load(&j, jpath)) {          /* malformed: add nothing to it */
+    kw_journal *j = kw_journal_new();
+    if (!j) return;
+    if (!kw_journal_load(j, jpath)) {           /* malformed: add nothing to it */
         fprintf(stderr, "kw: %s is not readable as a journal, leaving it alone\n", jpath);
-        kw_journal_free(&j);
+        kw_journal_free(j);
         return;
     }
 
     int added = 0;
     for (size_t u = 0; u < kw_utxoset_count(us); u++) {
         const kw_utxo *c = kw_utxoset_at(us, u);
-        if (kw_journal_has(&j, c->txid, c->vout, KW_JOURNAL_IN)) continue;
+        if (kw_journal_has(j, c->txid, c->vout, KW_JOURNAL_IN)) continue;
         kw_journal_entry e;
         memset(&e, 0, sizeof e);
         e.when = (uint64_t)time(NULL);
@@ -1193,7 +1193,7 @@ static void record_receives(const kw_chainparams *cp, const kw_scan_addr *tbl,
     }
     if (added) printf("recorded %d new receive(s) in %s\n", added, jpath);
 
-    kw_journal_free(&j);
+    kw_journal_free(j);
 }
 
 /* Watch the first (gap) receive and change addresses, sync from (node), and
@@ -1285,17 +1285,17 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     /* gap-limit: rescan with a growing range until `gap` unused addresses trail
        the highest used one. headers are synced once; only the scan repeats. */
     for (int iter = 0; iter < 64; iter++) {
-        kw_watchset ws; kw_watchset_init(&ws);
+        kw_watchset *ws = kw_watchset_new();
         uint8_t (*h160map)[20] = malloc((size_t)(2 * watched) * 20);
         int *idxmap = malloc((size_t)(2 * watched) * sizeof *idxmap);
-        if (!h160map || !idxmap) { free(h160map); free(idxmap); kw_watchset_free(&ws);
+        if (!h160map || !idxmap || !ws) { free(h160map); free(idxmap); kw_watchset_free(ws);
             fprintf(stderr, "kw: out of memory\n"); kw_headerstore_free(&s); goto done; }
         int m = 0;
         for (int chg = 0; chg <= 1; chg++)
             for (int i = 0; i < watched; i++) {
                 const kw_scan_addr *a = &watch[(size_t)chg * watch_cap + i];
                 if (!a->ok) continue;
-                kw_watchset_add(&ws, a->spk, 25);
+                kw_watchset_add(ws, a->spk, 25);
                 memcpy(h160map[m], a->h160, 20); idxmap[m] = i; m++;
             }
         /* the watchset's order is the order they went in, so a seen flag maps
@@ -1304,7 +1304,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         if (have_us) kw_utxoset_free(us);
         us = kw_utxoset_new();
         if (!us) {
-            free(h160map); free(idxmap); kw_watchset_free(&ws);
+            free(h160map); free(idxmap); kw_watchset_free(ws);
             fprintf(stderr, "kw: out of memory\n"); kw_headerstore_free(&s); have_us = 0; goto done;
         }
         have_us = 1;
@@ -1314,13 +1314,13 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
            about a coin that was received and spent inside the range. */
         char jpath[4200];
         kw_journal_path(utxos_path, jpath, sizeof jpath);
-        kw_journal hj;
+        kw_journal *hj = kw_journal_new();
         struct history_ctx hc;
         kw_utxo_watcher hw = { history_received, history_spent, &hc };
-        int history_ok = kw_journal_init(&hj) && kw_journal_load(&hj, jpath);
+        int history_ok = hj && kw_journal_load(hj, jpath);
         if (history_ok) {
             hc.jpath = jpath; hc.cp = cp; hc.tbl = watch;
-            hc.per_chain = watch_cap; hc.watched = watched; hc.j = &hj;
+            hc.per_chain = watch_cap; hc.watched = watched; hc.j = hj;
             hc.in = 0; hc.out = 0; hc.failed = 0;
             kw_utxoset_observe(us, &hw);
         } else {
@@ -1328,26 +1328,26 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
                             "records no history\n", jpath);
         }
 
-        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, &ws, 1, filters_path)
-                : use_cf ? kw_cf_sync(&p, &s, us, &ws, 1)
-                : kw_spv_sync_blocks(&p, &s, us, &ws, 1);
+        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, ws, 1, filters_path)
+                : use_cf ? kw_cf_sync(&p, &s, us, ws, 1)
+                : kw_spv_sync_blocks(&p, &s, us, ws, 1);
 
         kw_utxoset_observe(us, NULL);
         if (history_ok) {
             if (hc.failed) fprintf(stderr, "kw: could not append to %s\n", jpath);
             else if (hc.in || hc.out)
                 printf("recorded %d receive(s) and %d spend(s) in %s\n", hc.in, hc.out, jpath);
-            kw_journal_free(&hj);
         }
+        kw_journal_free(hj);
         /* The highest index ever paid, not the highest still holding a coin. An
            address paid and then spent from is absent from the unspent set and
            read as fresh, so the gap walk stopped short of coins handed out past
            it: bip44 counts an address as used once it has appeared on chain.
            Read before the watchset goes, since the flags live in it. */
         int maxidx = -1;
-        for (size_t t = 0; t < ws.count && (int)t < m; t++)
-            if (ws.w[t].seen && idxmap[t] > maxidx) maxidx = idxmap[t];
-        kw_watchset_free(&ws);
+        for (size_t t = 0; t < kw_watchset_count(ws) && (int)t < m; t++)
+            if (kw_watchset_seen(ws, t) && idxmap[t] > maxidx) maxidx = idxmap[t];
+        kw_watchset_free(ws);
         free(h160map); free(idxmap);
         if (nb < 0) {
             fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block");
@@ -1911,7 +1911,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
 {
     uint8_t spk[64];
     size_t spklen = 0;
-    kw_watchset ws;
+    kw_watchset *ws = NULL;
     kw_utxoset *us = NULL;
     kw_peer p;
     int rc = 1, have_us = 0, conn;
@@ -1930,8 +1930,9 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
         spklen = hl / 2;
     }
 
-    kw_watchset_init(&ws);
-    kw_watchset_add(&ws, spk, spklen);
+    ws = kw_watchset_new();
+    if (!ws) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+    kw_watchset_add(ws, spk, spklen);
     want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
 
@@ -1939,7 +1940,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
                : kw_peer_connect(&p, cp, node, port, 15);
     if (!conn) {
         fprintf(stderr, "kw: connect to %s:%d failed\n", node, port);
-        kw_watchset_free(&ws);
+        kw_watchset_free(ws);
         return 1;
     }
     if (!kw_peer_handshake(&p, 0)) { fprintf(stderr, "kw: handshake failed\n"); goto out; }
@@ -1959,9 +1960,9 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
         us = kw_utxoset_new();
         if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
         have_us = 1;
-        nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, &ws, 1, filters_path)
-           : use_cf ? kw_cf_sync(&p, &s, us, &ws, 1)
-           : kw_spv_sync_blocks(&p, &s, us, &ws, 1);
+        nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, ws, 1, filters_path)
+           : use_cf ? kw_cf_sync(&p, &s, us, ws, 1)
+           : kw_spv_sync_blocks(&p, &s, us, ws, 1);
         tip = (uint32_t)s.count;
         kw_headerstore_free(&s);
         if (nb < 0) {
@@ -1997,7 +1998,7 @@ static int sweep_scan(const kw_chainparams *cp, const char *watch_arg,
 out:
     if (have_us) kw_utxoset_free(us);
     kw_peer_close(&p);
-    kw_watchset_free(&ws);
+    kw_watchset_free(ws);
     return rc;
 }
 
@@ -2353,13 +2354,15 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     uint32_t vout = 0;
     if (!parse_outpoint(outpoint_arg, "--outpoint", txint, &vout)) return 1;
 
-    kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
+    kw_watchset *ws = kw_watchset_new();
+    if (!ws) { fprintf(stderr, "kw: out of memory\n"); return 1; }
+    kw_watchset_add(ws, spk, spklen);
     want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 15);
-    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(&ws); return 1; }
+    if (!conn) { fprintf(stderr, "kw: connect to %s:%d failed\n", node, port); kw_watchset_free(ws); return 1; }
 
     int rc = 1;
     kw_utxoset *us = NULL; int have_us = 0;
@@ -2410,8 +2413,8 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
     if (!us) { fprintf(stderr, "kw: out of memory\n"); goto out; }
     have_us = 1;
     {
-        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, &ws, 1, filters_path)
-                : use_cf ? kw_cf_sync(&p, &s, us, &ws, 1) : kw_spv_sync_blocks(&p, &s, us, &ws, 1);
+        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, ws, 1, filters_path)
+                : use_cf ? kw_cf_sync(&p, &s, us, ws, 1) : kw_spv_sync_blocks(&p, &s, us, ws, 1);
         kw_headerstore_free(&s);
         if (nb < 0) { fprintf(stderr, "kw: %s sync failed\n", use_cf ? "filter" : "block"); goto out; }
     }
@@ -2437,7 +2440,7 @@ static int cmd_outpoint(const kw_chainparams *cp, const char *watch_arg, const c
 out:
     if (have_us) kw_utxoset_free(us);
     kw_peer_close(&p);
-    kw_watchset_free(&ws);
+    kw_watchset_free(ws);
     return rc;
 }
 

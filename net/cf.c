@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "cf.h"
+#include "utxo_internal.h"   /* walks the watched scripts to build the gcs query */
 #include "log.h"
 #include "gcs.h"
 #include "spv.h"

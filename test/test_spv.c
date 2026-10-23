@@ -72,11 +72,13 @@ int main(void)
         uint8_t spk[64];
         size_t spklen = (size_t)kw_test_unhex(BLOCK_SPK, spk);
 
-        kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
+        kw_watchset *ws = kw_watchset_new();
+        if (!ws) return 1;
+        kw_watchset_add(ws, spk, spklen);
         kw_utxoset *us = kw_utxoset_new();
         if (!us) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
 
-        if (!kw_block_scan(blk, blen, us, &ws, 102)) { fprintf(stderr, "FAIL: scan block\n"); return 1; }
+        if (!kw_block_scan(blk, blen, us, ws, 102)) { fprintf(stderr, "FAIL: scan block\n"); return 1; }
         if (kw_utxoset_count(us) != 1 || kw_utxoset_balance(us) != BLOCK_A_VALUE) {
             fprintf(stderr, "FAIL: block balance (count %zu bal %llu)\n",
                 kw_utxoset_count(us), (unsigned long long)kw_utxoset_balance(us)); return 1;
@@ -84,9 +86,9 @@ int main(void)
         if (kw_utxoset_at(us, 0)->height != 102) { fprintf(stderr, "FAIL: height not tagged\n"); return 1; }
 
         /* a truncated block is rejected. */
-        if (kw_block_scan(blk, blen - 3, us, &ws, 102)) { fprintf(stderr, "FAIL: truncated block\n"); return 1; }
+        if (kw_block_scan(blk, blen - 3, us, ws, 102)) { fprintf(stderr, "FAIL: truncated block\n"); return 1; }
 
-        kw_utxoset_free(us); kw_watchset_free(&ws);
+        kw_utxoset_free(us); kw_watchset_free(ws);
     }
 
     /* a two-tx block where tx2 spends tx1's coinbase output: walking both, the
@@ -123,14 +125,16 @@ int main(void)
             kw_hash256(cat, 64, blk + 36);
         }
 
-        kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, spklen);
+        kw_watchset *ws = kw_watchset_new();
+        if (!ws) return 1;
+        kw_watchset_add(ws, spk, spklen);
         kw_utxoset *us = kw_utxoset_new();
         if (!us) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
-        if (!kw_block_scan(blk, n, us, &ws, 5)) { fprintf(stderr, "FAIL: scan two-tx block\n"); return 1; }
+        if (!kw_block_scan(blk, n, us, ws, 5)) { fprintf(stderr, "FAIL: scan two-tx block\n"); return 1; }
         if (kw_utxoset_count(us) != 0 || kw_utxoset_balance(us) != 0) {
             fprintf(stderr, "FAIL: intra-block spend (count %zu)\n", kw_utxoset_count(us)); return 1;
         }
-        kw_utxoset_free(us); kw_watchset_free(&ws);
+        kw_utxoset_free(us); kw_watchset_free(ws);
     }
 
     /* a real mainnet AuxPoW block: its merged-mining blob sits between the header
@@ -144,11 +148,13 @@ int main(void)
 
         uint8_t spk[64];
         int spklen = kw_test_unhex(KW_AUXPOW_BLOCK_SPK, spk);
-        kw_watchset ws; kw_watchset_init(&ws); kw_watchset_add(&ws, spk, (size_t)spklen);
+        kw_watchset *ws = kw_watchset_new();
+        if (!ws) return 1;
+        kw_watchset_add(ws, spk, (size_t)spklen);
         kw_utxoset *us = kw_utxoset_new();
         if (!us) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
 
-        if (!kw_block_scan(blk, (size_t)blen, us, &ws, KW_AUXPOW_BLOCK_HEIGHT)) {
+        if (!kw_block_scan(blk, (size_t)blen, us, ws, KW_AUXPOW_BLOCK_HEIGHT)) {
             fprintf(stderr, "FAIL: scan auxpow block\n"); return 1;
         }
         if (kw_utxoset_count(us) != 1 || kw_utxoset_balance(us) != KW_AUXPOW_BLOCK_VALUE) {
@@ -157,7 +163,7 @@ int main(void)
         }
         if (kw_utxoset_at(us, 0)->height != KW_AUXPOW_BLOCK_HEIGHT) { fprintf(stderr, "FAIL: auxpow height\n"); return 1; }
 
-        kw_utxoset_free(us); kw_watchset_free(&ws); free(blk);
+        kw_utxoset_free(us); kw_watchset_free(ws); free(blk);
     }
 
     /* find_outpoint on the real auxpow block: it creates DGYr's vout 0 and
@@ -230,11 +236,13 @@ int main(void)
         if (!tl) { fprintf(stderr, "FAIL: could not build the fabricated tx\n"); return 1; }
         n += tl;
 
-        kw_watchset w2; kw_watchset_init(&w2); kw_watchset_add(&w2, spk2, 25);
+        kw_watchset *w2 = kw_watchset_new();
+        if (!w2) return 1;
+        kw_watchset_add(w2, spk2, 25);
         kw_utxoset *u2 = kw_utxoset_new();
         if (!u2) { fprintf(stderr, "FAIL: out of memory\n"); return 1; }
         if (kw_block_merkle_ok(blk, n)) { fprintf(stderr, "FAIL: a body its header does not commit to passed\n"); return 1; }
-        if (kw_block_scan(blk, n, u2, &w2, 900)) { fprintf(stderr, "FAIL: the scanner took a fabricated body\n"); return 1; }
+        if (kw_block_scan(blk, n, u2, w2, 900)) { fprintf(stderr, "FAIL: the scanner took a fabricated body\n"); return 1; }
         if (kw_utxoset_count(u2) != 0) { fprintf(stderr, "FAIL: invented coins were credited\n"); return 1; }
 
         uint8_t ftxid[32];
@@ -301,7 +309,7 @@ int main(void)
                 { fprintf(stderr, "FAIL: a repeated last transaction hashed to the same root and passed\n"); return 1; }
         }
 
-        kw_utxoset_free(u2); kw_watchset_free(&w2);
+        kw_utxoset_free(u2); kw_watchset_free(w2);
     }
 
     /* A 64-byte transaction reads as a pair of txids, so one blob can stand in

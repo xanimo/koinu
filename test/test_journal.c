@@ -46,11 +46,11 @@ int main(void)
     unlink(path);                       /* the journal creates it itself */
 
     /* an absent journal is not an error: nothing has happened yet */
-    kw_journal j;
-    if (!kw_journal_init(&j)) return 1;
-    if (!kw_journal_load(&j, path)) bad("an absent journal must load as empty");
-    if (j.count != 0) bad("an absent journal is not empty");
-    kw_journal_free(&j);
+    kw_journal *j;
+    if (!(j = kw_journal_new())) return 1;
+    if (!kw_journal_load(j, path)) bad("an absent journal must load as empty");
+    if (kw_journal_count(j) != 0) bad("an absent journal is not empty");
+    kw_journal_free(j);
 
     kw_journal_entry in, out;
     fill(&in, KW_JOURNAL_IN, 0x11, 0, 100, 500000000ULL, 0, "DMSxUULFs5YGKxwdJ7nAFEE72JewzPg8zn");
@@ -59,38 +59,38 @@ int main(void)
     if (!kw_journal_append(path, &out)) bad("append a spend");
 
     /* the file it just wrote must read back byte for byte in the same order */
-    kw_journal_init(&j);
-    if (!kw_journal_load(&j, path)) bad("load what was just written");
-    if (j.count != 2) bad("two entries did not come back");
-    if (j.count == 2) {
-        if (memcmp(&j.e[0], &in, sizeof in) != 0)   bad("the receive changed on the way through");
-        if (memcmp(&j.e[1], &out, sizeof out) != 0) bad("the spend changed on the way through");
-        if (j.e[0].dir != KW_JOURNAL_IN || j.e[1].dir != KW_JOURNAL_OUT) bad("direction swapped");
+    if (!(j = kw_journal_new())) return 1;
+    if (!kw_journal_load(j, path)) bad("load what was just written");
+    if (kw_journal_count(j) != 2) bad("two entries did not come back");
+    if (kw_journal_count(j) == 2) {
+        if (memcmp(kw_journal_at(j, 0), &in, sizeof in) != 0)   bad("the receive changed on the way through");
+        if (memcmp(kw_journal_at(j, 1), &out, sizeof out) != 0) bad("the spend changed on the way through");
+        if (kw_journal_at(j, 0)->dir != KW_JOURNAL_IN || kw_journal_at(j, 1)->dir != KW_JOURNAL_OUT) bad("direction swapped");
     }
 
     /* the same output, the other direction, is a different entry */
-    if (!kw_journal_has(&j, in.txid, 0, KW_JOURNAL_IN))  bad("has() missed the receive");
-    if (kw_journal_has(&j, in.txid, 0, KW_JOURNAL_OUT))  bad("has() confused the direction");
-    if (kw_journal_has(&j, in.txid, 1, KW_JOURNAL_IN))   bad("has() confused the vout");
-    kw_journal_free(&j);
+    if (!kw_journal_has(j, in.txid, 0, KW_JOURNAL_IN))  bad("has() missed the receive");
+    if (kw_journal_has(j, in.txid, 0, KW_JOURNAL_OUT))  bad("has() confused the direction");
+    if (kw_journal_has(j, in.txid, 1, KW_JOURNAL_IN))   bad("has() confused the vout");
+    kw_journal_free(j);
 
     /* record() is append-unless-present, so a rescan does not double a receive */
     if (!kw_journal_record(path, &in)) bad("record an entry already there");
     if (!kw_journal_record(path, &out)) bad("record a spend already there");
-    kw_journal_init(&j);
-    kw_journal_load(&j, path);
-    if (j.count != 2) bad("record() duplicated an entry that was already present");
-    kw_journal_free(&j);
+    if (!(j = kw_journal_new())) return 1;
+    kw_journal_load(j, path);
+    if (kw_journal_count(j) != 2) bad("record() duplicated an entry that was already present");
+    kw_journal_free(j);
 
     /* a new output of the same transaction is a new entry */
     kw_journal_entry in2 = in;
     in2.vout = 1;
     in2.amount = 1;
     if (!kw_journal_record(path, &in2)) bad("record a second output of one transaction");
-    kw_journal_init(&j);
-    kw_journal_load(&j, path);
-    if (j.count != 3) bad("vout 1 did not append alongside vout 0");
-    kw_journal_free(&j);
+    if (!(j = kw_journal_new())) return 1;
+    kw_journal_load(j, path);
+    if (kw_journal_count(j) != 3) bad("vout 1 did not append alongside vout 0");
+    kw_journal_free(j);
 
     /* 0600: it names amounts and addresses */
     struct stat st;
@@ -103,9 +103,9 @@ int main(void)
     /* a file this did not write is refused rather than half read */
     FILE *f = fopen(path, "a");
     if (f) { fprintf(f, "this is not a journal line\n"); fclose(f); }
-    kw_journal_init(&j);
-    if (kw_journal_load(&j, path)) bad("a malformed line was accepted");
-    kw_journal_free(&j);
+    if (!(j = kw_journal_new())) return 1;
+    if (kw_journal_load(j, path)) bad("a malformed line was accepted");
+    kw_journal_free(j);
 
     /* and nothing is appended to a file that cannot be parsed */
     if (kw_journal_record(path, &out)) bad("record() wrote to an unparseable journal");
@@ -114,9 +114,9 @@ int main(void)
     /* a short txid is not a txid */
     f = fopen(path, "w");
     if (f) { fprintf(f, "1757000000 in 1111 0 1 1 0 D\n"); fclose(f); }
-    kw_journal_init(&j);
-    if (kw_journal_load(&j, path)) bad("a 4-character txid was accepted");
-    kw_journal_free(&j);
+    if (!(j = kw_journal_new())) return 1;
+    if (kw_journal_load(j, path)) bad("a 4-character txid was accepted");
+    kw_journal_free(j);
     unlink(path);
 
     /* an unknown direction is not a direction */
@@ -126,9 +126,9 @@ int main(void)
                    "111111111111111111111111 0 1 1 0 D\n");
         fclose(f);
     }
-    kw_journal_init(&j);
-    if (kw_journal_load(&j, path)) bad("an unknown direction was accepted");
-    kw_journal_free(&j);
+    if (!(j = kw_journal_new())) return 1;
+    if (kw_journal_load(j, path)) bad("an unknown direction was accepted");
+    kw_journal_free(j);
     unlink(path);
 
     if (fail) return 1;

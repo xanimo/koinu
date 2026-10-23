@@ -21,18 +21,18 @@ static uint32_t change_pick(const kw_chainparams *cp, const kw_utxoset *us,
                             int (*derive)(void *ctx, uint32_t index, uint8_t pub[33]),
                             void *ctx)
 {
-    kw_journal j;
+    kw_journal *j;
     uint32_t pick = 0;
     int have_j, found = 0, i;
 
     if (exhausted) *exhausted = 0;
     if (!cp) return 0;
 
-    /* Initialised before anything can skip it: the journal is optional, and a
-       short-circuit that left this struct untouched would hand kw_journal_free
-       whatever the stack held. */
-    kw_journal_init(&j);
-    have_j = journal && kw_journal_load(&j, journal);
+    /* Opened before anything can skip it: the journal is optional, and a
+       short-circuit that left this unset would hand kw_journal_free whatever
+       the stack held. */
+    j = kw_journal_new();
+    have_j = j && journal && kw_journal_load(j, journal);
 
     for (i = 0; i < n; i++) {
         uint8_t pub[33], h[20];
@@ -48,14 +48,14 @@ static uint32_t change_pick(const kw_chainparams *cp, const kw_utxoset *us,
             const kw_utxo *e2 = kw_utxoset_at(us, u);
             if (e2->spklen == 25 && memcmp(e2->spk + 3, h, 20) == 0) used = 1;
         }
-        for (e = 0; have_j && al && e < j.count && !used; e++)
-            if (strcmp(j.e[e].addr, addr) == 0) used = 1;
+        for (e = 0; have_j && al && e < kw_journal_count(j) && !used; e++)
+            if (strcmp(kw_journal_at(j, e)->addr, addr) == 0) used = 1;
 
         if (!used) { pick = (uint32_t)i; found = 1; break; }
     }
 
     if (exhausted) *exhausted = !found;
-    kw_journal_free(&j);
+    kw_journal_free(j);
     return pick;
 }
 

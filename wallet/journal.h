@@ -38,10 +38,18 @@ typedef struct {
     char     addr[80];      /* where it went, or which of ours was paid */
 } kw_journal_entry;
 
-typedef struct { kw_journal_entry *e; size_t count, cap; } kw_journal;
+/* Opaque: the library owns the array of entries, and a caller reads them an
+   entry at a time. wallet/journal_internal.h carries the layout. */
+typedef struct kw_journal kw_journal;
 
-int  kw_journal_init(kw_journal *j);
-void kw_journal_free(kw_journal *j);
+/* An empty journal. NULL on allocation failure; free takes NULL. */
+kw_journal *kw_journal_new(void);
+void        kw_journal_free(kw_journal *j);
+
+/* How many entries are held, oldest first, and entry (i) or NULL past the end.
+   Borrowed, and valid until the journal is loaded into or added to again. */
+size_t kw_journal_count(const kw_journal *j);
+const kw_journal_entry *kw_journal_at(const kw_journal *j, size_t i);
 
 /* Hold (e) in memory without writing it, so a caller appending many entries in
    one pass can ask kw_journal_has about what it has already written. */
