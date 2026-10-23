@@ -8,17 +8,18 @@
  * enforces by reading the archive's undefined symbols.
  *
  *     #include <koinu/koinu-sign.h>
- *     cc prog.c $(pkg-config --cflags --libs koinu-sign) -lsecp256k1
+ *     cc prog.c $(pkg-config --cflags --libs koinu-sign)
  *
- * secp256k1 is yours to provide. This tree builds its own copy from a pinned
- * submodule and deliberately does not install it, because a second
- * libsecp256k1 on a system is how a program ends up with two and no warning.
+ * The shared library carries the pinned secp256k1 inside it and does not export
+ * it, so a program linking its own gets its own. Against the archive secp256k1
+ * is yours to provide, which Libs.private says. This tree deliberately installs
+ * no libsecp256k1 of its own, because a second one on a system is how a program
+ * ends up with two and no warning.
  *
- * The ABI is not stable and this header does not pretend otherwise. The types
- * below are transparent structs, and they change: kw_utxo grew two fields in
- * the course of binding a persisted amount to the transaction that carries it.
- * Pin a commit, build from source, and read docs/changelog.md. Opaque handles
- * are what a version number would have to come after, and they are not done.
+ * docs/abi.md is what libkoinu-sign.so.0 promises. In short: kw_tx, kw_psbt,
+ * kw_utxoset, kw_watchset and kw_journal are handles whose contents move
+ * without notice, and the records below that a caller declares by value have
+ * their layout frozen for the life of the soname.
  *
  * What is stable in practice, because it is a standard rather than a decision
  * taken here: the BIP32/39/44 derivations, SLIP-39 and codex32 against their

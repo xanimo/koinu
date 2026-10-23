@@ -61,23 +61,27 @@ depends on the signing half rather than the reverse. make check links a signer
 against the signing half alone and fails on any socket symbol in it.
 
     make split          # libkoinu-sign.a and libkoinu-chain.a
+    make shared         # libkoinu-sign.so.0 and libkoinu-chain.so.0
     make install PREFIX=/usr/local
 
-install places the two archives, the headers under include/koinu, pkg-config
-files and the three binaries. a consumer writes one include:
+install places both archives, both shared libraries, the headers under
+include/koinu, pkg-config files and the three binaries. a consumer writes one
+include:
 
     #include <koinu/koinu-sign.h>
-    cc prog.c $(pkg-config --cflags --libs koinu-sign) -lsecp256k1
+    cc prog.c $(pkg-config --cflags --libs koinu-sign)
 
-secp256k1 is yours to provide. this tree builds its own from a pinned submodule
-and deliberately does not install it, since a second libsecp256k1 on a system is
-how a program ends up linking two of them with no warning.
+the shared library carries the pinned secp256k1 inside it without exporting it,
+so a program that links its own gets its own. against the archive secp256k1 is
+yours to provide and the .pc says so under Libs.private. this tree deliberately
+does not install one, since a second libsecp256k1 on a system is how a program
+ends up linking two of them with no warning.
 
-there is no shared library and no abi promise. the types in those headers are
-transparent structs and they still change: kw_utxo grew two fields while the
-amounts in a utxo set were being bound to the transactions that carry them. pin
-a commit and build from source. opaque handles are what a version number would
-have to come after.
+the soname is what docs/abi.md promises: kw_tx, kw_psbt, kw_utxoset,
+kw_watchset and kw_journal are handles whose contents move freely, and the
+dozen records a caller declares by value have their layout frozen for the life
+of a soname. test/test_abi.sh reads the soname, the exported set and a
+dynamically linked consumer back off the built library on every make check.
 
 neither archive exports a name outside the kw_ and KW_ prefixes. the vendored
 argon2 and poly1305-donna arrive with initialize, finalize, allocate_memory and

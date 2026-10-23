@@ -40,6 +40,30 @@ one-shot form has to split it and pass `--utxos`.
 left behind compiles and signs the wrong bytes.
 
 ## What's Changed
+* build: libkoinu-sign.so.0 and libkoinu-chain.so.0, with docs/abi.md
+  The soname was waiting on the handles, and they are done, so there is a
+  shared library and a written promise. kw_tx, kw_psbt, kw_utxoset, kw_watchset
+  and kw_journal are handles whose contents move freely; the dozen records a
+  caller declares by value, and the KW_* constants their layouts use, are
+  frozen for the life of a soname. KW_ABI is separate from KW_VERSION, so 0.4.1
+  and 0.5.0 both carry soname 0.
+
+  A version script pins the exported set to kw_ and KW_, which is what makes
+  the promise checkable: the pinned secp256k1 is linked in without being
+  re-exported, so a program that brings its own gets its own rather than
+  whichever the loader reached first. The submodule is configured --with-pic
+  now, since a non-PIC archive cannot go into a .so at all.
+
+  test/test_abi.sh reads all of it back off the built library: the soname, the
+  symlink chain, the exported set, that secp256k1 is present and local, and
+  that a dynamically linked consumer runs. Removing the version script makes it
+  report secp256k1_context_create; removing -soname makes it report an empty
+  soname.
+
+  Both flags are probed by linking a real shared object with each, and where
+  either is missing there is no shared library at all: make shared says so,
+  install places the archives alone, and the test skips. That is the macos case,
+  which wants .dylib and -install_name and is not written.
 * build: a second install with a different PREFIX wrote the first one's .pc
   The generated .pc depends on PREFIX, which is not an input make can see, so
   the file was up to date whatever the prefix was: `make install PREFIX=/opt/a`

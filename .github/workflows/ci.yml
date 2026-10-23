@@ -63,7 +63,7 @@ jobs:
         run: |
           cd depends/secp256k1
           ./autogen.sh
-          ./configure --enable-static --disable-shared --disable-tests \
+          ./configure --enable-static --disable-shared --with-pic --disable-tests \
               --disable-exhaustive-tests --disable-benchmark \
               --host=i686-pc-linux-gnu CFLAGS=-m32 LDFLAGS=-m32
           make

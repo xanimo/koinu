@@ -70,7 +70,9 @@ assuming: the point is that the tail is known, not that the file changed.
 
 Nothing is tagged until all of these pass on the commit being tagged:
 
-    make check          45/45 suites
+    make check          48/48 suites, which now ends with fuzz-syntax and
+                        fuzz-run, so the harnesses compile in the fast loop
+    make tools          the twelve hand-run diagnostics link; none are run
     make asan           exit 0, which now means what it says: the sanitized
                         builds carry -fno-sanitize-recover=undefined, so a
                         ubsan report ends the run instead of printing and
@@ -116,9 +118,11 @@ check the artifact rather than the flags:
 The Makefile probes each flag against the compiler and drops what it cannot
 take, so a toolchain without one builds quietly without it.
 
-CI runs `make check` across a matrix of x86_64 gcc, x86_64 clang, i386 and macos
-arm64, and `make asan` with `make fuzz-asan` in one ubuntu job with the default
-compiler. `make tsan` and `make fuzz` are not in CI and are run here. A release
+CI runs `make check` and `make tools` across a matrix of x86_64 gcc, x86_64
+clang, i386 and macos arm64, and `make asan` with `make fuzz-asan` in one ubuntu
+job with the default compiler. The shared library is covered by
+`test/test_abi.sh` inside `make check`, on the ELF platforms only: see the last
+section of docs/abi.md. `make tsan` and `make fuzz` are not in CI and are run here. A release
 also wants a live check against a real node, since the offline suite has never
 caught a serialization bug on its own: sync headers, scan a funded address, and
 confirm an outpoint.

@@ -74,6 +74,10 @@ SIGN_LIB  = libkoinu-sign.a
 CHAIN_LIB = libkoinu-chain.a
 
 LIB   = libkw.a
+
+# Defined here rather than beside install: a rule's target is expanded when the
+# makefile is read, so libkoinu-sign.so.$(KW_VER) named below needs this first.
+KW_VER = $(shell sed -n 's/.*KW_VERSION "\([^"]*\)".*/\1/p' include/kw_version.h)
 TESTS = test/test_cpu test/test_rng test/test_sha2 test/test_ripemd160 test/test_hmac test/test_siphash \
         test/test_pbkdf2 test/test_slip39 test/test_codex32 test/test_scrypt test/test_base58 test/test_ec test/test_bip32 test/test_bip39 \
         test/test_change test/test_address test/test_aead test/test_argon2 test/test_keystore test/test_tx test/test_psbt \
@@ -95,11 +99,92 @@ $(CHAIN_LIB): $(CHAIN_SRC:.c=.o)
 # them in that order.
 split: $(SIGN_LIB) $(CHAIN_LIB)
 
+# ── shared libraries ────────────────────────────────────────────
+# One ABI number for both halves, bumped when a published entry point changes
+# shape or goes away. It is not the release version: 0.4.1 and 0.5.0 both carry
+# soname 0 unless something listed in docs/abi.md moves.
+KW_ABI    = 0
+SIGN_SO   = libkoinu-sign.so
+CHAIN_SO  = libkoinu-chain.so
+SIGN_SOV  = $(SIGN_SO).$(KW_VER)
+CHAIN_SOV = $(CHAIN_SO).$(KW_VER)
+
+# A separate object set: the archives are -fPIE, and a PIE object is not a PIC
+# object on every target even where the two happen to agree here.
+PIC_OBJ      = $(CORE_SRC:.c=.pic.o)
+SIGN_PIC_OBJ = $(SIGN_SRC:.c=.pic.o)
+CHAIN_PIC_OBJ = $(CHAIN_SRC:.c=.pic.o)
+
+%.pic.o: %.c
+	$(CC) $(CFLAGS) -fPIC $(CPPFLAGS) -MMD -MP -c -o $@ $<
+
+# The exported set is the promise: everything else, including secp256k1 and the
+# vendored code this links in, is hidden. Without this the .so would re-export
+# secp256k1_ec_pubkey_create, and a consumer linking its own libsecp256k1 would
+# get whichever the loader reached first.
+#
+# Probed, not assumed: ld64 takes none of these. A .so that quietly exported
+# everything would be worse than not building one.
+#
+# Each probe writes its own script and links a real shared object: ld_ok above
+# links an executable against a named file, and --version-script=koinu.map
+# probed before that file is generated fails on a linker that supports it.
+VERSCRIPT_OK = $(shell printf '{ global: f; local: *; };\n' > .vs$$$$.map; \
+                       printf 'int f(void){return 0;}' > .vs$$$$.c; \
+                       $(CC) -shared -fPIC -Wl,--version-script=.vs$$$$.map \
+                           .vs$$$$.c -o .vs$$$$.so >/dev/null 2>&1 && echo yes; \
+                       rm -f .vs$$$$.map .vs$$$$.c .vs$$$$.so)
+SONAME_OK    = $(shell printf 'int f(void){return 0;}' > .sn$$$$.c; \
+                       $(CC) -shared -fPIC -Wl,-soname,libprobe.so.0 \
+                           .sn$$$$.c -o .sn$$$$.so >/dev/null 2>&1 && echo yes; \
+                       rm -f .sn$$$$.c .sn$$$$.so)
+VERSCRIPT_FLAG = -Wl$(,)--version-script=koinu.map
+SONAME_FLAG    = -Wl$(,)-soname$(,)$(SIGN_SO).$(KW_ABI)
+
+koinu.map:
+	printf '{ global: kw_*; KW_*; local: *; };\n' > $@
+
+# Both or nothing. A soname with no version script exports secp256k1; a version
+# script with no soname produces a library a consumer cannot be linked against
+# by its interface. Darwin wants .dylib, -install_name and
+# -exported_symbols_list, and that is not written: docs/abi.md says so, and
+# `make shared` says so too rather than failing in the middle of the link.
+SHARED_OK = $(if $(VERSCRIPT_OK),$(if $(SONAME_OK),yes,),)
+
+# $(SECP_LIB) is linked in rather than left undefined, so the .so is complete
+# on its own; the version script keeps its names off the exported list.
+$(SIGN_SOV): $(SIGN_PIC_OBJ) $(SECP_LIB) koinu.map
+	$(CC) $(CFLAGS) -shared $(SONAME_FLAG) $(VERSCRIPT_FLAG) \
+	    -o $@ $(SIGN_PIC_OBJ) $(SECP_LIB)
+	ln -sf $@ $(SIGN_SO).$(KW_ABI)
+	ln -sf $(SIGN_SO).$(KW_ABI) $(SIGN_SO)
+
+$(CHAIN_SOV): $(CHAIN_PIC_OBJ) $(SIGN_SOV) koinu.map
+	$(CC) $(CFLAGS) -shared -Wl$(,)-soname$(,)$(CHAIN_SO).$(KW_ABI) $(VERSCRIPT_FLAG) \
+	    -o $@ $(CHAIN_PIC_OBJ) -L. -lkoinu-sign
+	ln -sf $@ $(CHAIN_SO).$(KW_ABI)
+	ln -sf $(CHAIN_SO).$(KW_ABI) $(CHAIN_SO)
+
+ifeq ($(SHARED_OK),yes)
+shared: $(SIGN_SOV) $(CHAIN_SOV)
+else
+shared:
+	@echo "shared: not built here. This linker takes no --version-script or"
+	@echo "  -soname, so the exported set and the interface name cannot be"
+	@echo "  pinned. See the last section of docs/abi.md."
+endif
+
+# What test/test_abi.sh consults, so it skips for the same reason rather than
+# by guessing from which tools happen to be installed.
+shared-ok:
+	@echo '$(if $(SHARED_OK),yes,no)'
+
+
 # ── install ─────────────────────────────────────────────────────
-# Static archives, headers and pkg-config. No shared library and no SONAME: the
-# types in those headers are transparent structs that still change, so a version
-# number on a .so would be one this project breaks on its next commit. Opaque
-# handles come first, and they are not done.
+# Static archives, shared libraries, headers and pkg-config. The soname is
+# meaningful now that kw_tx, kw_psbt, kw_utxoset, kw_watchset and kw_journal are
+# handles: what docs/abi.md promises is checkable, and test/test_abi.sh checks
+# it. The records that are still spelled out in the headers are listed there.
 #
 # secp256k1 is not installed. This tree builds its own from a pinned submodule,
 # and putting a second libsecp256k1 on a system is how a program ends up linking
@@ -111,7 +196,6 @@ bindir      = $(PREFIX)/bin
 libdir      = $(PREFIX)/lib
 includedir  = $(PREFIX)/include
 pkgconfdir  = $(libdir)/pkgconfig
-KW_VER      = $(shell sed -n 's/.*KW_VERSION "\([^"]*\)".*/\1/p' include/kw_version.h)
 
 SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
             crypto/address.h crypto/aead.h crypto/base58.h crypto/bip32.h \
@@ -123,8 +207,9 @@ SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
             wallet/change.h wallet/fee.h wallet/journal.h wallet/utxo.h
 
 # The prefix is a prerequisite, through a stamp file, because it is not one of
-# the inputs make can see: two installs with different PREFIX values put the
-# first one's paths in the second one's .pc.
+# the inputs make can see: two installs with different PREFIX values used to put
+# the first one's paths in the second one's .pc, which test/test_abi.sh ran into
+# by installing to its own prefix before test_install.sh ran.
 .PHONY: force
 .pcprefix: force
 	@printf '%s\n' '$(PREFIX)' | cmp -s - $@ 2>/dev/null || printf '%s\n' '$(PREFIX)' > $@
@@ -132,17 +217,27 @@ SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
 %.pc: %.pc.in include/kw_version.h .pcprefix
 	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@VERSION@|$(KW_VER)|g' $< > $@
 
-install: $(SIGN_LIB) $(CHAIN_LIB) koinu-sign.pc koinu-chain.pc kw kwd kwui
+SHARED_INSTALL = $(if $(SHARED_OK),$(SIGN_SOV) $(CHAIN_SOV),)
+
+install: $(SIGN_LIB) $(CHAIN_LIB) $(SHARED_INSTALL) koinu-sign.pc koinu-chain.pc kw kwd kwui
 	install -d $(DESTDIR)$(includedir)/koinu $(DESTDIR)$(libdir) \
 	           $(DESTDIR)$(pkgconfdir) $(DESTDIR)$(bindir)
 	install -m 644 $(SIGN_HDRS) $(DESTDIR)$(includedir)/koinu/
 	install -m 644 $(SIGN_LIB) $(CHAIN_LIB) $(DESTDIR)$(libdir)/
+ifeq ($(SHARED_OK),yes)
+	install -m 755 $(SIGN_SOV) $(CHAIN_SOV) $(DESTDIR)$(libdir)/
+	ln -sf $(SIGN_SOV) $(DESTDIR)$(libdir)/$(SIGN_SO).$(KW_ABI)
+	ln -sf $(SIGN_SO).$(KW_ABI) $(DESTDIR)$(libdir)/$(SIGN_SO)
+	ln -sf $(CHAIN_SOV) $(DESTDIR)$(libdir)/$(CHAIN_SO).$(KW_ABI)
+	ln -sf $(CHAIN_SO).$(KW_ABI) $(DESTDIR)$(libdir)/$(CHAIN_SO)
+endif
 	install -m 644 koinu-sign.pc koinu-chain.pc $(DESTDIR)$(pkgconfdir)/
 	install -m 755 kw kwd kwui $(DESTDIR)$(bindir)/
 
 uninstall:
 	rm -rf $(DESTDIR)$(includedir)/koinu
 	rm -f $(DESTDIR)$(libdir)/$(SIGN_LIB) $(DESTDIR)$(libdir)/$(CHAIN_LIB)
+	rm -f $(DESTDIR)$(libdir)/$(SIGN_SO)* $(DESTDIR)$(libdir)/$(CHAIN_SO)*
 	rm -f $(DESTDIR)$(pkgconfdir)/koinu-sign.pc $(DESTDIR)$(pkgconfdir)/koinu-chain.pc
 	rm -f $(DESTDIR)$(bindir)/kw $(DESTDIR)$(bindir)/kwd $(DESTDIR)$(bindir)/kwui
 
@@ -181,9 +276,13 @@ $(SECP_DIR)/include/secp256k1.h:
 
 crypto/ec.o: $(SECP_DIR)/include/secp256k1.h
 
+# --with-pic on a static-only build: libtool otherwise compiles the archive
+# non-PIC, and a non-PIC archive cannot go into libkoinu-sign.so at all
+# ("relocation R_X86_64_PC32 ... recompile with -fPIC"). This keeps one
+# secp256k1 in the process, which is the whole reason it is not installed.
 $(SECP_LIB): $(SECP_DIR)/include/secp256k1.h
 	cd $(SECP_DIR) && ./autogen.sh && ./configure --enable-static --disable-shared \
-	    --disable-tests --disable-exhaustive-tests --disable-benchmark && $(MAKE)
+	    --with-pic --disable-tests --disable-exhaustive-tests --disable-benchmark && $(MAKE)
 
 test/test_cpu: test/test_cpu.o $(LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB)
@@ -458,6 +557,7 @@ check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly test/hostna
 	./test/test_cf
 	./test/test_cfstore
 	./test/test_split.sh
+	./test/test_abi.sh "$(CFLAGS)"
 	./test/test_install.sh "$(CFLAGS)"
 	./test/test_cli.sh
 	./test/test_sweep.sh
@@ -543,11 +643,11 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) .pcprefix koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(SIGN_SO)* $(CHAIN_SO)* koinu.map .pcprefix koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(PIC_OBJ) $(PIC_OBJ:.o=.d) $(TESTS) test/mkutxos test/signonly test/hostnames test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.
 distclean: clean
 	-cd $(SECP_DIR) && $(MAKE) distclean
 
-.PHONY: split all check asan tools clean distclean
+.PHONY: split shared shared-ok all check asan tools clean distclean

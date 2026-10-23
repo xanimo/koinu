@@ -58,7 +58,12 @@
 /pow_chain
 /test/test_auxpow
 /net_auxpow
+/libkoinu-sign.so*
+/libkoinu-chain.so*
+/koinu.map
 /.pcprefix
+/koinu.syms
+*.pic.o
 /net_powtail
 /test/test_powq
 /gen_checkpoints
