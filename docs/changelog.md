@@ -40,6 +40,15 @@ one-shot form has to split it and pass `--utxos`.
 left behind compiles and signs the wrong bytes.
 
 ## What's Changed
+* build: make check compiles and replays the fuzz harnesses
+  Nothing in the fast loop built them, and the libFuzzer ones want a compiler
+  the gate does not require, so a header change that broke fuzz_parse and two
+  netfuzz targets reached a push twice: only make fuzz-asan compiles them, and
+  it is the slowest thing in the release gate. check ends with fuzz-run, which
+  builds the replay harness with the ordinary compiler and runs the corpus
+  through it, and fuzz-syntax, which is -fsyntax-only over the eight netfuzz
+  targets and the two wire harnesses. Reintroducing the &handle that started
+  this fails fuzz-syntax.
 * utxo, journal: the watch set and the journal are opaque too
   Both were a pointer to a library-owned array and its two sizes, declared by
   value on a caller's frame, so a lookup this walks linearly is one no later

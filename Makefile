@@ -361,7 +361,7 @@ net_tor: test/net_tor.o $(LIB)
 # clang for libFuzzer; `make fuzz-run CORPUS=dir` replays a corpus with any
 # compiler, so CI can check the known inputs without clang.
 FUZZ_CC ?= clang
-.PHONY: split fuzz fuzz-net fuzz-run fuzz-asan
+.PHONY: split fuzz fuzz-net fuzz-run fuzz-syntax fuzz-asan
 
 # The stateful harnesses: a fake peer on a socketpair writing a scripted byte
 # stream in fuzzer-chosen chunks, so a whole exchange is the input rather than one
@@ -457,6 +457,26 @@ check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly test/hostna
 	./test/test_scan.sh
 	./test/test_kwui.sh
 	./test/test_kwd.sh
+	$(MAKE) fuzz-syntax
+	$(MAKE) fuzz-run
+
+# The fuzz harnesses are not built by anything else in the fast loop, and the
+# libFuzzer ones need a compiler the gate does not require. A header change that
+# broke fuzz_parse and two netfuzz targets reached a push twice because only
+# make fuzz-asan compiles them. fuzz-run builds and replays the corpus with the
+# ordinary compiler; this checks the rest will at least still parse.
+# -Wall is not applied: the harnesses are scratch code and fuzz-net does not
+# police their warnings either. The three -Werror= flags are the point.
+FUZZ_SYNTAX = -std=gnu11 -Werror=implicit-function-declaration \
+              -Werror=incompatible-pointer-types -Werror=int-conversion
+fuzz-syntax:
+	@for t in $(NETFUZZ); do \
+	    $(CC) $(FUZZ_SYNTAX) -fsyntax-only -pthread -Ifuzz/net -Itest $(CPPFLAGS) \
+	        fuzz/net/fz_$$t.c || exit 1; \
+	done
+	@$(CC) $(FUZZ_SYNTAX) -fsyntax-only $(CPPFLAGS) fuzz/fuzz_wire.c -DKW_FUZZ_SOCKS5
+	@$(CC) $(FUZZ_SYNTAX) -fsyntax-only $(CPPFLAGS) fuzz/fuzz_shares.c
+	@echo "fuzz-syntax ok: $(words $(NETFUZZ)) netfuzz targets and 2 wire harnesses parse"
 
 # The tests must also pass with address and undefined-behaviour sanitizers on.
 #
