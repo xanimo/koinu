@@ -557,7 +557,7 @@ check: $(TESTS) kw kwd kwui test/fakenode test/mkutxos test/signonly test/hostna
 	./test/test_cf
 	./test/test_cfstore
 	./test/test_split.sh
-	./test/test_abi.sh "$(CFLAGS)"
+	./test/test_abi.sh "$(CFLAGS)" "$(if $(SHARED_OK),yes,no)"
 	./test/test_install.sh "$(CFLAGS)"
 	./test/test_cli.sh
 	./test/test_sweep.sh

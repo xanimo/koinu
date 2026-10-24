@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## What's Changed
+* test: a gate that cannot answer is not a gate that passes
+  test_abi.sh asked the Makefile whether a shared library builds here by
+  running a third make, and under make asan that query came back empty. The
+  script read "not the string yes" as "this linker cannot", skipped itself, and
+  the run still reported success: asan covered 47 of 48 suites while saying it
+  covered all of them, so the .so was never once exercised under the
+  sanitizers. The answer is passed in from the Makefile now, which already
+  knows it, and the query that remains for standalone use distinguishes yes
+  from no from a failure, stopping the run on the third rather than guessing.
+  make asan goes from 41 ok lines to 51 and reports abi ok.
+
 ## [0.4.0] - 2026-10-23
 
 ## Upgrading

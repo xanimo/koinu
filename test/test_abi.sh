@@ -24,7 +24,29 @@ CONSUMER_CFLAGS=${1:--std=gnu11 -O1}
 # The Makefile decides, by probing the linker, not this script by guessing from
 # which tools are installed: the macos runner has a readelf and no -soname, so
 # checking for the tool skipped nothing and the build failed mid-link.
-[ "$(make -s shared-ok)" = "yes" ] || { echo "abi skipped: no shared library on this linker"; exit 0; }
+#
+# Passed in as $2 where the caller already knows, because asking again from here
+# means a third make, and under make asan that query came back empty and this
+# gate skipped itself for weeks while the run still reported success. A query
+# that fails is not an answer: only the literal yes and no are, and anything
+# else stops the run rather than quietly becoming "no shared library".
+SHARED_OK=${2:-}
+if [ -z "$SHARED_OK" ]; then
+    SHARED_OK=$(make -s shared-ok 2>&1) || {
+        echo "FAIL: could not ask the Makefile whether a shared library builds here." >&2
+        echo "  make -s shared-ok exited $?, saying:" >&2
+        echo "$SHARED_OK" | sed 's/^/    /' >&2
+        exit 1
+    }
+fi
+case "$SHARED_OK" in
+    yes) ;;
+    no)  echo "abi skipped: no shared library on this linker"; exit 0 ;;
+    *)   echo "FAIL: shared-ok answered neither yes nor no, so the skip below" >&2
+         echo "  would have been a guess. It said:" >&2
+         echo "$SHARED_OK" | sed 's/^/    /' >&2
+         exit 1 ;;
+esac
 command -v nm >/dev/null 2>&1 || { echo "abi skipped: no nm"; exit 0; }
 command -v readelf >/dev/null 2>&1 || { echo "abi skipped: no readelf"; exit 0; }
 
