@@ -475,6 +475,49 @@ if command -v strace >/dev/null 2>&1; then
     [ "$NS" -eq 0 ] || { echo "FAIL: psbt sign opened $NS socket(s)" >&2; exit 1; }
 fi
 
+# The signer has to say what it is signing. The builder is the watch-only side,
+# which is the side the split assumes may be compromised, and the fee is the one
+# number the transaction does not carry: a signer that prints only "signed 1 of
+# 1" lets a hostile builder pay a little to the address asked for and the rest
+# to the miner. These three are that attack and the two refusals around it.
+echo "$SOUT" | grep -q "^out 0 " \
+    || { echo "FAIL: psbt sign did not read back its outputs" >&2; echo "$SOUT" >&2; exit 1; }
+echo "$SOUT" | grep -qE "^fee +[0-9]+ koinu" \
+    || { echo "FAIL: psbt sign did not state the fee" >&2; echo "$SOUT" >&2; exit 1; }
+# the change output is named by the path it was derived from, not by position
+echo "$SOUT" | grep -q "this wallet, m/44'/1'/0'/1/" \
+    || { echo "FAIL: psbt sign did not re-derive the change output" >&2; echo "$SOUT" >&2; exit 1; }
+
+# 100.00000000 DOGE is 10000000000 koinu, little endian 00e40b5402000000, and
+# the only output carrying it. Cut it to 1 DOGE and the other 99 go to the
+# miner, which is over the cap for a transaction this size.
+sed 's/00e40b5402000000/00e1f50500000000/' "$WORK/pb.hex" > "$WORK/pbfee.hex"
+cmp -s "$WORK/pb.hex" "$WORK/pbfee.hex" \
+    && { echo "FAIL: the fee-attack psbt was not actually modified" >&2; exit 1; }
+if ./kw --regtest psbt sign --psbt "@$WORK/pbfee.hex" --keystore "$WORK/ks" \
+        --passphrase "@$WORK/pass" --gap 5 >/dev/null 2>&1; then
+    echo "FAIL: psbt sign signed a spend paying 99 DOGE to the miner" >&2; exit 1
+fi
+# and it is the fee that stopped it, not something incidental
+./kw --regtest psbt sign --psbt "@$WORK/pbfee.hex" --keystore "$WORK/ks" \
+     --passphrase "@$WORK/pass" --gap 5 2>&1 | grep -q "is too high" \
+    || { echo "FAIL: psbt sign refused the fee attack for the wrong reason" >&2; exit 1; }
+
+# An input's amount is only as good as the transaction it is read from, so a
+# psbt whose attached transaction is not the one the outpoint names understates
+# the inputs and so the fee. Flipping one byte of its output script keeps it
+# parseable and changes its txid.
+sed 's/00743ba40b000000/00743ba40b000001/' "$WORK/pb.hex" > "$WORK/pbutxo.hex"
+if cmp -s "$WORK/pb.hex" "$WORK/pbutxo.hex"; then
+    echo "FAIL: the prevout amount was not where it was expected" >&2; exit 1
+else
+    if ./kw --regtest psbt sign --psbt "@$WORK/pbutxo.hex" --keystore "$WORK/ks" \
+            --passphrase "@$WORK/pass" --gap 5 >/dev/null 2>&1; then
+        echo "FAIL: psbt sign took an input whose transaction is not its outpoint's" >&2
+        exit 1
+    fi
+fi
+
 # extract has to give a transaction, and it has to pay what build said
 PRAW=$(./kw --regtest psbt extract --psbt "@$WORK/pbs.hex" 2>/dev/null | awk '{print $NF}')
 case "$PRAW" in 01000000*00000000) ;; *) echo "FAIL: extract gave no transaction" >&2; exit 1;; esac

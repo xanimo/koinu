@@ -104,7 +104,8 @@ static void usage(void)
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "           [--change-to ADDR] [--gap N]\n"
       "  psbt     sign --psbt HEX|@FILE|- --keystore PATH [--passphrase @FILE|-]\n"
-      "           [--gap N]      (signs this wallet's own inputs, no network)\n"
+      "           [--gap N] [--maxfee DOGE]\n"
+      "                          (signs this wallet's own inputs, no network)\n"
       "  psbt     create --tx HEX [--utxo HEX|@FILE|- --vin N] | tx --psbt HEX\n"
       "           sigs --psbt HEX [--vin N]\n"
       "           sign --psbt HEX --wif @FILE|- [--redeem HEX] [--utxo HEX] [--vin N]\n"
@@ -4170,15 +4171,18 @@ out:
  * carries. An input it has no key for is left alone and reported, since a psbt
  * is a thing several parties sign. */
 static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
-                              const char *pass_arg, const char *psbt_arg, int gap)
+                              const char *pass_arg, const char *psbt_arg,
+                              const char *maxfee_arg, int gap)
 {
     uint8_t raw[32768], seed[64];
     kw_bip32_key master, *keys = NULL;
     uint8_t (*h160)[20] = NULL;
+    int *hchg = NULL, *hidx = NULL;
     kw_psbt *p = NULL;
     const kw_tx *utx;
     kw_tx *prev = NULL;
     size_t n;
+    uint64_t total_in = 0, total_out = 0, fee = 0;
     int rc = 1, have_psbt = 0, nkeys = 0, signed_n = 0, skipped = 0, m = 0;
 
     if (!path || !psbt_arg) { usage(); return 2; }
@@ -4204,7 +4208,12 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     nkeys = 2 * gap;
     keys = (kw_bip32_key *)malloc((size_t)nkeys * sizeof *keys);
     h160 = malloc((size_t)nkeys * 20);
-    if (!keys || !h160) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+    /* The branch and index each hash came from, so an output paying this wallet
+       is named by its derivation rather than guessed at by position: a psbt is
+       built elsewhere and nothing says which output is the change. */
+    hchg = (int *)malloc((size_t)nkeys * sizeof *hchg);
+    hidx = (int *)malloc((size_t)nkeys * sizeof *hidx);
+    if (!keys || !h160 || !hchg || !hidx) { fprintf(stderr, "kw: out of memory\n"); goto out; }
     kw_secure_keep(keys, (size_t)nkeys * sizeof *keys);
     for (int chg = 0; chg <= 1; chg++)
         for (int i = 0; i < gap; i++) {
@@ -4213,6 +4222,8 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
                 continue;
             if (!kw_bip32_pubkey(&keys[m], pub)) continue;
             kw_hash160(pub, 33, h160[m]);
+            hchg[m] = chg;
+            hidx[m] = i;
             m++;
         }
 
@@ -4221,6 +4232,70 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     utx = kw_psbt_unsigned_tx(p);
     prev = kw_tx_new();
     if (!prev) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+
+    /* Every input's amount, before anything is signed. The fee is what bounds
+       what a builder can take and the transaction does not carry it: it is the
+       inputs less the outputs, so an input whose amount is unknown leaves the
+       fee unknown. An input whose attached transaction is not the one its
+       outpoint names lets a hostile builder understate the inputs and so the
+       fee, which is why the hash is checked here and not only for the inputs
+       this wallet goes on to sign. Both are refusals: a cap that cannot be
+       computed cannot be applied, and signing anyway is the whole attack. */
+    for (size_t i = 0; i < kw_tx_nin(utx); i++) {
+        const uint8_t *u = NULL;
+        size_t ulen = 0, used;
+        uint32_t vout = 0;
+        uint8_t want[32], got[32];
+        uint64_t v = 0;
+
+        kw_tx_input_prevout(utx, i, want, &vout);
+        if (!kw_psbt_utxo(p, i, &u, &ulen)) {
+            fprintf(stderr, "kw: input %zu carries no transaction, so the fee cannot "
+                            "be worked out; nothing signed\n", i);
+            goto out;
+        }
+        kw_hash256(u, ulen, got);
+        if (memcmp(want, got, 32) != 0) {
+            fprintf(stderr, "kw: input %zu carries a transaction that is not the one "
+                            "its outpoint names; nothing signed\n", i);
+            goto out;
+        }
+        used = kw_tx_parse(u, ulen, prev);
+        if (!used || used != ulen || !kw_tx_output(prev, vout, &v, NULL, NULL)) {
+            fprintf(stderr, "kw: input %zu names an output its transaction does not "
+                            "have; nothing signed\n", i);
+            goto out;
+        }
+        if (v > KOINU_MAX_MONEY - total_in) {
+            fprintf(stderr, "kw: the input amounts add up past every koinu there will "
+                            "ever be\n");
+            goto out;
+        }
+        total_in += v;
+    }
+
+    /* The fee, checked before a signature exists rather than after. Signing and
+       then refusing to print leaves the signatures made; refusing here means
+       they were never made at all. */
+    for (size_t o = 0; o < kw_tx_nout(utx); o++) {
+        uint64_t ov = 0;
+        if (!kw_tx_output(utx, o, &ov, NULL, NULL)) continue;
+        if (ov > KOINU_MAX_MONEY - total_out) {
+            fprintf(stderr, "kw: the output amounts add up past every koinu there will "
+                            "ever be\n");
+            goto out;
+        }
+        total_out += ov;
+    }
+    if (total_out > total_in) {
+        fprintf(stderr, "kw: the outputs are worth more than the inputs; nothing "
+                        "signed\n");
+        goto out;
+    }
+    fee = total_in - total_out;
+    if (!fee_ok(fee, 10 + 148 * kw_tx_nin(utx) + 34 * kw_tx_nout(utx), maxfee_arg))
+        goto out;
+
     for (size_t i = 0; i < kw_tx_nin(utx); i++) {
         const uint8_t *u = NULL;
         size_t ulen = 0, used;
@@ -4290,9 +4365,83 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     {
         uint8_t out_raw[32768];
         size_t on = kw_psbt_serialize(p, out_raw, sizeof out_raw);
+        kw_psbt *back = NULL;
+        const kw_tx *btx;
+        uint64_t back_out = 0;
         char *hex;
+        int bad = 0;
 
         if (!on) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
+
+        /* Read back what is about to be handed over, rather than reporting what
+           was checked. Everything above is the request; from here the numbers
+           come out of the serialized bytes, so a bug between the two is visible
+           to the operator instead of being papered over by the summary agreeing
+           with itself. The inputs are what the psbt carries and the fee is the
+           one number no transaction holds, so it is stated here or not at all:
+           without it a builder can pay a little to the address asked for and
+           the rest to the miner, and the signer that never says so is the whole
+           of the attack this readback exists to stop. */
+        back = kw_psbt_new();
+        if (!back) { fprintf(stderr, "kw: out of memory\n"); goto out; }
+        if (!kw_psbt_parse(out_raw, on, back)) {
+            fprintf(stderr, "kw: the psbt just produced does not parse as one; "
+                            "refusing to report it as signed\n");
+            kw_psbt_free(back);
+            goto out;
+        }
+        btx = kw_psbt_unsigned_tx(back);
+        if (kw_tx_nin(btx) != kw_tx_nin(utx) || kw_tx_nout(btx) != kw_tx_nout(utx)) {
+            fprintf(stderr, "kw: it carries %zu input(s) and %zu output(s), not the "
+                            "%zu and %zu that were checked\n",
+                    kw_tx_nin(btx), kw_tx_nout(btx), kw_tx_nin(utx), kw_tx_nout(utx));
+            bad = 1;
+        }
+
+        for (size_t o = 0; !bad && o < kw_tx_nout(btx); o++) {
+            uint64_t ov = 0;
+            const uint8_t *ospk = NULL;
+            size_t ol = 0;
+            char addr[128], amt[32], mine[64];
+            int j = -1;
+
+            if (!kw_tx_output(btx, o, &ov, &ospk, &ol)) continue;
+            back_out += ov;
+            fmt_doge(ov, amt, sizeof amt);
+            if (!spk_to_addr(cp, ospk, ol, addr, sizeof addr))
+                snprintf(addr, sizeof addr, "an unrecognised script");
+
+            /* An output paying an address this wallet derives is named by its
+               path. Anything else pays someone else, which is the point: a
+               builder sending the balance to itself shows up here as a payment
+               to an address that is not one of these. */
+            if (ol == 25)
+                for (int t = 0; t < m; t++)
+                    if (memcmp(h160[t], ospk + 3, 20) == 0) { j = t; break; }
+            if (j >= 0)
+                snprintf(mine, sizeof mine, " (this wallet, m/44'/%u'/0'/%d/%d)",
+                         cp->bip44_coin, hchg[j], hidx[j]);
+            else
+                mine[0] = 0;
+
+            printf("out %zu %-5s %s DOGE to %s%s\n", o,
+                   j >= 0 ? "mine" : "pays", amt, addr, mine);
+        }
+
+        if (!bad && back_out != total_out) {
+            fprintf(stderr, "kw: its outputs are worth %llu koinu, not the %llu that "
+                            "were checked\n",
+                    (unsigned long long)back_out, (unsigned long long)total_out);
+            bad = 1;
+        }
+        kw_psbt_free(back);
+        if (bad) { fprintf(stderr, "kw: not reporting this as signed\n"); goto out; }
+
+        printf("in      %llu koinu over %zu input(s)\n",
+               (unsigned long long)total_in, kw_tx_nin(utx));
+        printf("fee     %llu koinu, the inputs less the outputs\n",
+               (unsigned long long)fee);
+
         hex = (char *)malloc(2 * on + 1);
         if (!hex) { fprintf(stderr, "kw: out of memory\n"); goto out; }
         kw_hex_encode(out_raw, on, hex, 2 * on + 1);
@@ -4312,6 +4461,8 @@ out:
         free(keys);
     }
     free(h160);
+    free(hchg);
+    free(hidx);
     kw_secure_zero(&master, sizeof master);
     kw_secure_forget(&master, sizeof master);
     kw_secure_forget(seed, sizeof seed);
@@ -4338,7 +4489,7 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
     /* sign with a keystore is a wallet signing its own inputs; sign with a wif
        is the co-signing path, which names one input and its redeem script. */
     if (!strcmp(sub, "sign") && path && !wif_arg)
-        return psbt_sign_keystore(cp, path, pass_arg, psbt_arg, gap);
+        return psbt_sign_keystore(cp, path, pass_arg, psbt_arg, maxfee_arg, gap);
 
     uint8_t raw[32768];
     kw_psbt *p;
@@ -4405,6 +4556,82 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
         uint8_t sk[32]; int comp = 0;
         kw_secure_keep(sk, sizeof sk);
         if (!wif_decode(cp, wif_arg, sk, &comp)) { kw_secure_forget(sk, sizeof sk); goto out; }
+
+        /* Say what is being signed before signing it. This is the co-signing
+           path, so unlike the keystore one it cannot insist on every input's
+           transaction: the other parties' inputs are theirs to carry. The fee
+           is capped when all of them are here and reported as unknown when they
+           are not, which is the honest thing to print and still leaves the
+           outputs visible either way. */
+        {
+            const kw_tx *stx = kw_psbt_unsigned_tx(p);
+            kw_tx *sprev = kw_tx_new();
+            uint8_t mypub[65], myh[20];
+            uint64_t sin = 0, sout = 0;
+            int known = 1;
+
+            if (!sprev) { kw_secure_forget(sk, sizeof sk); fprintf(stderr, "kw: out of memory\n"); goto out; }
+            if (!(comp ? kw_ec_pubkey(sk, mypub) : kw_ec_pubkey_uncompressed(sk, mypub))) {
+                kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
+                fprintf(stderr, "kw: bad key\n"); goto out;
+            }
+            kw_hash160(mypub, comp ? 33 : 65, myh);
+
+            for (size_t i = 0; i < kw_tx_nin(stx); i++) {
+                const uint8_t *u = NULL;
+                size_t ulen = 0, used;
+                uint32_t pv = 0;
+                uint8_t want[32], got[32];
+                uint64_t v = 0;
+
+                kw_tx_input_prevout(stx, i, want, &pv);
+                if (!kw_psbt_utxo(p, i, &u, &ulen)) { known = 0; continue; }
+                kw_hash256(u, ulen, got);
+                used = kw_tx_parse(u, ulen, sprev);
+                if (memcmp(want, got, 32) != 0 || !used || used != ulen ||
+                    !kw_tx_output(sprev, pv, &v, NULL, NULL)) { known = 0; continue; }
+                if (v > KOINU_MAX_MONEY - sin) { known = 0; continue; }
+                sin += v;
+            }
+            kw_tx_free(sprev);
+
+            for (size_t o = 0; o < kw_tx_nout(stx); o++) {
+                uint64_t ov = 0;
+                const uint8_t *ospk = NULL;
+                size_t ol = 0;
+                char addr[128], amt[32];
+                int mine;
+
+                if (!kw_tx_output(stx, o, &ov, &ospk, &ol)) continue;
+                if (ov > KOINU_MAX_MONEY - sout) { known = 0; break; }
+                sout += ov;
+                fmt_doge(ov, amt, sizeof amt);
+                if (!spk_to_addr(cp, ospk, ol, addr, sizeof addr))
+                    snprintf(addr, sizeof addr, "an unrecognised script");
+                mine = (ol == 25 && memcmp(ospk + 3, myh, 20) == 0);
+                /* stderr, not stdout: this subcommand writes the psbt alone on
+                   stdout so a caller can capture it, and a readback mixed into
+                   that is a psbt its own tooling cannot read back. */
+                fprintf(stderr, "out %zu %-5s %s DOGE to %s%s\n", o, mine ? "mine" : "pays",
+                        amt, addr, mine ? " (this key)" : "");
+            }
+
+            if (known && sout <= sin) {
+                uint64_t f = sin - sout;
+                fprintf(stderr, "fee     %llu koinu, the inputs less the outputs\n",
+                        (unsigned long long)f);
+                if (!fee_ok(f, 10 + 148 * kw_tx_nin(stx) + 34 * kw_tx_nout(stx),
+                            maxfee_arg)) {
+                    kw_secure_forget(sk, sizeof sk);
+                    goto out;
+                }
+            } else {
+                fprintf(stderr, "kw: not every input carries the transaction it spends, "
+                                "so the fee cannot be worked out and is not capped here; "
+                                "the outputs above are what this signature commits to\n");
+            }
+        }
+
         int s = kw_psbt_sign(p, (size_t)vin, sk, KW_SIGHASH_ALL);
         kw_secure_forget(sk, sizeof sk);
         if (s != 1) {
