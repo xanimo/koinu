@@ -57,6 +57,32 @@ int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
                            uint8_t *type, uint8_t stop_hash[32], uint8_t prev_header[32],
                            const uint8_t **hashes, size_t *nhashes);
 
+/* Filter types. 0x00 is BIP157's basic filter and is what a node serving
+   BIP157 hands out. 0xc1 is koinu's own and is NOT a registered type: do not
+   put it on the p2p wire where a peer would read it as something else.
+ *
+ * A creation filter holds only the scripts a block creates. That makes it
+ * generatable by anything holding the block, with no unspent set, no index and
+ * no chain state, which a basic filter is not: a basic filter also carries the
+ * scripts a block spends, and those live in outputs the block does not contain.
+ *
+ * What it costs: a wallet finds money arriving with one of these and cannot see
+ * its own coins being spent, so it would over-report a balance. Cover that with
+ * an outpoint query over the coins the wallet already knows it holds, which is
+ * cheap where rebuilding every script on the chain is not. */
+#define KW_CF_TYPE_BASIC     0x00
+#define KW_CF_TYPE_CREATION  0xc1
+
+/* Build the creation filter for a serialized block into (out). Returns the
+   bytes written, or -1 if the block is malformed or they do not fit.
+ *
+ * The merkle root is checked first, so the scripts are the ones the header
+ * commits to. Keyed by the block hash, as every filter is. Every element of
+ * this filter is also an element of that block's basic filter, which is what
+ * makes the two comparable: a basic filter that does not contain all of these
+ * is a basic filter that is lying. */
+long kw_cf_build_creation(const uint8_t *block, size_t blen, uint8_t *out, size_t outcap);
+
 /* One link of the BIP157 filter-header chain:
    out = sha256d(filter_hash || prev). out may alias prev. */
 void kw_cf_header_step(const uint8_t filter_hash[32], const uint8_t prev[32], uint8_t out[32]);

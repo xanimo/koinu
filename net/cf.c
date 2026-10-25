@@ -82,6 +82,53 @@ int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
     return 1;
 }
 
+/* ── creation filters ────────────────────────────────────────── */
+
+struct spk_acc {
+    kw_gcs_item *items;
+    size_t n, cap;
+    int oom;
+};
+
+static void spk_push(void *ctx, const uint8_t *spk, size_t spklen)
+{
+    struct spk_acc *a = (struct spk_acc *)ctx;
+    if (a->oom) return;
+    if (a->n == a->cap) {
+        size_t nc = a->cap ? a->cap * 2 : 64;
+        kw_gcs_item *ni = (kw_gcs_item *)realloc(a->items, nc * sizeof *ni);
+        if (!ni) { a->oom = 1; return; }
+        a->items = ni;
+        a->cap = nc;
+    }
+    /* Borrowed from the block, which outlives this call. */
+    a->items[a->n].script = spk;
+    a->items[a->n].len = spklen;
+    a->n++;
+}
+
+long kw_cf_build_creation(const uint8_t *block, size_t blen, uint8_t *out, size_t outcap)
+{
+    uint8_t bh[32];
+    struct spk_acc acc;
+
+    if (!block || !out || blen < 80) return -1;
+    memset(&acc, 0, sizeof acc);
+
+    /* kw_block_out_scripts checks the merkle root before yielding anything, so
+       a body the header does not commit to produces no filter rather than a
+       filter over whatever was appended. */
+    if (!kw_block_out_scripts(block, blen, spk_push, &acc) || acc.oom) {
+        free(acc.items);
+        return -1;
+    }
+
+    kw_hash256(block, 80, bh);
+    long n = kw_gcs_build(bh, acc.items, acc.n, out, outcap);
+    free(acc.items);
+    return n;
+}
+
 void kw_cf_header_step(const uint8_t filter_hash[32], const uint8_t prev[32], uint8_t out[32])
 {
     uint8_t buf[64];

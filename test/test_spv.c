@@ -8,6 +8,8 @@
  * the coinbase output. */
 
 #include "spv.h"
+#include "cf.h"
+#include "gcs.h"
 #include "sha2.h"
 #include "utxo.h"
 #include "tx.h"
@@ -127,6 +129,48 @@ int main(void)
             memset(&seen, 0, sizeof seen);
             if (kw_block_out_scripts(tampered, blen, spk_collect, &seen)) {
                 fprintf(stderr, "FAIL: scripts read out of a block the header does not commit to\n");
+                return 1;
+            }
+        }
+
+        /* The creation filter over that same block: built from the scripts it
+           creates, with no unspent set and no chain state, which is the whole
+           point. It has to find the watched script, miss one the block never
+           had, and come out identical twice. */
+        {
+            uint8_t filt[4096], bh[32];
+            long fn = kw_cf_build_creation(blk, blen, filt, sizeof filt);
+            if (fn <= 0) { fprintf(stderr, "FAIL: creation filter not built (%ld)\n", fn); return 1; }
+            kw_hash256(blk, 80, bh);
+
+            kw_gcs_item want = { spk, spklen };
+            if (kw_gcs_match_any(filt, (size_t)fn, bh, &want, 1) != 1) {
+                fprintf(stderr, "FAIL: the creation filter misses the script the block pays\n");
+                return 1;
+            }
+            uint8_t never[25];
+            memset(never, 0, sizeof never);
+            never[0] = 0x76; never[1] = 0xa9; never[2] = 0x14;
+            for (int i = 0; i < 20; i++) never[3 + i] = (uint8_t)(0xd0 + i);
+            never[23] = 0x88; never[24] = 0xac;
+            kw_gcs_item no = { never, sizeof never };
+            if (kw_gcs_match_any(filt, (size_t)fn, bh, &no, 1) != 0) {
+                fprintf(stderr, "FAIL: the creation filter matched a script the block never had\n");
+                return 1;
+            }
+
+            uint8_t again[4096];
+            long an = kw_cf_build_creation(blk, blen, again, sizeof again);
+            if (an != fn || memcmp(again, filt, (size_t)fn) != 0) {
+                fprintf(stderr, "FAIL: the creation filter is not deterministic\n"); return 1;
+            }
+
+            /* a body the header does not commit to yields no filter at all */
+            uint8_t tamper[2048];
+            memcpy(tamper, blk, blen);
+            tamper[KW_HEADER_LEN + 8] ^= 0xff;
+            if (kw_cf_build_creation(tamper, blen, again, sizeof again) != -1) {
+                fprintf(stderr, "FAIL: built a filter over a body the header disowns\n");
                 return 1;
             }
         }
@@ -429,6 +473,6 @@ int main(void)
     printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
            "  an output that pays another script refused, a body its header does not\n"
            "  commit to refused, a block holding a 64-byte transaction still read,\n  an input-less transaction\n"
-           "  refused, a repeated last node with it, and a block's output scripts read\n  back with OP_RETURN skipped and a tampered body refused\n");
+           "  refused, a repeated last node with it, and a block's output scripts read\n  back with OP_RETURN skipped and a tampered body refused,\n  a creation filter built from a block alone that finds what it pays\n");
     return 0;
 }
