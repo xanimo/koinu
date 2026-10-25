@@ -162,6 +162,42 @@ int kw_block_scan(const uint8_t *msg, size_t len,
     return 1;
 }
 
+struct blk_spk { void (*fn)(void *, const uint8_t *, size_t); void *ctx; };
+
+static void blk_spk_out(void *vp, const uint8_t *txid, uint32_t index,
+                        uint64_t value, const uint8_t *spk, size_t spklen)
+{
+    struct blk_spk *o = (struct blk_spk *)vp;
+    (void)txid; (void)index; (void)value;
+    /* BIP158 skips OP_RETURN, so a filter not carrying one is right and a
+       caller comparing against the block would otherwise report it missing. */
+    if (spklen && spk[0] == 0x6a) return;
+    if (spklen) o->fn(o->ctx, spk, spklen);
+}
+
+int kw_block_out_scripts(const uint8_t *msg, size_t len,
+                         void (*fn)(void *ctx, const uint8_t *spk, size_t spklen),
+                         void *ctx)
+{
+    if (!msg || !fn || len < KW_HEADER_LEN + 1) return 0;
+    if (!kw_block_merkle_ok(msg, len)) return 0;
+    uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
+                       (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
+    size_t off = KW_HEADER_LEN;
+    if ((version & KW_BLOCK_VERSION_AUXPOW) && !kw_auxpow_skip(msg, len, &off)) return 0;
+    int bad = 0;
+    uint64_t ntx = rd_varint(msg, len, &off, &bad);
+    if (bad || ntx > (uint64_t)len) return 0;
+
+    struct blk_spk o = { fn, ctx };
+    for (uint64_t i = 0; i < ntx; i++) {
+        size_t consumed = kw_tx_scan(msg + off, len - off, NULL, NULL, blk_spk_out, &o);
+        if (!consumed) return 0;
+        off += consumed;
+    }
+    return 1;
+}
+
 /* ── targeted outpoint scan ──────────────────────────────────── */
 struct fo_ctx {
     const uint8_t *txid; uint32_t vout;

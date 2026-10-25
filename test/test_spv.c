@@ -46,6 +46,18 @@ static const char *CB_RAW =
 static const char *CB_TXID = "ae40fe874a187047a985149639ef8076a91b68b629a019d6189cd346e17512d1";
 static const char *CB_SPK  = "76a91482425f7352322594ecdfd142573216ec88e9dd3d88ac";
 
+/* collects the scriptPubKeys kw_block_out_scripts hands over */
+struct spk_seen { int n; uint8_t spk[16][64]; size_t len[16]; };
+static void spk_collect(void *ctx, const uint8_t *spk, size_t spklen)
+{
+    struct spk_seen *s = (struct spk_seen *)ctx;
+    if (s->n < 16 && spklen <= sizeof s->spk[0]) {
+        memcpy(s->spk[s->n], spk, spklen);
+        s->len[s->n] = spklen;
+        s->n++;
+    }
+}
+
 int main(void)
 {
     /* getdata for two blocks: count, then (MSG_BLOCK, hash) each */
@@ -87,6 +99,37 @@ int main(void)
 
         /* a truncated block is rejected. */
         if (kw_block_scan(blk, blen - 3, us, ws, 102)) { fprintf(stderr, "FAIL: truncated block\n"); return 1; }
+
+        /* The same block, read for the scripts it creates. A filter has to carry
+           every one of these, so this is what an audit compares against. The
+           coinbase pays spk and the spend pays 'other', and both must appear. */
+        {
+            struct spk_seen seen;
+            memset(&seen, 0, sizeof seen);
+            if (!kw_block_out_scripts(blk, blen, spk_collect, &seen)) {
+                fprintf(stderr, "FAIL: could not read the block's output scripts\n"); return 1;
+            }
+            if (seen.n < 2) {
+                fprintf(stderr, "FAIL: expected at least 2 output scripts, got %d\n", seen.n);
+                return 1;
+            }
+            int found = 0;
+            for (int i = 0; i < seen.n; i++)
+                if (seen.len[i] == spklen && memcmp(seen.spk[i], spk, spklen) == 0) found = 1;
+            if (!found) {
+                fprintf(stderr, "FAIL: the watched script is not among the block's outputs\n");
+                return 1;
+            }
+            /* a body its header does not commit to yields nothing */
+            uint8_t tampered[2048];
+            memcpy(tampered, blk, blen);
+            tampered[KW_HEADER_LEN + 8] ^= 0xff;
+            memset(&seen, 0, sizeof seen);
+            if (kw_block_out_scripts(tampered, blen, spk_collect, &seen)) {
+                fprintf(stderr, "FAIL: scripts read out of a block the header does not commit to\n");
+                return 1;
+            }
+        }
 
         kw_utxoset_free(us); kw_watchset_free(ws);
     }
@@ -386,6 +429,6 @@ int main(void)
     printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
            "  an output that pays another script refused, a body its header does not\n"
            "  commit to refused, a block holding a 64-byte transaction still read,\n  an input-less transaction\n"
-           "  refused, and a repeated last node with it\n");
+           "  refused, a repeated last node with it, and a block's output scripts read\n  back with OP_RETURN skipped and a tampered body refused\n");
     return 0;
 }

@@ -53,6 +53,20 @@ int kw_block_scan(const uint8_t *msg, size_t len,
    Returns 0 on a malformed body too. */
 int kw_block_merkle_ok(const uint8_t *msg, size_t len);
 
+/* Hand every scriptPubKey the block creates to (fn), in order, skipping
+   OP_RETURN outputs because BIP158 excludes them and their absence from a
+   filter is correct rather than a gap. Verifies the merkle root first, so the
+   scripts are the ones the header commits to and not whatever the sender chose
+   to append. Returns 1, or 0 if the block is malformed.
+ *
+ * This is what a filter can be audited against: a basic filter has to carry
+ * every one of these, so a filter that omits one is a filter that would have
+ * hidden a payment. See kw_gcs_covers, and note it is only half the filter;
+ * the scripts a block spends are not in the block. */
+int kw_block_out_scripts(const uint8_t *msg, size_t len,
+                         void (*fn)(void *ctx, const uint8_t *spk, size_t spklen),
+                         void *ctx);
+
 /* Download one block by hash over (p) and check that it is the block asked for.
    On success returns 1 with (payload)/(plen) pointing at peer-owned storage valid
    until the next recv.
