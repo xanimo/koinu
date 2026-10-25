@@ -6,6 +6,7 @@
 #include "siphash.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* Map a 64-bit hash uniformly into [0, F): the high half of the 128-bit
    product. __uint128_t is a 64-bit-target extension, so the fallback does the
@@ -108,6 +109,106 @@ static int cmp_u64(const void *a, const void *b)
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return (x > y) - (x < y);
 }
+
+/* MSB-first bit writer, the mirror of bitr above. */
+typedef struct { uint8_t *p; size_t cap, pos; int bad; } bitw;
+
+static void wbit(bitw *b, int v)
+{
+    if (b->pos >= b->cap * 8) { b->bad = 1; return; }
+    if (v) b->p[b->pos >> 3] |= (uint8_t)(1u << (7 - (b->pos & 7)));
+    b->pos++;
+}
+
+static void wbits(bitw *b, uint64_t v, int n)
+{
+    for (int i = n - 1; i >= 0; i--) wbit(b, (int)((v >> i) & 1));
+}
+
+/* Golomb-Rice: the quotient in unary, terminated by a zero, then P bits of
+   remainder. gr_next reads exactly this. */
+static void gr_put(bitw *b, uint64_t d)
+{
+    uint64_t q = d >> KW_GCS_P;
+    /* A quotient is bounded in practice by the range, but a caller could hand
+       over anything, and an unbounded unary run would write until the buffer
+       ends. The bad flag stops it either way. */
+    while (q-- > 0 && !b->bad) wbit(b, 1);
+    wbit(b, 0);
+    wbits(b, d & (((uint64_t)1 << KW_GCS_P) - 1), KW_GCS_P);
+}
+
+static int cmp_item(const void *a, const void *b)
+{
+    const kw_gcs_item *x = (const kw_gcs_item *)a, *y = (const kw_gcs_item *)b;
+    size_t n = x->len < y->len ? x->len : y->len;
+    int c = n ? memcmp(x->script, y->script, n) : 0;
+    if (c) return c;
+    return x->len < y->len ? -1 : x->len > y->len ? 1 : 0;
+}
+
+long kw_gcs_build(const uint8_t block_hash[32], const kw_gcs_item *items, size_t nitems,
+                  uint8_t *out, size_t outcap)
+{
+    if (!block_hash || !out) return -1;
+    if (nitems && !items) return -1;
+
+    /* Deduplicate as byte strings first: N is the size of the deduplicated set
+       and it feeds the mapping, so counting duplicates moves every value. */
+    kw_gcs_item *sorted = NULL;
+    size_t n = 0;
+    if (nitems) {
+        sorted = (kw_gcs_item *)malloc(nitems * sizeof *sorted);
+        if (!sorted) return -1;
+        for (size_t i = 0; i < nitems; i++) {
+            if (!items[i].script && items[i].len) { free(sorted); return -1; }
+            sorted[n++] = items[i];
+        }
+        qsort(sorted, n, sizeof *sorted, cmp_item);
+        size_t w = 1;
+        for (size_t i = 1; i < n; i++)
+            if (cmp_item(&sorted[i], &sorted[w - 1]) != 0) sorted[w++] = sorted[i];
+        n = w;
+    }
+
+    uint64_t *vals = NULL;
+    if (n) {
+        vals = (uint64_t *)malloc(n * sizeof *vals);
+        if (!vals) { free(sorted); return -1; }
+        for (size_t i = 0; i < n; i++)
+            vals[i] = kw_gcs_hash(block_hash, (uint64_t)n, sorted[i].script, sorted[i].len);
+        qsort(vals, n, sizeof *vals, cmp_u64);
+    }
+    free(sorted);
+
+    /* varint N, then the delta stream */
+    size_t off = 0;
+    if (n < 0xfd) {
+        if (outcap < 1) { free(vals); return -1; }
+        out[off++] = (uint8_t)n;
+    } else if (n <= 0xffff) {
+        if (outcap < 3) { free(vals); return -1; }
+        out[off++] = 0xfd;
+        out[off++] = (uint8_t)(n & 0xff);
+        out[off++] = (uint8_t)((n >> 8) & 0xff);
+    } else {
+        if (outcap < 5) { free(vals); return -1; }
+        out[off++] = 0xfe;
+        for (int i = 0; i < 4; i++) out[off++] = (uint8_t)((n >> (8 * i)) & 0xff);
+    }
+
+    memset(out + off, 0, outcap - off);
+    bitw b = { out + off, outcap - off, 0, 0 };
+    uint64_t prev = 0;
+    for (size_t i = 0; i < n; i++) {
+        gr_put(&b, vals[i] - prev);
+        prev = vals[i];
+    }
+    free(vals);
+    if (b.bad) return -1;
+    return (long)(off + (b.pos + 7) / 8);
+}
+
 
 int kw_gcs_match_any(const uint8_t *filt, size_t flen, const uint8_t block_hash[32],
                      const kw_gcs_item *items, size_t nitems)

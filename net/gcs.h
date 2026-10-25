@@ -28,6 +28,25 @@ int kw_gcs_match_any(const uint8_t *filt, size_t flen, const uint8_t block_hash[
    or N exceeds (cap). For tests and inspection. */
 long kw_gcs_decode(const uint8_t *filt, size_t flen, uint64_t *out, size_t cap);
 
+/* Build a basic filter over (items) keyed by the block hash, into (out).
+   Returns the bytes written, or -1 if they do not fit or an item is malformed.
+ *
+ * The inverse of kw_gcs_decode, and the piece koinu lacked: it could read a
+ * filter and not make one, so every filter had to come from a node that serves
+ * BIP157. With this, anything holding a block can produce a filter over the
+ * scripts that block creates.
+ *
+ * Elements are deduplicated as byte strings before N is counted, because N
+ * feeds the mapping and getting it wrong moves every value. Callers pass the
+ * scripts; what belongs in a basic filter and what does not is their business,
+ * and kw_block_out_scripts already applies the OP_RETURN rule.
+ *
+ * Checked against the BIP158 vectors by rebuilding each one and requiring the
+ * bytes to equal what the spec publishes, which is the only standard worth
+ * holding an encoder to. */
+long kw_gcs_build(const uint8_t block_hash[32], const kw_gcs_item *items, size_t nitems,
+                  uint8_t *out, size_t outcap);
+
 /* 1 if every one of (items) is in the filter, 0 if one is not, with its index
    written to (missing), and -1 if the filter is malformed.
  *

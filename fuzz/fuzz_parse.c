@@ -302,6 +302,32 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             if (want != m) abort();
         }
         free(vals);
+
+        /* The encoder over the same items, and the property that pins it: a
+           filter built here has to contain every element it was built from.
+           Anything it drops is a payment a wallet would never see. */
+        if (k) {
+            size_t bcap = 64 + k * 16;
+            uint8_t *built = (uint8_t *)malloc(bcap);
+            if (built) {
+                long bn = kw_gcs_build(bh, items, k, built, bcap);
+                if (bn > 0) {
+                    for (size_t i = 0; i < k; i++) {
+                        if (!items[i].len) continue;
+                        if (kw_gcs_match_any(built, (size_t)bn, bh, &items[i], 1) != 1) abort();
+                    }
+                    size_t miss = 0;
+                    /* and the same answer through the coverage check, which a
+                       caller uses to audit someone else's filter */
+                    kw_gcs_item nonempty[8];
+                    size_t ne = 0;
+                    for (size_t i = 0; i < k; i++)
+                        if (items[i].len) nonempty[ne++] = items[i];
+                    if (ne && kw_gcs_covers(built, (size_t)bn, bh, nonempty, ne, &miss) != 1) abort();
+                }
+                free(built);
+            }
+        }
         break;
     }
     case 14: {                                 /* the filter cache and its sidecars */

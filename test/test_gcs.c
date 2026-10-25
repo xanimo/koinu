@@ -115,8 +115,79 @@ int main(void)
     }
 
 
+    /* The encoder, held to the only standard that means anything: rebuild each
+       published filter from its own elements and require the bytes to match.
+       A filter that merely decodes to the right values could still differ in
+       encoding; byte equality leaves nowhere for a mistake to hide. */
+    for (int k = 0; k < KW_BIP158_NVEC; k++) {
+        const kw_bip158_vec *v = &KW_BIP158_VECS[k];
+        uint8_t want[4096], hash[32], got[4096];
+        int wlen = kw_test_unhex(v->filter, want);
+        kw_test_unhex(v->hash_internal, hash);
+
+        static uint8_t ebuf[80][4096];
+        kw_gcs_item items[80];
+        int n = v->nelem < 80 ? v->nelem : 80;
+        for (int i = 0; i < n; i++) {
+            int el = kw_test_unhex(v->elems[i], ebuf[i]);
+            items[i].script = ebuf[i];
+            items[i].len = (size_t)el;
+        }
+
+        long bn = kw_gcs_build(hash, items, (size_t)n, got, sizeof got);
+        if (bn < 0) { fprintf(stderr, "FAIL: %s did not build\n", v->name); return 1; }
+        if (bn != wlen || memcmp(got, want, (size_t)wlen) != 0) {
+            fprintf(stderr, "FAIL: %s rebuilt to %ld bytes, published is %d\n",
+                    v->name, bn, wlen);
+            return 1;
+        }
+    }
+
+    /* an empty filter is a lone varint zero, and decodes as none */
+    {
+        uint8_t hash[32], got[8];
+        memset(hash, 0x11, sizeof hash);
+        long bn = kw_gcs_build(hash, NULL, 0, got, sizeof got);
+        if (bn != 1 || got[0] != 0) {
+            fprintf(stderr, "FAIL: the empty filter is %ld bytes\n", bn); return 1;
+        }
+        uint64_t none[1];
+        if (kw_gcs_decode(got, 1, none, 1) != 0) {
+            fprintf(stderr, "FAIL: the empty filter did not decode as empty\n"); return 1;
+        }
+    }
+
+    /* duplicates are one element: N feeds the mapping, so counting a script
+       twice would move every value and the filter would match nothing */
+    {
+        const kw_bip158_vec *v = &KW_BIP158_VECS[0];
+        uint8_t hash[32], e[4096], a[4096], b[4096];
+        kw_test_unhex(v->hash_internal, hash);
+        int el = kw_test_unhex(v->elems[0], e);
+        kw_gcs_item one[1] = { { e, (size_t)el } };
+        kw_gcs_item two[2] = { { e, (size_t)el }, { e, (size_t)el } };
+        long na = kw_gcs_build(hash, one, 1, a, sizeof a);
+        long nb = kw_gcs_build(hash, two, 2, b, sizeof b);
+        if (na < 1 || na != nb || memcmp(a, b, (size_t)na) != 0) {
+            fprintf(stderr, "FAIL: a repeated element changed the filter\n"); return 1;
+        }
+    }
+
+    /* a buffer too small is refused, not truncated */
+    {
+        const kw_bip158_vec *v = &KW_BIP158_VECS[0];
+        uint8_t hash[32], e[4096], tiny[2];
+        kw_test_unhex(v->hash_internal, hash);
+        int el = kw_test_unhex(v->elems[0], e);
+        kw_gcs_item one[1] = { { e, (size_t)el } };
+        if (kw_gcs_build(hash, one, 1, tiny, sizeof tiny) != -1) {
+            fprintf(stderr, "FAIL: built into a buffer too small\n"); return 1;
+        }
+    }
+
     printf("gcs ok: %d BIP158 vectors, decode == hashed elements, match_any hits and misses,\n"
-           "  every vector covers its own elements and a foreign script is reported by index\n",
+           "  every vector covers its own elements and a foreign script is reported by index,\n"
+           "  and every published filter is rebuilt byte for byte from its own elements\n",
            KW_BIP158_NVEC);
     return 0;
 }
