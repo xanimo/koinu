@@ -3,6 +3,26 @@
 ## [Unreleased]
 
 ## What's Changed
+* kwd: serve the filter-header chain, so a filter source can be checked
+  A light client that takes BIP158 filters from one place has no way to tell a
+  missing entry from an empty block, and the filter it needs is the same filter
+  every other wallet needs. So kwd hands out the chain it has already verified:
+  `cfheaders <from> <count>` returns one filter header per height, bounded at
+  2000 a reply, from the sidecar's verified base rather than anything the
+  process invents. Nothing in it is private, and the asker names a height range
+  instead of an address, which is the whole difference from BIP37.
+
+  kw_cfstore_headers recomputes the chain from the kept filters on each call
+  rather than storing a second copy, and kw_cfstore_base reads the verified
+  base. The test checks the chain is really BIP157's by rebuilding it from the
+  vectors the other way, header(i) = step(hash256(filter_i), header(i-1)),
+  since a chain that is merely self-consistent would pass any check derived
+  from itself.
+
+  This is the first half of filters without waiting for Core to serve them: a
+  node that has them can pass them on, and because the receiver chains what it
+  gets to a compiled-in anchor, a server that lies is caught rather than
+  trusted.
 * test: a gate that cannot answer is not a gate that passes
   test_abi.sh asked the Makefile whether a shared library builds here by
   running a third make, and under make asan that query came back empty. The

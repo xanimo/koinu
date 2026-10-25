@@ -552,6 +552,56 @@ static long index_count(const char *path)
     return sz < 8 ? -1 : (sz - 8) / 8;
 }
 
+int kw_cfstore_base(const char *path, uint8_t out[32])
+{
+    long count = 0;
+    uint8_t hdr[32], base[32];
+    int has_base = 0;
+    if (!path || !out) return 0;
+    if (!fh_load(path, &count, hdr, base, &has_base) || !has_base) return 0;
+    memcpy(out, base, 32);
+    return 1;
+}
+
+/* One pass over the kept filters, hashing each into the running chain. Before
+   (from_height) the headers are computed and dropped, because each one is what
+   the next is built on; from there they are written out. */
+long kw_cfstore_headers(const char *path, uint32_t base_height, uint32_t from_height,
+                        const uint8_t base[32], uint8_t *out, size_t cap)
+{
+    if (!path || !base || !out || cap == 0 || from_height < base_height) return -1;
+
+    long have = kw_cfstore_count(path);
+    if (have < 0) return -1;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 4, SEEK_SET) != 0) { fclose(f); return -1; }
+
+    uint8_t cur[32];
+    memcpy(cur, base, 32);
+    size_t skip = (size_t)(from_height - base_height);
+    size_t wrote = 0;
+    int ok = 1;
+
+    for (size_t i = 0; i < (size_t)have && wrote < cap; i++) {
+        uint8_t h[32], fhash[32];
+        uint64_t fl;
+        if (fread(h, 1, 32, f) != 32 || !rd_varint(f, &fl) ||
+            fl > KW_CFSTORE_MAX_FILTER) { ok = 0; break; }
+        uint8_t *filt = (uint8_t *)malloc((size_t)fl ? (size_t)fl : 1);
+        if (!filt) { ok = 0; break; }
+        if (fread(filt, 1, (size_t)fl, f) != (size_t)fl) { free(filt); ok = 0; break; }
+        kw_hash256(filt, (size_t)fl, fhash);
+        free(filt);
+        kw_cf_header_step(fhash, cur, cur);
+        if (i >= skip) { memcpy(out + wrote * 32, cur, 32); wrote++; }
+    }
+    fclose(f);
+    if (!ok) return -1;
+    return (long)wrote;
+}
+
 long kw_cfstore_match_range(const char *path, const kw_headerstore *s, uint32_t base_height,
                             uint32_t from_height, const kw_gcs_item *items, size_t nitems,
                             uint32_t *heights, size_t cap)

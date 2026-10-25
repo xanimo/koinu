@@ -49,4 +49,28 @@ long kw_cfstore_match_range(const char *path, const kw_headerstore *s, uint32_t 
                             uint32_t from_height, const kw_gcs_item *items, size_t nitems,
                             uint32_t *heights, size_t cap);
 
+/* The filter-header chain over [from_height, from_height + cap), written to
+   (out) as (cap) 32-byte headers, newest last. Returns how many were written,
+   or -1.
+ *
+ * This is what makes a filter source checkable by someone who did not download
+ * it: a filter header commits to its filter and to every filter beneath it, so
+ * one header that chains to a compiled-in anchor settles the whole range below
+ * it. Recomputed from the kept filters on each call rather than stored, because
+ * the chain is a function of them and a second copy is a second thing to keep
+ * honest.
+ *
+ * O(from_height - base_height) per call: it walks from the base to reach the
+ * first requested height. A caller serving many ranges should ask for one wide
+ * range, not many narrow ones. */
+long kw_cfstore_headers(const char *path, uint32_t base_height, uint32_t from_height,
+                        const uint8_t base[32], uint8_t *out, size_t cap);
+
+/* The verified base that chain came from, read out of <path>.fh: the filter
+   header of the block before the first cached filter. 1, or 0 if the sidecar is
+   absent or never recorded one. A caller serving headers has to use this rather
+   than assume a base, or it publishes a chain rooted somewhere the peer never
+   agreed to. */
+int kw_cfstore_base(const char *path, uint8_t out[32]);
+
 #endif /* KOINU_CFSTORE_H */

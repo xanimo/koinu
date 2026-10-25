@@ -181,6 +181,41 @@ int main(void)
     if (r < 1 || heights[0] != 1) { fprintf(stderr, "FAIL: range match b (r=%ld)\n", r); return 1; }
     if (kw_cfstore_match_range(tmp, NULL, 0, 1, &it, 1, heights, 8) != 0) { fprintf(stderr, "FAIL: range skipped a\n"); return 1; }
 
+    /* The filter-header chain the store hands out has to be the real BIP157 one,
+       not merely self-consistent, so it is recomputed here from the vectors the
+       other direction: header(i) = step(hash256(filter_i), header(i-1)). A reader
+       that chains to a compiled-in anchor is trusting exactly this. */
+    {
+        uint8_t base[32], want_a[32], want_b[32], got[64];
+        memset(base, 0, 32);
+        uint8_t fah[32], fbh[32];
+        kw_hash256(fa, (size_t)fal, fah);
+        kw_hash256(fb, (size_t)fbl, fbh);
+        kw_cf_header_step(fah, base, want_a);
+        kw_cf_header_step(fbh, want_a, want_b);
+
+        long hn = kw_cfstore_headers(tmp, 0, 0, base, got, 2);
+        if (hn != 2) { fprintf(stderr, "FAIL: headers returned %ld\n", hn); return 1; }
+        if (memcmp(got, want_a, 32) || memcmp(got + 32, want_b, 32)) {
+            fprintf(stderr, "FAIL: the filter-header chain is not BIP157's\n"); return 1;
+        }
+
+        /* from_height skips the ones below it but must still have folded them
+           in, or the chain would be rooted at the wrong place */
+        if (kw_cfstore_headers(tmp, 0, 1, base, got, 1) != 1 ||
+            memcmp(got, want_b, 32)) {
+            fprintf(stderr, "FAIL: a ranged chain did not fold in what it skipped\n"); return 1;
+        }
+
+        /* cap bounds the write, and a from_height below the base is refused */
+        if (kw_cfstore_headers(tmp, 0, 0, base, got, 1) != 1) {
+            fprintf(stderr, "FAIL: cap not honoured\n"); return 1;
+        }
+        if (kw_cfstore_headers(tmp, 5, 4, base, got, 1) != -1) {
+            fprintf(stderr, "FAIL: a height below the base was accepted\n"); return 1;
+        }
+    }
+
     /* a corrupt tag is rejected */
     FILE *f = fopen(tmp, "r+b"); if (f) { fputc('X', f); fclose(f); }
     if (kw_cfstore_count(tmp) != -1) { fprintf(stderr, "FAIL: corrupt tag accepted\n"); return 1; }

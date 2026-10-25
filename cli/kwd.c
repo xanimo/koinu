@@ -10,7 +10,16 @@
  *   outpoint <address|spkhex> <txid:vout> <since>\n
  *
  * reply: "<rc> <text>\n", rc 0 unspent, 3 spent, 4 not seen, 5 unspent but an
- *   immature coinbase, 1 error. */
+ *   immature coinbase, 1 error.
+ *
+ *   cfheaders <from> <count>\n
+ *
+ * reply: "0 <from> <n>\n" then n lines of "<height> <filter header>\n", or
+ *   "<rc> <text>\n" on refusal. The filter-header chain this node verified,
+ *   handed out so a light client can check filters it got from somewhere else
+ *   against a second source. Nothing here is private: a filter is the same for
+ *   every wallet, which is what makes it shareable at all, and the asker
+ *   reveals a height range rather than an address. */
 
 #include "chainparams.h"
 #include "log.h"
@@ -185,6 +194,51 @@ static int write_all(int fd, const char *b, size_t n)
 }
 
 /* Handle one request line already read into (line). Writes the reply to (fd). */
+/* At most this many headers in one reply: 2000 * 65 bytes of hex is a 130 KB
+   answer, which is a sensible ceiling for a single-threaded accept loop that
+   answers one client at a time. A caller wanting more asks again from where it
+   stopped. */
+#define KWD_CFHEADERS_MAX 2000
+
+/* "cfheaders FROM COUNT" -> "0 FROM COUNT" then COUNT lines of "height hash",
+   the hash big-endian as everything else on this socket prints it. The filters
+   kwd caches start at height 1, and the chain they hang from is the verified
+   base in the sidecar rather than anything this process invents. */
+static void serve_cfheaders(const char *filters_path, const char *a, const char *b, int fd)
+{
+    char reply[128];
+    uint32_t from = 0, count = 0;
+    uint8_t base[32];
+
+    if (!g_filters) { write_all(fd, "2 no filters here\n", 18); return; }
+    if (!a || !b || !parse_u32(a, UINT32_MAX, &from) ||
+        !parse_u32(b, KWD_CFHEADERS_MAX, &count) || count == 0 || from == 0) {
+        write_all(fd, "1 bad request\n", 14); return;
+    }
+    if (!kw_cfstore_base(filters_path, base)) {
+        write_all(fd, "2 no verified base\n", 19); return;
+    }
+
+    uint8_t *out = (uint8_t *)malloc((size_t)count * 32);
+    if (!out) { write_all(fd, "5 out of memory\n", 16); return; }
+
+    long n = kw_cfstore_headers(filters_path, 1, from, base, out, count);
+    if (n <= 0) { free(out); write_all(fd, "4 none in that range\n", 21); return; }
+
+    int k = snprintf(reply, sizeof reply, "0 %u %ld\n", from, n);
+    if (k > 0 && write_all(fd, reply, (size_t)k)) {
+        for (long i = 0; i < n; i++) {
+            uint8_t disp[32];
+            char hex[65];
+            for (int j = 0; j < 32; j++) disp[j] = out[i * 32 + 31 - j];
+            kw_hex_encode(disp, 32, hex, sizeof hex);
+            k = snprintf(reply, sizeof reply, "%u %s\n", from + (uint32_t)i, hex);
+            if (k <= 0 || !write_all(fd, reply, (size_t)k)) break;
+        }
+    }
+    free(out);
+}
+
 static void handle(const kw_chainparams *cp, kw_headerstore *s,
                    const char *filters_path, const char *line, int fd)
 {
@@ -197,7 +251,20 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
     char *watch = strtok(NULL, " \t\r\n");
     char *op = strtok(NULL, " \t\r\n");
     char *sh = strtok(NULL, " \t\r\n");
-    if (!cmd || strcmp(cmd, "outpoint") || !watch || !op) {
+    if (!cmd) { write_all(fd, "1 bad request\n", 14); return; }
+
+    /* cfheaders FROM COUNT: the filter-header chain this node has verified, so
+       a light client can check filters it got from anywhere else against a
+       source that is not the one that served them. Public data, so serving it
+       costs this node no privacy and the asker reveals only a height range.
+       The two arguments land in (watch) and (op), which is what strtok gave
+       them; they are positional, not named. */
+    if (!strcmp(cmd, "cfheaders")) {
+        serve_cfheaders(filters_path, watch, op, fd);
+        return;
+    }
+
+    if (strcmp(cmd, "outpoint") || !watch || !op) {
         write_all(fd, "1 bad request\n", 14); return;
     }
 

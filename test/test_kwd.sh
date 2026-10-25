@@ -105,4 +105,25 @@ for BAD in "$OPTX::0" "$OPTX:0:junk" "$OPTX" "$OPTX:00"; do
         echo "FAIL: kwd took \"$BAD\" as an outpoint: $R" >&2; exit 1;; esac
 done
 
-echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request and one with no since height are refused, and the chain\n  it answers from is work-checked over two peers"
+# cfheaders is the serving half: a light client checks filters it got anywhere
+# else against this node's verified chain. The fake node here serves no filters,
+# so the interesting case is that kwd says so rather than inventing a chain, and
+# that the argument checks run before anything is read off disk.
+CFH=$(printf 'cfheaders 1 4\n' | nc -w 20 -U "$SOCK" 2>/dev/null | head -1 || true)
+case "$CFH" in
+    "2 no filters here"|"2 no verified base"|"4 none in that range") ;;
+    "0 "*) echo "FAIL: kwd served a filter chain it never verified: $CFH" >&2; exit 1;;
+    *) echo "FAIL: cfheaders answered '$CFH'" >&2; exit 1;;
+esac
+
+# a count past the cap, a zero count, a zero height and a missing argument are
+# all refused, and none of them may be answered with a chain
+for BAD in "1 0" "1 99999" "0 4" "1" "x 4" "1 y"; do
+    R=$(printf 'cfheaders %s\n' "$BAD" | nc -w 20 -U "$SOCK" 2>/dev/null | head -1 || true)
+    case "$R" in
+        "1 bad request"|"2 no filters here") ;;
+        *) echo "FAIL: cfheaders took \"$BAD\": $R" >&2; exit 1;;
+    esac
+done
+
+echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request and one with no since height are refused, the chain\n  it answers from is work-checked over two peers, and cfheaders refuses to\n  serve a chain it has not verified"
