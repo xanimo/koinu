@@ -11,10 +11,14 @@
  * is not extra information, it is bookkeeping, and keeping it is the whole
  * difference between consuming filters and producing them.
  *
- * This is deliberately not a chainstate. Core's carries the value, the height
- * and the coinbase flag per entry, and a filter needs none of them. Only the
- * script is kept, which is the one field that matters here and roughly halves
- * the cost before any packing.
+ * Only the script is kept, since a filter needs neither the value, the height
+ * nor the coinbase flag. That was argued here as roughly halving the cost
+ * against Core's chainstate and it does not: measured on dogecoin mainnet at
+ * height 6429620, Core holds 202671977 outputs in 13636287062 bytes, which is
+ * 67.3 an entry, and this map carries the script alone for 67.1. Core already
+ * compresses a script to a type byte and 20 bytes and an amount to a
+ * variable-length field, so there was nothing to win. The comparison was
+ * against an uncompressed chainstate that does not exist.
  *
  * Not a validating index either. Nothing here checks a signature or a consensus
  * rule; it records what the chain says so filters can be built from it. An
@@ -29,10 +33,14 @@
  *     20M outputs   1.3 GB steady   2.0 GB peak
  *     50M           3.4 GB          5.0 GB
  *    100M           6.7 GB         10.1 GB
+ *    203M          13.6 GB         20.4 GB    <- dogecoin mainnet, measured
  *
- * Which says plainly that this is a server's job at the top of that range and a
- * desktop's at the bottom, and that the UTXO count decides which. Only a node
- * can give it: gettxoutsetinfo, field txouts.
+ * At the real count an in-memory map is not viable: 13.6 GB of RAM to hold what
+ * Core holds in 13.6 GB of disk behind a cache. Doing better means a disk-backed
+ * store, which is reimplementing a chainstate, and the chain itself is 203.5 GB
+ * to fetch before any of it starts. So this is useful on regtest, on testnet and
+ * over a bounded range, and it is not the way to generate mainnet filters. The
+ * way to more filter providers is BIP157 in Core, not a second chainstate here.
  *
  * Two things would cut it when the count is known. Presizing removes the growth
  * spike and the repeated rehashing outright. Shrinking the key to 12 bytes and
