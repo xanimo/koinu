@@ -107,6 +107,59 @@ static void spk_push(void *ctx, const uint8_t *spk, size_t spklen)
     a->n++;
 }
 
+struct op_acc {
+    uint8_t (*ops)[36];
+    size_t n, cap;
+    int oom;
+};
+
+static void op_push(void *ctx, const uint8_t op[36])
+{
+    struct op_acc *a = (struct op_acc *)ctx;
+    if (a->oom) return;
+    if (a->n == a->cap) {
+        size_t nc = a->cap ? a->cap * 2 : 64;
+        uint8_t (*no)[36] = (uint8_t (*)[36])realloc(a->ops, nc * 36);
+        if (!no) { a->oom = 1; return; }
+        a->ops = no;
+        a->cap = nc;
+    }
+    /* Copied rather than borrowed: the 36 bytes are assembled per input and do
+       not live in the block contiguously. */
+    memcpy(a->ops[a->n], op, 36);
+    a->n++;
+}
+
+long kw_cf_build_spent(const uint8_t *block, size_t blen, uint8_t *out, size_t outcap)
+{
+    uint8_t bh[32];
+    struct op_acc acc;
+    kw_gcs_item *items = NULL;
+    long n;
+
+    if (!block || !out || blen < 80) return -1;
+    memset(&acc, 0, sizeof acc);
+
+    if (!kw_block_spent_outpoints(block, blen, op_push, &acc) || acc.oom) {
+        free(acc.ops);
+        return -1;
+    }
+    if (acc.n) {
+        items = (kw_gcs_item *)malloc(acc.n * sizeof *items);
+        if (!items) { free(acc.ops); return -1; }
+        for (size_t i = 0; i < acc.n; i++) {
+            items[i].script = acc.ops[i];
+            items[i].len = 36;
+        }
+    }
+
+    kw_hash256(block, 80, bh);
+    n = kw_gcs_build(bh, items, acc.n, out, outcap);
+    free(items);
+    free(acc.ops);
+    return n;
+}
+
 long kw_cf_build_creation(const uint8_t *block, size_t blen, uint8_t *out, size_t outcap)
 {
     uint8_t bh[32];

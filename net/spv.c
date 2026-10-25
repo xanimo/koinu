@@ -198,6 +198,46 @@ int kw_block_out_scripts(const uint8_t *msg, size_t len,
     return 1;
 }
 
+struct blk_op { void (*fn)(void *, const uint8_t *); void *ctx; };
+
+static void blk_op_in(void *vp, const uint8_t prev[32], uint32_t vout)
+{
+    struct blk_op *o = (struct blk_op *)vp;
+    uint8_t op[36];
+    static const uint8_t null32[32] = { 0 };
+    /* The coinbase spends the null outpoint, which is not a coin anyone holds. */
+    if (memcmp(prev, null32, 32) == 0 && vout == 0xffffffffu) return;
+    memcpy(op, prev, 32);
+    op[32] = (uint8_t)(vout & 0xff);
+    op[33] = (uint8_t)((vout >> 8) & 0xff);
+    op[34] = (uint8_t)((vout >> 16) & 0xff);
+    op[35] = (uint8_t)((vout >> 24) & 0xff);
+    o->fn(o->ctx, op);
+}
+
+int kw_block_spent_outpoints(const uint8_t *msg, size_t len,
+                             void (*fn)(void *ctx, const uint8_t op[36]),
+                             void *ctx)
+{
+    if (!msg || !fn || len < KW_HEADER_LEN + 1) return 0;
+    if (!kw_block_merkle_ok(msg, len)) return 0;
+    uint32_t version = (uint32_t)msg[0] | (uint32_t)msg[1] << 8 |
+                       (uint32_t)msg[2] << 16 | (uint32_t)msg[3] << 24;
+    size_t off = KW_HEADER_LEN;
+    if ((version & KW_BLOCK_VERSION_AUXPOW) && !kw_auxpow_skip(msg, len, &off)) return 0;
+    int bad = 0;
+    uint64_t ntx = rd_varint(msg, len, &off, &bad);
+    if (bad || ntx > (uint64_t)len) return 0;
+
+    struct blk_op o = { fn, ctx };
+    for (uint64_t i = 0; i < ntx; i++) {
+        size_t consumed = kw_tx_scan(msg + off, len - off, NULL, blk_op_in, NULL, &o);
+        if (!consumed) return 0;
+        off += consumed;
+    }
+    return 1;
+}
+
 /* ── targeted outpoint scan ──────────────────────────────────── */
 struct fo_ctx {
     const uint8_t *txid; uint32_t vout;

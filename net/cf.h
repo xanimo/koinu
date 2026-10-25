@@ -72,6 +72,14 @@ int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
  * cheap where rebuilding every script on the chain is not. */
 #define KW_CF_TYPE_BASIC     0x00
 #define KW_CF_TYPE_CREATION  0xc1
+#define KW_CF_TYPE_SPENT     0xc2
+
+/* 0xc1 and 0xc2 are kept as a fallback and are not the intended route. A
+   machine that processes blocks in order has already seen every prevout it will
+   need, so it can keep a script-only map and emit real basic filters, which
+   every light client already speaks. Two private types would fragment a layer
+   whose whole value is being universal. Use them where no basic filter can be
+   had; prefer generating basic filters. */
 
 /* Build the creation filter for a serialized block into (out). Returns the
    bytes written, or -1 if the block is malformed or they do not fit.
@@ -82,6 +90,21 @@ int kw_msg_cfheaders_parse(const uint8_t *payload, size_t len,
  * makes the two comparable: a basic filter that does not contain all of these
  * is a basic filter that is lying. */
 long kw_cf_build_creation(const uint8_t *block, size_t blen, uint8_t *out, size_t outcap);
+
+/* Build the spent-outpoint filter for a block: the 36-byte outpoints its inputs
+   consume, keyed by the block hash. Also generatable from the block alone, and
+   it is the half that restores the privacy a creation filter gives up.
+ *
+ * A wallet knows the outpoints of the coins it holds, so it tests those against
+ * this locally and learns a coin moved without naming it to anyone. The
+ * alternative, asking a peer whether a given outpoint is spent, tells that peer
+ * the coin is yours; this sends nothing. Pair it with the creation filter and a
+ * wallet needs no unspent set and no query to track both directions.
+ *
+ * It does need the wallet to know its outpoints, which a wallet restored from
+ * words does not until the creation filter has found its coins. That ordering
+ * is the cost of keying on outpoints rather than on scripts. */
+long kw_cf_build_spent(const uint8_t *block, size_t blen, uint8_t *out, size_t outcap);
 
 /* One link of the BIP157 filter-header chain:
    out = sha256d(filter_hash || prev). out may alias prev. */

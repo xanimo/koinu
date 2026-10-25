@@ -67,6 +67,24 @@ int kw_block_out_scripts(const uint8_t *msg, size_t len,
                          void (*fn)(void *ctx, const uint8_t *spk, size_t spklen),
                          void *ctx);
 
+/* The other direction: every outpoint the block spends, handed to (fn) as the
+   36 bytes an input carries, txid in internal order then the index little
+   endian. The coinbase input is skipped, since its outpoint is the null one and
+   spends nothing.
+ *
+ * This is in the block, which is the whole point. A wallet knows the outpoints
+ * of the coins it holds, so it can test them against a filter built from these
+ * and learn that a coin moved without asking anyone about it. BIP158 keys its
+ * spent side on scripts instead, which needs the chain's unspent set to build
+ * and lets a wallet that knows only its addresses detect a spend; keyed on
+ * outpoints it builds from the block alone and the wallet has to know its own
+ * outpoints first, which it does once it has found its coins.
+ *
+ * Merkle root checked first, as above. Returns 1, or 0 if malformed. */
+int kw_block_spent_outpoints(const uint8_t *msg, size_t len,
+                             void (*fn)(void *ctx, const uint8_t op[36]),
+                             void *ctx);
+
 /* Download one block by hash over (p) and check that it is the block asked for.
    On success returns 1 with (payload)/(plen) pointing at peer-owned storage valid
    until the next recv.

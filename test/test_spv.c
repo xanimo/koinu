@@ -221,6 +221,45 @@ int main(void)
         if (kw_utxoset_count(us) != 0 || kw_utxoset_balance(us) != 0) {
             fprintf(stderr, "FAIL: intra-block spend (count %zu)\n", kw_utxoset_count(us)); return 1;
         }
+
+        /* The spent half, keyed on outpoints rather than scripts, so it builds
+           from the block alone. This block's second transaction consumes
+           CB_TXID:0, so a wallet holding that coin sees it move by testing its
+           own outpoint locally, with nothing sent to anyone. */
+        {
+            uint8_t sfilt[4096], bh[32], mine[36], nope[36], nul[36];
+            long sn = kw_cf_build_spent(blk, n, sfilt, sizeof sfilt);
+            if (sn <= 0) { fprintf(stderr, "FAIL: spent filter not built (%ld)\n", sn); return 1; }
+            kw_hash256(blk, 80, bh);
+
+            /* CB_TXID is display order; an outpoint carries it internal */
+            uint8_t disp[32];
+            kw_test_unhex(CB_TXID, disp);
+            for (int i = 0; i < 32; i++) mine[i] = disp[31 - i];
+            mine[32] = mine[33] = mine[34] = mine[35] = 0;
+            kw_gcs_item it_mine = { mine, 36 };
+            if (kw_gcs_match_any(sfilt, (size_t)sn, bh, &it_mine, 1) != 1) {
+                fprintf(stderr, "FAIL: the spent filter misses the outpoint this block consumes\n");
+                return 1;
+            }
+
+            memcpy(nope, mine, 36);
+            nope[0] ^= 0xff;
+            kw_gcs_item it_no = { nope, 36 };
+            if (kw_gcs_match_any(sfilt, (size_t)sn, bh, &it_no, 1) != 0) {
+                fprintf(stderr, "FAIL: the spent filter matched an outpoint never touched\n");
+                return 1;
+            }
+
+            /* the coinbase spends nothing, so its null outpoint is not in here */
+            memset(nul, 0, 32);
+            nul[32] = nul[33] = nul[34] = nul[35] = 0xff;
+            kw_gcs_item it_nul = { nul, 36 };
+            if (kw_gcs_match_any(sfilt, (size_t)sn, bh, &it_nul, 1) != 0) {
+                fprintf(stderr, "FAIL: the coinbase null outpoint is in the spent filter\n");
+                return 1;
+            }
+        }
         kw_utxoset_free(us); kw_watchset_free(ws);
     }
 
@@ -473,6 +512,6 @@ int main(void)
     printf("spv ok: getdata inv, block scan, auxpow skip, intra-block spend, find_outpoint,\n"
            "  an output that pays another script refused, a body its header does not\n"
            "  commit to refused, a block holding a 64-byte transaction still read,\n  an input-less transaction\n"
-           "  refused, a repeated last node with it, and a block's output scripts read\n  back with OP_RETURN skipped and a tampered body refused,\n  a creation filter built from a block alone that finds what it pays\n");
+           "  refused, a repeated last node with it, and a block's output scripts read\n  back with OP_RETURN skipped and a tampered body refused,\n  a creation filter built from a block alone that finds what it pays,\n  and a spent-outpoint filter that sees a coin move with nothing asked\n");
     return 0;
 }
