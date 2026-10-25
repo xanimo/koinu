@@ -94,6 +94,8 @@ static void usage(void)
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
+      "  cfcheck  --daemon SOCKET [--daemon SOCKET] --since HEIGHT [--count N]\n"
+      "           (check a filter source against the anchors, and against another)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor] [--yes]\n"
       "  psbt     build --utxos PATH --to ADDR:AMOUNT --xpub XPUB (watch only)\n"
       "           or --keystore PATH [--passphrase @FILE|-]\n"
@@ -2299,6 +2301,147 @@ out:
    already spent), 1 on error. Lets a caller confirm a funding output to its own
    depth policy without trusting a claimed height. */
 /* Ask a running kwd over its unix socket. Prints the reply text, returns its rc. */
+/* Read a "0 from n" header then n lines of "height hex" from a kwd socket into
+   (out). Returns how many headers landed, or -1 with a reason on stderr. The
+   reply is read whole before parsing: these are small, and a line-at-a-time
+   reader over a socket is a second thing to get wrong. */
+static long cfheaders_from(const char *sock, uint32_t from, uint32_t count,
+                           uint8_t *out, uint32_t *first)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { fprintf(stderr, "kw: socket\n"); return -1; }
+    struct sockaddr_un sa; memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", sock);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        fprintf(stderr, "kw: cannot reach daemon at %s\n", sock); close(fd); return -1;
+    }
+    /* The read below ends at EOF, so without this a source that answers and
+       never closes holds the wallet forever. A filter source is someone else's
+       machine and may be hostile; it does not get to decide how long kw waits. */
+    struct timeval tv = { 20, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    char req[128];
+    int rn = snprintf(req, sizeof req, "cfheaders %u %u\n", from, count);
+    if (rn <= 0 || write(fd, req, (size_t)rn) != rn) { close(fd); return -1; }
+
+    size_t cap = (size_t)count * 72 + 256, len = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { close(fd); fprintf(stderr, "kw: out of memory\n"); return -1; }
+    for (;;) {
+        ssize_t r = read(fd, buf + len, cap - len - 1);
+        if (r <= 0) break;
+        len += (size_t)r;
+        if (len + 1 >= cap) break;
+    }
+    close(fd);
+    buf[len] = '\0';
+    if (!len) { free(buf); fprintf(stderr, "kw: no reply from %s\n", sock); return -1; }
+
+    if (buf[0] != '0') {
+        char *nl = strchr(buf, '\n'); if (nl) *nl = '\0';
+        fprintf(stderr, "kw: %s refused: %s\n", sock, buf);
+        free(buf); return -1;
+    }
+    unsigned got_from = 0, got_n = 0;
+    if (sscanf(buf, "0 %u %u", &got_from, &got_n) != 2 || got_n > count) {
+        fprintf(stderr, "kw: %s sent a header line kw cannot read\n", sock);
+        free(buf); return -1;
+    }
+    *first = got_from;
+
+    char *line = strchr(buf, '\n');
+    long n = 0;
+    while (line && n < (long)got_n) {
+        unsigned h = 0; char hex[80];
+        if (sscanf(++line, "%u %79s", &h, hex) != 2) break;
+        if (h != got_from + (unsigned)n || strlen(hex) != 64 ||
+            !kw_hex_decode(hex, 64, out + n * 32, 32)) {
+            fprintf(stderr, "kw: %s sent a bad header at %u\n", sock, h);
+            free(buf); return -1;
+        }
+        /* stored big-endian on the wire, internal order in memory */
+        for (int k = 0; k < 16; k++) {
+            uint8_t t = out[n * 32 + k];
+            out[n * 32 + k] = out[n * 32 + 31 - k];
+            out[n * 32 + 31 - k] = t;
+        }
+        n++;
+        line = strchr(line, '\n');
+    }
+    free(buf);
+    if (n != (long)got_n) { fprintf(stderr, "kw: %s promised %u headers and sent %ld\n", sock, got_n, n); return -1; }
+    return n;
+}
+
+/* What makes a filter source checkable: the chain it serves has to agree with
+   the anchors compiled in here, and where two sources are given, with each
+   other. A single source that matches every anchor it covers is still only one
+   source above the last one, and this says so rather than implying otherwise. */
+static int cmd_cfcheck(const kw_chainparams *cp, const char *sock_a, const char *sock_b,
+                       long since, long count)
+{
+    if (!sock_a) { usage(); return 2; }
+    if (since <= 0) {
+        fprintf(stderr, "kw: cfcheck needs --since HEIGHT\n");
+        return 2;
+    }
+    if (count <= 0 || count > 2000) count = 2000;
+
+    uint8_t *a = (uint8_t *)malloc((size_t)count * 32);
+    uint8_t *b = sock_b ? (uint8_t *)malloc((size_t)count * 32) : NULL;
+    if (!a || (sock_b && !b)) { free(a); free(b); fprintf(stderr, "kw: out of memory\n"); return 1; }
+
+    uint32_t fa = 0, fb = 0;
+    long na = cfheaders_from(sock_a, (uint32_t)since, (uint32_t)count, a, &fa);
+    if (na < 0) { free(a); free(b); return 1; }
+    printf("%-28s %ld header(s) from %u\n", sock_a, na, fa);
+
+    /* every anchor the range covers has to match, and an anchor that matches is
+       worth more than any number of peers agreeing */
+    int anchors = 0, bad = 0;
+    for (long i = 0; i < na; i++) {
+        uint32_t h = fa + (uint32_t)i;
+        if (!kw_cf_anchor_ok(cp, h, a + i * 32)) {
+            printf("  MISMATCH at %u against the compiled-in anchor\n", h);
+            bad++;
+        } else {
+            /* kw_cf_anchor_ok is vacuously true where no anchor sits, so the
+               table is consulted directly to tell "pinned" from "unexamined" */
+            for (size_t k = 0; k < cp->ncfcheckpoints; k++)
+                if (cp->cfcheckpoints[k].height == h) { anchors++; break; }
+        }
+    }
+    if (bad) { free(a); free(b); return 1; }
+    if (anchors) printf("  %d anchor(s) in range matched\n", anchors);
+    else printf("  no anchor falls in this range, so nothing here is pinned\n");
+
+    if (!sock_b) {
+        printf("one source, so nothing compared its chain against another's; "
+               "pass --daemon twice for that\n");
+        free(a); free(b);
+        return anchors ? 0 : 1;
+    }
+
+    long nb = cfheaders_from(sock_b, (uint32_t)since, (uint32_t)count, b, &fb);
+    if (nb < 0) { free(a); free(b); return 1; }
+    printf("%-28s %ld header(s) from %u\n", sock_b, nb, fb);
+
+    long common = na < nb ? na : nb;
+    for (long i = 0; i < common; i++) {
+        if (memcmp(a + i * 32, b + i * 32, 32) != 0) {
+            printf("  DIVERGE at %u: the two sources do not serve the same chain\n",
+                   fa + (uint32_t)i);
+            free(a); free(b);
+            return 1;
+        }
+    }
+    printf("  %ld header(s) agree across both\n", common);
+    free(a); free(b);
+    return 0;
+}
+
 static int outpoint_via_daemon(const char *sock, const char *watch, const char *op, long since)
 {
     if (!watch || !op) { usage(); return 2; }
@@ -4207,6 +4350,8 @@ int main(int argc, char **argv)
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL, *utxo_arg = NULL;
+    const char *daemon2_arg = NULL;
+    long count_arg = 0;
     const char *psbt_arg = NULL, *script_arg = NULL, *sub = NULL, *psbts[8];
     const char *groups_arg = NULL, *bpass_arg = NULL, *shares_arg = NULL;
     const char *format_arg = NULL, *id_arg = NULL;
@@ -4268,7 +4413,17 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--since"))    { uint32_t u = 0;
             if (!arg_u32("--since", NEXT(), INT32_MAX, &u)) return 2;
             since = (long)u; }
-        else if (!strcmp(a, "--daemon"))     daemon_arg = NEXT();
+        else if (!strcmp(a, "--daemon")) {
+            /* twice means two sources to compare, which is the only way the
+               agreement cfcheck reports means anything */
+            const char *v = NEXT();
+            if (!daemon_arg) daemon_arg = v;
+            else if (!daemon2_arg) daemon2_arg = v;
+            else { fprintf(stderr, "kw: at most two --daemon sockets\n"); return 2; }
+        }
+        else if (!strcmp(a, "--count"))    { uint32_t u = 0;
+            if (!arg_u32("--count", NEXT(), 2000, &u)) return 2;
+            count_arg = (long)u; }
         else if (!strcmp(a, "--tx"))         tx_arg = NEXT();
         else if (!strcmp(a, "--redeem"))     redeem_arg = NEXT();
         else if (!strcmp(a, "--utxo"))       utxo_arg = NEXT();
@@ -4327,6 +4482,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, watch_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
+    else if (!strcmp(cmd, "cfcheck")) rc = cmd_cfcheck(cp, daemon_arg, daemon2_arg, since, count_arg);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);

@@ -3,6 +3,18 @@
 ## [Unreleased]
 
 ## What's Changed
+* kw cfcheck: hold a filter source to the anchors, and to a second source
+  The serving half is only worth having if a client can judge what it gets.
+  `kw cfcheck --daemon SOCK [--daemon SOCK2] --since H` reads a filter-header
+  chain off a kwd socket, checks every compiled-in anchor the range covers, and
+  where two sockets are given, checks the two against each other. A chain that
+  contradicts an anchor is refused. A single source that matches every anchor is
+  still one source above the last one, and it says so in the same words koinu
+  already uses for chain work rather than implying agreement it did not get.
+
+  The read now carries a 20 second receive timeout. It ends at EOF, so without
+  one a source that answers and never closes held the wallet forever, and a
+  filter source is someone else's machine.
 * kwd: serve the filters themselves, streamed rather than buffered
   `cffilters <from> <count>` completes the pair: cfheaders says what the chain
   commits to and this hands over the bytes it commits to, so a client can take
