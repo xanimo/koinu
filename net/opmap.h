@@ -20,10 +20,25 @@
  * rule; it records what the chain says so filters can be built from it. An
  * indexer is not a node.
  *
- * Memory: an entry is a 16-byte outpoint digest plus 21 bytes of script, and
- * the table runs at up to three quarters full, so a set of n outputs costs
- * roughly 50n bytes. The real figure needs the real UTXO count, which only a
- * node can give. The structure is replaceable if that number says it must be. */
+ * Memory, measured rather than estimated: a slot is 48 bytes and the table runs
+ * to three quarters full, so 3000000 entries occupied 4194304 slots for 201 MB,
+ * which is 67 bytes an entry. A growth doubles the table and the old one is
+ * still mapped while it is rehashed, so peak is about 1.5 times the steady
+ * figure: that run peaked at 296 MB of RSS.
+ *
+ *     20M outputs   1.3 GB steady   2.0 GB peak
+ *     50M           3.4 GB          5.0 GB
+ *    100M           6.7 GB         10.1 GB
+ *
+ * Which says plainly that this is a server's job at the top of that range and a
+ * desktop's at the bottom, and that the UTXO count decides which. Only a node
+ * can give it: gettxoutsetinfo, field txouts.
+ *
+ * Two things would cut it when the count is known. Presizing removes the growth
+ * spike and the repeated rehashing outright. Shrinking the key to 12 bytes and
+ * folding the overflow index into the script bytes takes the slot to 40, which
+ * with a higher load factor is nearer 47 bytes an entry. Neither is worth doing
+ * before the measurement says what is being optimised for. */
 
 #ifndef KOINU_OPMAP_H
 #define KOINU_OPMAP_H
