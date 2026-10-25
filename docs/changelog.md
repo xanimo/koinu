@@ -3,6 +3,19 @@
 ## [Unreleased]
 
 ## What's Changed
+* kw send: broadcast to every --node given, not just the last
+  --node has been repeatable for the header sync since 0.3.0, and send quietly
+  used only the last one. A transaction reaches the network through whichever
+  peer relays it first, so one unlucky or unreachable peer was the whole
+  broadcast; and a wallet that tells exactly one node what it is spending has
+  also told that node who is spending it. With --tor, which send already
+  supported, several peers is the difference between one party knowing and none.
+
+  The per-peer probe is unchanged, lifted whole into send_to_peer rather than
+  rewritten: it was tuned against a real node, down to the inventory timer
+  being a poisson draw averaging five seconds. One peer holding it is a
+  broadcast, and a reject from any peer outranks silence from the rest. Output
+  for a single --node is byte for byte what it was.
 * kw cfcheck: hold a filter source to the anchors, and to a second source
   The serving half is only worth having if a client can judge what it gets.
   `kw cfcheck --daemon SOCK [--daemon SOCK2] --since H` reads a filter-header

@@ -96,7 +96,8 @@ static void usage(void)
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  cfcheck  --daemon SOCKET [--daemon SOCKET] --since HEIGHT [--count N]\n"
       "           (check a filter source against the anchors, and against another)\n"
-      "  send     --tx HEX|@FILE|- --node HOST [--port N] [--tor] [--yes]\n"
+      "  send     --tx HEX|@FILE|- --node HOST [--node HOST ...] [--port N]\n"
+      "           [--tor] [--yes]   (--node repeats: relayed by whichever takes it)\n"
       "  psbt     build --utxos PATH --to ADDR:AMOUNT --xpub XPUB (watch only)\n"
       "           or --keystore PATH [--passphrase @FILE|-]\n"
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
@@ -2721,48 +2722,15 @@ static int show_tx(const kw_chainparams *cp, const uint8_t *raw, size_t rawlen,
    Core sends one as it processes the transaction, so this is short. */
 #define KW_SEND_REJECT_SECONDS 5
 
-static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node,
-                    int port, int tor, int assume_yes)
+/* One peer, start to finish: connect, hand over the transaction, and find out
+   whether it took it. Lifted out of cmd_send unchanged so that broadcasting to
+   several peers is a loop rather than a second copy of a probe that was tuned
+   against a real node. Returns what cmd_send used to: 0 held, 1 rejected or
+   failed, 4 sent but unacknowledged. */
+static int send_to_peer(const kw_chainparams *cp, const char *node, int port, int tor,
+                        const uint8_t *raw, size_t rawlen, const uint8_t txid[32],
+                        const char *txidhex)
 {
-    if (!tx_arg || !node) { usage(); return 2; }
-    if (port <= 0) port = cp->p2p_port;
-
-    char *txt = read_text(tx_arg);
-    if (!txt) { fprintf(stderr, "kw: cannot read --tx\n"); return 1; }
-    size_t hexlen = strlen(txt);
-    static uint8_t raw[16384];
-    if (hexlen == 0 || hexlen % 2 || hexlen / 2 > sizeof raw || !kw_hex_decode(txt, hexlen, raw, hexlen / 2)) {
-        fprintf(stderr, "kw: --tx is not valid hex\n"); free(txt); return 1;
-    }
-    size_t rawlen = hexlen / 2;
-    free(txt);
-
-    uint8_t txid[32], disp[32];
-    kw_hash256(raw, rawlen, txid);
-    for (int i = 0; i < 32; i++) disp[i] = txid[31 - i];
-    char txidhex[65]; kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
-
-    if (!show_tx(cp, raw, rawlen, txidhex)) return 1;
-
-    /* --tx - has already eaten stdin, and a pipe cannot answer, so a script has to
-       say --yes rather than have the prompt silently skipped for it. Exits 2, the
-       usage code: a caller reads the code, and a missing flag is not the same
-       answer as a node that refused the transaction. */
-    if (!assume_yes) {
-        int from_stdin = (tx_arg[0] == '-' && tx_arg[1] == '\0');
-        if (from_stdin || !isatty(STDIN_FILENO)) {
-            fprintf(stderr, "kw: refusing to broadcast without a confirmation; "
-                            "pass --yes\n");
-            return 2;
-        }
-        printf("broadcast to %s:%d? type yes: ", node, port);
-        fflush(stdout);
-        char answer[16] = "";
-        if (!fgets(answer, sizeof answer, stdin)) return 1;
-        answer[strcspn(answer, "\r\n")] = '\0';
-        if (strcmp(answer, "yes") != 0) { fprintf(stderr, "kw: not broadcast\n"); return 1; }
-    }
-
     kw_peer p;
     int conn = tor ? kw_peer_connect_socks5(&p, cp, node, port, 15, "127.0.0.1", 9050)
                    : kw_peer_connect(&p, cp, node, port, 10);
@@ -2908,6 +2876,74 @@ static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *no
 out:
     kw_peer_close(&p);
     return rc;
+}
+
+static int cmd_send(const kw_chainparams *cp, const char *tx_arg, const char *node,
+                    int port, int tor, int assume_yes)
+{
+    if (!tx_arg || !node) { usage(); return 2; }
+    if (port <= 0) port = cp->p2p_port;
+
+    char *txt = read_text(tx_arg);
+    if (!txt) { fprintf(stderr, "kw: cannot read --tx\n"); return 1; }
+    size_t hexlen = strlen(txt);
+    static uint8_t raw[16384];
+    if (hexlen == 0 || hexlen % 2 || hexlen / 2 > sizeof raw || !kw_hex_decode(txt, hexlen, raw, hexlen / 2)) {
+        fprintf(stderr, "kw: --tx is not valid hex\n"); free(txt); return 1;
+    }
+    size_t rawlen = hexlen / 2;
+    free(txt);
+
+    uint8_t txid[32], disp[32];
+    kw_hash256(raw, rawlen, txid);
+    for (int i = 0; i < 32; i++) disp[i] = txid[31 - i];
+    char txidhex[65]; kw_hex_encode(disp, 32, txidhex, sizeof txidhex);
+
+    if (!show_tx(cp, raw, rawlen, txidhex)) return 1;
+
+    /* --tx - has already eaten stdin, and a pipe cannot answer, so a script has to
+       say --yes rather than have the prompt silently skipped for it. Exits 2, the
+       usage code: a caller reads the code, and a missing flag is not the same
+       answer as a node that refused the transaction. */
+    if (!assume_yes) {
+        int from_stdin = (tx_arg[0] == '-' && tx_arg[1] == '\0');
+        if (from_stdin || !isatty(STDIN_FILENO)) {
+            fprintf(stderr, "kw: refusing to broadcast without a confirmation; "
+                            "pass --yes\n");
+            return 2;
+        }
+        if (g_nnodes > 1) printf("broadcast to %d peers? type yes: ", g_nnodes);
+        else              printf("broadcast to %s:%d? type yes: ", node, port);
+        fflush(stdout);
+        char answer[16] = "";
+        if (!fgets(answer, sizeof answer, stdin)) return 1;
+        answer[strcspn(answer, "\r\n")] = '\0';
+        if (strcmp(answer, "yes") != 0) { fprintf(stderr, "kw: not broadcast\n"); return 1; }
+    }
+
+    /* Every --node given, not just the last. A transaction reaches the network
+       through whichever peer relays it first, so one unlucky peer should not be
+       the whole broadcast, and a wallet that tells exactly one node what it is
+       spending has also told it who is spending. */
+    int held = 0, refused = 0, unknown = 0;
+    for (int i = 0; i < (g_nnodes ? g_nnodes : 1); i++) {
+        const char *n = g_nnodes ? g_nodes[i] : node;
+        if (g_nnodes > 1) printf("-- %s:%d\n", n, port);
+        int r = send_to_peer(cp, n, port, tor, raw, rawlen, txid, txidhex);
+        if (r == 0) held++;
+        else if (r == 4) unknown++;
+        else refused++;
+    }
+
+    if (g_nnodes > 1)
+        printf("%d of %d peer(s) hold it, %d unacknowledged, %d refused\n",
+               held, g_nnodes, unknown, refused);
+
+    /* One peer holding it is a broadcast; a reject from any peer is the network
+       saying no and outranks silence from the others. */
+    if (held) return 0;
+    if (refused) return 1;
+    return 4;
 }
 
 /* Co-sign one input of a P2SH multisig spend. Prints this key's signature for
