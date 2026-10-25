@@ -552,6 +552,47 @@ static long index_count(const char *path)
     return sz < 8 ? -1 : (sz - 8) / 8;
 }
 
+/* The highest filter-header anchor at or below (h), as internal byte order.
+   The table stores display order, which is how every other hash a user types or
+   reads is written. Returns its height, or 0 if none sits at or below. */
+static uint32_t anchor_below(const kw_chainparams *cp, uint32_t h, uint8_t out[32])
+{
+    uint32_t best = 0;
+    const char *hex = NULL;
+    if (!cp) return 0;
+    for (size_t i = 0; i < cp->ncfcheckpoints; i++) {
+        uint32_t ah = cp->cfcheckpoints[i].height;
+        if (ah <= h && ah >= best) { best = ah; hex = cp->cfcheckpoints[i].header; }
+    }
+    if (!best || !hex) return 0;
+    for (int i = 0; i < 32; i++) {
+        unsigned v = 0;
+        if (sscanf(hex + 2 * (31 - i), "%2x", &v) != 1) return 0;
+        out[i] = (uint8_t)v;
+    }
+    return best;
+}
+
+long kw_cfstore_headers_anchored(const kw_chainparams *cp, const char *path,
+                                 uint32_t base_height, uint32_t from_height,
+                                 uint8_t *out, size_t cap)
+{
+    uint8_t root[32];
+    uint32_t ah = anchor_below(cp, from_height, root);
+
+    if (!ah || ah < base_height) {
+        /* no anchor under this range: the sidecar's base is all there is, and a
+           v1 sidecar does not carry one */
+        uint8_t base[32];
+        if (!kw_cfstore_base(path, base)) return -1;
+        return kw_cfstore_headers(path, base_height, from_height, base, out, cap);
+    }
+
+    /* The anchor is the chain AT its own height, so the filter for that height is
+       already folded in and the walk resumes at the next one. */
+    return kw_cfstore_headers(path, ah + 1, from_height, root, out, cap);
+}
+
 long kw_cfstore_each(const char *path, uint32_t base_height, uint32_t from_height,
                      size_t count, kw_cfstore_filter_fn fn, void *ctx)
 {

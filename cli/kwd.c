@@ -268,25 +268,24 @@ static void serve_cffilters(const char *filters_path, const char *a, const char 
    the hash big-endian as everything else on this socket prints it. The filters
    kwd caches start at height 1, and the chain they hang from is the verified
    base in the sidecar rather than anything this process invents. */
-static void serve_cfheaders(const char *filters_path, const char *a, const char *b, int fd)
+static void serve_cfheaders(const kw_chainparams *cp, const char *filters_path,
+                            const char *a, const char *b, int fd)
 {
     char reply[128];
     uint32_t from = 0, count = 0;
-    uint8_t base[32];
 
     if (!g_filters) { write_all(fd, "2 no filters here\n", 18); return; }
     if (!a || !b || !parse_u32(a, UINT32_MAX, &from) ||
         !parse_u32(b, KWD_CFHEADERS_MAX, &count) || count == 0 || from == 0) {
         write_all(fd, "1 bad request\n", 14); return;
     }
-    if (!kw_cfstore_base(filters_path, base)) {
-        write_all(fd, "2 no verified base\n", 19); return;
-    }
-
     uint8_t *out = (uint8_t *)malloc((size_t)count * 32);
     if (!out) { write_all(fd, "5 out of memory\n", 16); return; }
 
-    long n = kw_cfstore_headers(filters_path, 1, from, base, out, count);
+    /* Rooted at the nearest anchor rather than the sidecar: the published cache
+       carries a v1 sidecar with no base, so asking for one refused to serve a
+       cache this node holds and has verified. */
+    long n = kw_cfstore_headers_anchored(cp, filters_path, 1, from, out, count);
     if (n <= 0) { free(out); write_all(fd, "4 none in that range\n", 21); return; }
 
     int k = snprintf(reply, sizeof reply, "0 %u %ld\n", from, n);
@@ -324,7 +323,7 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
        The two arguments land in (watch) and (op), which is what strtok gave
        them; they are positional, not named. */
     if (!strcmp(cmd, "cfheaders")) {
-        serve_cfheaders(filters_path, watch, op, fd);
+        serve_cfheaders(cp, filters_path, watch, op, fd);
         return;
     }
     if (!strcmp(cmd, "cffilters")) {

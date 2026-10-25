@@ -269,6 +269,19 @@ int main(void)
         }
     }
 
+    /* Rooted at an anchor rather than the sidecar. Regtest carries no filter
+       anchors, so the fallback is what runs here: with no anchor below the
+       range it must use the sidecar's base, and with no sidecar either it has
+       to fail rather than invent a root. The published mainnet cache has a v1
+       sidecar carrying no base, which is the case that made this necessary. */
+    {
+        uint8_t got[64];
+        /* no .fh beside this cache and no anchors on regtest: nothing to root at */
+        if (kw_cfstore_headers_anchored(&KW_DOGE_REGTEST, tmp, 0, 0, got, 2) != -1) {
+            fprintf(stderr, "FAIL: anchored headers invented a root\n"); return 1;
+        }
+    }
+
     /* a corrupt tag is rejected */
     FILE *f = fopen(tmp, "r+b"); if (f) { fputc('X', f); fclose(f); }
     if (kw_cfstore_count(tmp) != -1) { fprintf(stderr, "FAIL: corrupt tag accepted\n"); return 1; }

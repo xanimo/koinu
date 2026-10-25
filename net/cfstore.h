@@ -73,6 +73,24 @@ long kw_cfstore_headers(const char *path, uint32_t base_height, uint32_t from_he
    agreed to. */
 int kw_cfstore_base(const char *path, uint8_t out[32]);
 
+/* Like kw_cfstore_headers, but rooted at the highest filter-header anchor at or
+   below (from_height) rather than at the sidecar's base. Three reasons to prefer
+   it, and they all point the same way:
+ *
+ *   - it roots the chain in something this release pins instead of something a
+ *     peer once said, which is a stronger claim, not a weaker one;
+ *   - it works for a v1 sidecar, which records no base at all. The published
+ *     mainnet cache is v1, so without this a node cannot serve what it holds;
+ *   - it reads from the anchor rather than from the first cached filter. Anchors
+ *     sit every 100000, so this is at most 100000 entries instead of every entry
+ *     below the range.
+ *
+ * Falls back to the sidecar's base where no anchor sits below (from_height).
+ * Returns how many headers were written, or -1. */
+long kw_cfstore_headers_anchored(const kw_chainparams *cp, const char *path,
+                                 uint32_t base_height, uint32_t from_height,
+                                 uint8_t *out, size_t cap);
+
 /* Hand each cached filter in [from_height, from_height + count) to (fn), in
    height order, stopping early if it returns 0. Seeks to the first one through
    the height index rather than walking from the base, so serving the tail does
