@@ -67,8 +67,56 @@ int main(void)
             fprintf(stderr, "FAIL: %s false positive\n", v->name); return 1;
         }
     }
+    /* Coverage: every element of every vector is in its own filter, which is
+       the check a client runs against a block it holds. One element swapped for
+       a script that was never in the block has to be reported, and by index, or
+       a caller cannot say which output went missing. */
+    for (int k = 0; k < KW_BIP158_NVEC; k++) {
+        const kw_bip158_vec *v = &KW_BIP158_VECS[k];
+        uint8_t filt[4096], hash[32];
+        int flen = kw_test_unhex(v->filter, filt);
+        kw_test_unhex(v->hash_internal, hash);
+        if (v->nelem <= 0) continue;
 
-    printf("gcs ok: %d BIP158 vectors, decode == hashed elements, match_any hits and misses\n",
+        static uint8_t ebuf[80][4096];
+        kw_gcs_item items[80];
+        for (int i = 0; i < v->nelem && i < 80; i++) {
+            int el = kw_test_unhex(v->elems[i], ebuf[i]);
+            items[i].script = ebuf[i];
+            items[i].len = (size_t)el;
+        }
+        int n = v->nelem < 80 ? v->nelem : 80;
+        size_t miss = (size_t)-1;
+        if (kw_gcs_covers(filt, (size_t)flen, hash, items, (size_t)n, &miss) != 1) {
+            fprintf(stderr, "FAIL: %s does not cover its own elements (index %zu)\n",
+                    v->name, miss);
+            return 1;
+        }
+
+        /* a script the block never had, in a known slot */
+        uint8_t bogus[25];
+        memset(bogus, 0, sizeof bogus);
+        bogus[0] = 0x76; bogus[1] = 0xa9; bogus[2] = 0x14;
+        for (int i = 0; i < 20; i++) bogus[3 + i] = (uint8_t)(0xa0 + i + k);
+        bogus[23] = 0x88; bogus[24] = 0xac;
+        const uint8_t *keep = items[n - 1].script;
+        size_t keeplen = items[n - 1].len;
+        items[n - 1].script = bogus;
+        items[n - 1].len = sizeof bogus;
+        miss = (size_t)-1;
+        if (kw_gcs_covers(filt, (size_t)flen, hash, items, (size_t)n, &miss) != 0 ||
+            miss != (size_t)(n - 1)) {
+            fprintf(stderr, "FAIL: %s did not report the missing element (got %zu)\n",
+                    v->name, miss);
+            return 1;
+        }
+        items[n - 1].script = keep;
+        items[n - 1].len = keeplen;
+    }
+
+
+    printf("gcs ok: %d BIP158 vectors, decode == hashed elements, match_any hits and misses,\n"
+           "  every vector covers its own elements and a foreign script is reported by index\n",
            KW_BIP158_NVEC);
     return 0;
 }

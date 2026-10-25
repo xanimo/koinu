@@ -26,6 +26,21 @@ static uint64_t hash_to_range(uint64_t v, uint64_t F)
 #endif
 }
 
+int kw_gcs_covers(const uint8_t *filt, size_t flen, const uint8_t block_hash[32],
+                  const kw_gcs_item *items, size_t nitems, size_t *missing)
+{
+    /* One match_any per item rather than a decode and a search here: that
+       function is the one the fuzzers drive, and a filter is small enough that
+       walking it per item costs nothing worth a second implementation of the
+       golomb reader. */
+    for (size_t i = 0; i < nitems; i++) {
+        int r = kw_gcs_match_any(filt, flen, block_hash, &items[i], 1);
+        if (r < 0) return -1;
+        if (r == 0) { if (missing) *missing = i; return 0; }
+    }
+    return 1;
+}
+
 uint64_t kw_gcs_hash(const uint8_t block_hash[32], uint64_t N,
                      const uint8_t *e, size_t elen)
 {
