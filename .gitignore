@@ -104,3 +104,5 @@ xpub*.txt
 /libkoinu-chain.a
 /koinu-sign.pc
 /koinu-chain.pc
+/test/test_opmap
+/test/cfstub

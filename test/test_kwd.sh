@@ -108,10 +108,13 @@ done
 # cfheaders is the serving half: a light client checks filters it got anywhere
 # else against this node's verified chain. The fake node here serves no filters,
 # so the interesting case is that kwd says so rather than inventing a chain, and
-# that the argument checks run before anything is read off disk.
+# that the argument checks run before anything is read off disk. There is no
+# sidecar here either, which is a store that cannot be walked rather than a
+# range it does not hold, and the two no longer share an answer.
 CFH=$(printf 'cfheaders 1 4\n' | nc -w 20 -U "$SOCK" 2>/dev/null | head -1 || true)
 case "$CFH" in
     "2 no filters here"|"2 no verified base"|"4 none in that range") ;;
+    "1 filter store unreadable") ;;
     "0 "*) echo "FAIL: kwd served a filter chain it never verified: $CFH" >&2; exit 1;;
     *) echo "FAIL: cfheaders answered '$CFH'" >&2; exit 1;;
 esac

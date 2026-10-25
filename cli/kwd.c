@@ -292,7 +292,11 @@ static void serve_cfheaders(const kw_chainparams *cp, const char *filters_path,
        carries a v1 sidecar with no base, so asking for one refused to serve a
        cache this node holds and has verified. */
     long n = kw_cfstore_headers_anchored(cp, filters_path, g_cfbase, from, out, count);
-    if (n <= 0) { free(out); write_all(fd, "4 none in that range\n", 21); return; }
+    /* A read failure is not an empty range. Folding the two together reported a
+       store this node cannot walk as a range it simply does not hold, which is a
+       success-shaped answer to a question that failed. */
+    if (n < 0) { free(out); write_all(fd, "1 filter store unreadable\n", 26); return; }
+    if (n == 0) { free(out); write_all(fd, "4 none in that range\n", 21); return; }
 
     int k = snprintf(reply, sizeof reply, "0 %u %ld\n", from, n);
     if (k > 0 && write_all(fd, reply, (size_t)k)) {

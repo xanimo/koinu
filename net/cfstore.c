@@ -573,12 +573,43 @@ static uint32_t anchor_below(const kw_chainparams *cp, uint32_t h, uint8_t out[3
     return best;
 }
 
+/* Chaining state for the anchored walk. The walk starts at the anchor's
+   successor and the caller's range usually starts later, so the headers before
+   (from) are computed and dropped: each one is what the next is built on. */
+struct anchor_walk {
+    uint8_t  cur[32];
+    uint32_t from;
+    uint8_t *out;
+    size_t   cap, wrote;
+};
+
+static int anchor_one(void *vc, uint32_t height, const uint8_t *filter, size_t flen)
+{
+    struct anchor_walk *c = (struct anchor_walk *)vc;
+    uint8_t fhash[32];
+    kw_hash256(filter, flen, fhash);
+    kw_cf_header_step(fhash, c->cur, c->cur);
+    if (height >= c->from && c->wrote < c->cap) {
+        memcpy(c->out + c->wrote * 32, c->cur, 32);
+        c->wrote++;
+    }
+    return c->wrote < c->cap;
+}
+
 long kw_cfstore_headers_anchored(const kw_chainparams *cp, const char *path,
                                  uint32_t base_height, uint32_t from_height,
                                  uint8_t *out, size_t cap)
 {
     uint8_t root[32];
-    uint32_t ah = anchor_below(cp, from_height, root);
+    uint32_t ah;
+    struct anchor_walk c;
+    size_t want;
+
+    /* Checked here rather than left to kw_cfstore_headers, because the anchored
+       branch writes the root itself. */
+    if (!out || cap == 0) return -1;
+
+    ah = anchor_below(cp, from_height, root);
 
     if (!ah || ah < base_height) {
         /* no anchor under this range: the sidecar's base is all there is, and a
@@ -588,9 +619,42 @@ long kw_cfstore_headers_anchored(const kw_chainparams *cp, const char *path,
         return kw_cfstore_headers(path, base_height, from_height, base, out, cap);
     }
 
-    /* The anchor is the chain AT its own height, so the filter for that height is
-       already folded in and the walk resumes at the next one. */
-    return kw_cfstore_headers(path, ah + 1, from_height, root, out, cap);
+    /* An anchor above this store's tip would be handed back as a header for a
+       filter the store does not hold. Counted through the index, which is a
+       file length, rather than kw_cfstore_count, which walks every record: a
+       reply about one header must not cost a pass over the whole cache, and on
+       mainnet that pass is 1.7s on its own. */
+    {
+        long have;
+        if (!ensure_index(path)) return -1;
+        have = index_count(path);
+        if (have < 0) return -1;
+        if (have == 0 || ah > base_height + (uint32_t)(have - 1)) return 0;
+    }
+
+    /* Chained here rather than by kw_cfstore_headers, which always reads from the
+       first filter the store holds and takes base_height as that one's label
+       rather than a position to seek to: passing it ah + 1 chained the anchor
+       onto filter number one. kw_cfstore_each seeks. */
+    memset(&c, 0, sizeof c);
+    memcpy(c.cur, root, 32);
+    c.out = out;
+    c.cap = cap;
+    c.from = from_height;
+
+    /* The anchor is the chain AT its own height, so its own filter is already
+       folded into it: a range starting there is asking for the root itself, and
+       the walk still resumes at the next height. */
+    if (from_height == ah) {
+        memcpy(out, root, 32);
+        c.wrote = 1;
+        c.from = ah + 1;
+        if (cap == 1) return 1;
+    }
+
+    want = (size_t)(from_height - ah) + cap - 1;
+    if (kw_cfstore_each(path, base_height, ah + 1, want, anchor_one, &c) < 0) return -1;
+    return (long)c.wrote;
 }
 
 long kw_cfstore_each(const char *path, uint32_t base_height, uint32_t from_height,

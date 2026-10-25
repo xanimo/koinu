@@ -687,6 +687,78 @@ int main(void)
         rmdir(dir);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
+    /* The anchored walk against the chain computed by hand. This needs a store
+       with several filters and an anchor above its base: the anchor-at-height-1
+       case above cannot tell a walk that seeks from one that reads from the
+       first filter it holds, and the walk did the latter, chaining the anchor
+       root onto filter number one. Every height is asked for, so an output that
+       is right at one offset and shifted at the next is caught too. */
+    {
+        const char *sp = "test_cfstore_anchored.tmp";
+        char idx[80], fh[80];
+        const uint32_t N = 12, ANCH = 5;         /* heights 1..12, anchor at 5 */
+        uint8_t truth[12][32], cur[32];
+        char ahex[65];
+        kw_chainparams cpa = KW_DOGE_REGTEST;
+        kw_cfcheckpoint anchor[1];
+
+        snprintf(idx, sizeof idx, "%s.idx", sp);
+        snprintf(fh, sizeof fh, "%s.fh", sp);
+        remove(sp); remove(idx); remove(fh);
+
+        /* Filters of differing lengths, so a walk that lands on the wrong record
+           desynchronises rather than quietly reading a neighbour. */
+        memset(cur, 0, 32);
+        for (uint32_t i = 0; i < N; i++) {
+            uint8_t bh[32], filt[40], fhash[32];
+            size_t fl = 3 + (i % 7);
+            memset(bh, (int)(0xa0 + i), 32);
+            for (size_t k = 0; k < fl; k++) filt[k] = (uint8_t)(i * 31 + k);
+            if (!kw_cfstore_append(sp, bh, filt, fl)) {
+                fprintf(stderr, "FAIL: anchored append %u\n", i + 1); return 1;
+            }
+            kw_hash256(filt, fl, fhash);
+            kw_cf_header_step(fhash, cur, cur);
+            memcpy(truth[i], cur, 32);
+        }
+
+        hex_rev(truth[ANCH - 1], ahex);
+        anchor[0].height = ANCH; anchor[0].header = ahex;
+        cpa.cfcheckpoints = anchor; cpa.ncfcheckpoints = 1;
+
+        for (uint32_t from = ANCH; from <= N; from++) {
+            uint8_t got[12][32];
+            size_t cap = N - from + 1;
+            long n = kw_cfstore_headers_anchored(&cpa, sp, 1, from, got[0], cap);
+            if (n != (long)cap) {
+                fprintf(stderr, "FAIL: anchored from %u gave %ld of %zu\n",
+                        from, n, cap);
+                return 1;
+            }
+            for (long i = 0; i < n; i++) {
+                if (memcmp(got[i], truth[from - 1 + (uint32_t)i], 32) != 0) {
+                    fprintf(stderr, "FAIL: anchored from %u, height %u is not the "
+                                    "header the filters build\n",
+                            from, from + (uint32_t)i);
+                    return 1;
+                }
+            }
+        }
+
+        /* The anchor's own height is the root itself, and a one-deep request for
+           it must not need a filter above it to answer. */
+        {
+            uint8_t got[32];
+            if (kw_cfstore_headers_anchored(&cpa, sp, 1, N, got, 1) != 1 ||
+                memcmp(got, truth[N - 1], 32) != 0) {
+                fprintf(stderr, "FAIL: a one-deep anchored request at the tip\n");
+                return 1;
+            }
+        }
+
+        remove(sp); remove(idx); remove(fh);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
     return 0;
 }
