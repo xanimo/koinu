@@ -3,6 +3,24 @@
 ## [Unreleased]
 
 ## What's Changed
+* kw cfcheck --with-filters: the filters have to fit the chain that carried them
+  An anchored chain says nothing about the filters a node then hands over
+  unless the two are tied together, and the tie is BIP157's own:
+  header(i) = step(hash256(filter_i), header(i-1)). cfcheck fetches the range,
+  the header one below it, then the filters, and walks that recurrence. A
+  filter that does not reproduce its header is named and the run fails, whatever
+  the chain claims.
+
+  That is what makes a stranger's filters usable: the anchors vouch for the
+  chain, the chain vouches for the filters, and neither step asks anyone to be
+  trusted. A client does not accept whatever a stranger calls a filter either,
+  so the per-filter ceiling here is 64 KiB rather than the store's own 4 MiB,
+  and the range is capped at 64.
+
+  Checked against the real BIP158 vectors rather than numbers that agree with
+  each other: the chain is computed from the vector filters in the test, a
+  matching pair passes, and the same two filters served in the wrong order are
+  caught even though that chain is internally consistent and passes on its own.
 * kw send: broadcast to every --node given, not just the last
   --node has been repeatable for the header sync since 0.3.0, and send quietly
   used only the last one. A transaction reaches the network through whichever

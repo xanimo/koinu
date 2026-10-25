@@ -95,7 +95,8 @@ static void usage(void)
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
       "  cfcheck  --daemon SOCKET [--daemon SOCKET] --since HEIGHT [--count N]\n"
-      "           (check a filter source against the anchors, and against another)\n"
+      "           [--with-filters]   (check a source against the anchors, against\n"
+      "           another source, and that its filters fit the chain it served)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--node HOST ...] [--port N]\n"
       "           [--tor] [--yes]   (--node repeats: relayed by whichever takes it)\n"
       "  psbt     build --utxos PATH --to ADDR:AMOUNT --xpub XPUB (watch only)\n"
@@ -2376,12 +2377,110 @@ static long cfheaders_from(const char *sock, uint32_t from, uint32_t count,
     return n;
 }
 
+/* A client does not have to accept whatever a stranger calls a filter. The
+   store's own ceiling is 4 MiB, which is a sane bound for something this node
+   built itself and an absurd one for something handed over a socket: a basic
+   filter for a dogecoin block runs to tens of kilobytes. Anything past this is
+   refused rather than buffered, and the range is capped so the whole reply fits
+   a few megabytes. */
+#define KW_CFCHECK_MAX_FILTER (64u << 10)
+#define KW_CFCHECK_MAX_RANGE  64
+
+/* Fetch "cffilters from count" and check each filter hashes into the chain that
+   was served alongside it: header(i) = step(hash256(filter_i), header(i-1)).
+   That binding is what makes a filter usable at all. The chain is anchored, so
+   a filter that fits it is one the anchors vouch for; a filter that does not is
+   a filter this node made up, whatever its chain says. (prev) is the header one
+   below the range, which the caller has because it asked for one extra.
+   Returns the number checked, or -1. */
+static long cffilters_check(const char *sock, uint32_t from, uint32_t count,
+                            const uint8_t *chain, const uint8_t prev[32])
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { fprintf(stderr, "kw: socket\n"); return -1; }
+    struct sockaddr_un sa; memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", sock);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        fprintf(stderr, "kw: cannot reach daemon at %s\n", sock); close(fd); return -1;
+    }
+    struct timeval tv = { 20, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    char req[128];
+    int rn = snprintf(req, sizeof req, "cffilters %u %u\n", from, count);
+    if (rn <= 0 || write(fd, req, (size_t)rn) != rn) { close(fd); return -1; }
+
+    /* A filter is at most KW_CFSTORE_MAX_FILTER bytes, so the reply is bounded
+       and read whole: this is a check run by hand, not the sync path. */
+    size_t cap = (size_t)count * (KW_CFCHECK_MAX_FILTER * 2 + 24) + 256, len = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { close(fd); fprintf(stderr, "kw: out of memory\n"); return -1; }
+    for (;;) {
+        ssize_t r = read(fd, buf + len, cap - len - 1);
+        if (r <= 0) break;
+        len += (size_t)r;
+        if (len + 1 >= cap) break;
+    }
+    close(fd);
+    buf[len] = '\0';
+    if (!len || buf[0] != '0') {
+        char *nl = strchr(buf, '\n'); if (nl) *nl = '\0';
+        fprintf(stderr, "kw: %s refused filters: %s\n", sock, len ? buf : "(nothing)");
+        free(buf); return -1;
+    }
+    unsigned got_from = 0, got_n = 0;
+    if (sscanf(buf, "0 %u %u", &got_from, &got_n) != 2 || got_from != from || got_n > count) {
+        fprintf(stderr, "kw: %s sent a filter header line kw cannot read\n", sock);
+        free(buf); return -1;
+    }
+
+    uint8_t cur[32];
+    memcpy(cur, prev, 32);
+    char *line = strchr(buf, '\n');
+    long n = 0;
+    uint8_t *fbuf = (uint8_t *)malloc(KW_CFCHECK_MAX_FILTER);
+    if (!fbuf) { free(buf); fprintf(stderr, "kw: out of memory\n"); return -1; }
+
+    while (line && n < (long)got_n) {
+        unsigned h = 0;
+        if (sscanf(++line, "%u ", &h) != 1) break;
+        char *sp = strchr(line, ' ');
+        if (!sp) break;
+        char *end = strchr(sp + 1, '\n');
+        size_t hexlen = end ? (size_t)(end - sp - 1) : strlen(sp + 1);
+        if (h != from + (unsigned)n || hexlen % 2 ||
+            hexlen / 2 > KW_CFCHECK_MAX_FILTER ||
+            !kw_hex_decode(sp + 1, hexlen, fbuf, hexlen / 2)) {
+            fprintf(stderr, "kw: %s sent a filter kw cannot read at %u\n", sock, h);
+            free(fbuf); free(buf); return -1;
+        }
+        uint8_t fh[32], want[32];
+        kw_hash256(fbuf, hexlen / 2, fh);
+        kw_cf_header_step(fh, cur, want);
+        if (memcmp(want, chain + n * 32, 32) != 0) {
+            printf("  UNBOUND at %u: this filter is not the one the chain commits to\n", h);
+            free(fbuf); free(buf); return -1;
+        }
+        memcpy(cur, chain + n * 32, 32);
+        n++;
+        line = end;
+    }
+    free(fbuf);
+    free(buf);
+    if (n != (long)got_n) {
+        fprintf(stderr, "kw: %s promised %u filters and sent %ld\n", sock, got_n, n);
+        return -1;
+    }
+    return n;
+}
+
 /* What makes a filter source checkable: the chain it serves has to agree with
    the anchors compiled in here, and where two sources are given, with each
    other. A single source that matches every anchor it covers is still only one
    source above the last one, and this says so rather than implying otherwise. */
 static int cmd_cfcheck(const kw_chainparams *cp, const char *sock_a, const char *sock_b,
-                       long since, long count)
+                       long since, long count, int with_filters)
 {
     if (!sock_a) { usage(); return 2; }
     if (since <= 0) {
@@ -2389,6 +2488,14 @@ static int cmd_cfcheck(const kw_chainparams *cp, const char *sock_a, const char 
         return 2;
     }
     if (count <= 0 || count > 2000) count = 2000;
+    /* With --with-filters the range is capped much lower: each entry is a filter
+       rather than 32 bytes, and this reads a whole reply into memory. */
+    if (with_filters && count > KW_CFCHECK_MAX_RANGE) count = KW_CFCHECK_MAX_RANGE;
+    if (with_filters && since < 2) {
+        fprintf(stderr, "kw: --with-filters needs --since 2 or higher, since the first "
+                        "filter has to chain from the header below it\n");
+        return 2;
+    }
 
     uint8_t *a = (uint8_t *)malloc((size_t)count * 32);
     uint8_t *b = sock_b ? (uint8_t *)malloc((size_t)count * 32) : NULL;
@@ -2417,6 +2524,21 @@ static int cmd_cfcheck(const kw_chainparams *cp, const char *sock_a, const char 
     if (bad) { free(a); free(b); return 1; }
     if (anchors) printf("  %d anchor(s) in range matched\n", anchors);
     else printf("  no anchor falls in this range, so nothing here is pinned\n");
+
+    /* The filters themselves, bound to the chain just checked. One header below
+       the range is fetched separately: the first filter chains from it, and
+       without it the first link could be anything. */
+    if (with_filters) {
+        uint8_t prev[32];
+        uint32_t pf = 0;
+        if (cfheaders_from(sock_a, (uint32_t)since - 1, 1, prev, &pf) != 1) {
+            fprintf(stderr, "kw: could not get the header below the range\n");
+            free(a); free(b); return 1;
+        }
+        long fn = cffilters_check(sock_a, (uint32_t)since, (uint32_t)na, a, prev);
+        if (fn < 0) { free(a); free(b); return 1; }
+        printf("  %ld filter(s) hash into the chain they were served with\n", fn);
+    }
 
     if (!sock_b) {
         printf("one source, so nothing compared its chain against another's; "
@@ -4388,6 +4510,7 @@ int main(int argc, char **argv)
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL, *utxo_arg = NULL;
     const char *daemon2_arg = NULL;
     long count_arg = 0;
+    int want_filters = 0;
     const char *psbt_arg = NULL, *script_arg = NULL, *sub = NULL, *psbts[8];
     const char *groups_arg = NULL, *bpass_arg = NULL, *shares_arg = NULL;
     const char *format_arg = NULL, *id_arg = NULL;
@@ -4457,6 +4580,7 @@ int main(int argc, char **argv)
             else if (!daemon2_arg) daemon2_arg = v;
             else { fprintf(stderr, "kw: at most two --daemon sockets\n"); return 2; }
         }
+        else if (!strcmp(a, "--with-filters")) want_filters = 1;
         else if (!strcmp(a, "--count"))    { uint32_t u = 0;
             if (!arg_u32("--count", NEXT(), 2000, &u)) return 2;
             count_arg = (long)u; }
@@ -4518,7 +4642,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, watch_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
-    else if (!strcmp(cmd, "cfcheck")) rc = cmd_cfcheck(cp, daemon_arg, daemon2_arg, since, count_arg);
+    else if (!strcmp(cmd, "cfcheck")) rc = cmd_cfcheck(cp, daemon_arg, daemon2_arg, since, count_arg, want_filters);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);

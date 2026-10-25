@@ -121,6 +121,68 @@ case "$OUT" in
 $OUT" >&2; exit 1;;
 esac
 
+# 6. --filters: the filters a source hands over have to hash into the chain it
+#    served, header(i) = step(hash256(filter_i), header(i-1)). The values here
+#    are computed from the BIP158 vectors in test/bip158_vectors.h, so this is
+#    a real chain over real filters rather than three numbers that agree with
+#    each other.
+PREV=0000000000000000000000000000000000000000000000000000000000000000
+H0=403b54aed3d4561d8098ecc7552d040a210347639c5ae08bd077af2ab51cffb4
+H1=8a6f9ee6ed46f4c06fdf07bb96e126f03d84840329702579fc40c2c6d370ccb3
+F0=43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000
+F1=0000000000000000000000000000000000000000000000000000000000000000
+
+#    cfcheck asks for the range, then the header below it, then the filters, so
+#    the stub answers three times in that order. One cfstub per connection.
+#    one bind, three connections: cfcheck reconnects for each request, and a
+#    stub that rebound between them raced the next connect.
+seq_serve() {
+    local sock=$1; shift
+    exec 8< <(./test/cfstub "$sock" "$@")
+    local line=""
+    IFS= read -r -t 10 line <&8 || true
+    [ "$line" = "ready" ] || { echo "FAIL: cfstub did not come up on $sock" >&2; exit 1; }
+}
+
+seq_serve "$D/g" "0 2 2
+2 $H0
+3 $H1
+" "0 1 1
+1 $PREV
+" "0 2 2
+2 $F0
+3 $F1
+"
+OUT=$(./kw cfcheck --daemon "$D/g" --since 2 --count 2 --with-filters 2>&1) || true
+case "$OUT" in
+    *"2 filter(s) hash into the chain"*) ;;
+    *) echo "FAIL: real filters did not bind to their chain:
+$OUT" >&2; exit 1;;
+esac
+
+# 7. a filter that is not the one the chain commits to is caught, even though
+#    the chain itself is internally consistent and would pass on its own
+seq_serve "$D/h" "0 2 2
+2 $H0
+3 $H1
+" "0 1 1
+1 $PREV
+" "0 2 2
+2 $F1
+3 $F0
+"
+if OUT=$(./kw cfcheck --daemon "$D/h" --since 2 --count 2 --with-filters 2>&1); then
+    echo "FAIL: swapped filters passed the binding check:
+$OUT" >&2; exit 1
+fi
+case "$OUT" in
+    *UNBOUND*) ;;
+    *) echo "FAIL: an unbound filter was not named:
+$OUT" >&2; exit 1;;
+esac
+
+
 echo "cfcheck ok: a chain is held to the compiled-in anchors, a contradicting one
   refused, two sources compared where no anchor can settle it, a short reply
-  and a daemon refusal both caught"
+  and a daemon refusal both caught, and filters checked against the chain
+  they were served with, with a swapped pair rejected"
