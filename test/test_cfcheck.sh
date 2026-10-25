@@ -15,14 +15,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-command -v nc >/dev/null 2>&1 || { echo "cfcheck skipped: no nc"; exit 0; }
-
-# The stub has to close after writing or kw waits out its receive timeout on
-# every case. openbsd nc calls that -N, gnu nc calls it -q 0, and a nc with
-# neither cannot drive this.
-if nc -h 2>&1 | grep -q -- "-N"; then   NC_CLOSE="-N"
-elif nc -h 2>&1 | grep -q -- "-q"; then NC_CLOSE="-q 0"
-else echo "cfcheck skipped: this nc cannot close after writing"; exit 0; fi
+# test/cfstub rather than nc: the reply has to be exact, including shapes a real
+# kwd would never send, and the connection has to close afterwards or kw waits
+# out its receive timeout. nc can do that on linux and not on macos, where the
+# gate failed for a reason that had nothing to do with the code under test.
+[ -x ./test/cfstub ] || { echo "FAIL: test/cfstub is not built" >&2; exit 1; }
 
 D=$(mktemp -d)
 trap 'rm -rf "$D"; kill $(jobs -p) 2>/dev/null || true' EXIT
@@ -38,13 +35,14 @@ ANCHOR=$(awk '/KW_DOGE_MAINNET_CFCHECKPOINTS\[\] = \{/{f=1} f' crypto/chainparam
 
 WRONG=$(printf '%s' "$ANCHOR" | tr '0-9a-f' '1-9a-f0')
 
-# serve one canned reply on a unix socket, then exit
+# Serve one canned reply, then exit. cfstub prints "ready" once the socket is
+# bound, so this waits on that rather than polling for the file to appear.
 serve() {
     local sock=$1 body=$2
-    # shellcheck disable=SC2086
-    ( printf '%s' "$body" | nc $NC_CLOSE -l -U "$sock" >/dev/null 2>&1 ) &
-    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$sock" ] && return 0; sleep 0.2; done
-    echo "FAIL: $sock never appeared" >&2; exit 1
+    exec 9< <(./test/cfstub "$sock" "$body")
+    local line=""
+    IFS= read -r -t 10 line <&9 || true
+    [ "$line" = "ready" ] || { echo "FAIL: cfstub did not come up on $sock" >&2; exit 1; }
 }
 
 # 1. a chain that matches the anchor is accepted and says the anchor matched

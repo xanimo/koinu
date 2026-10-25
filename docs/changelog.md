@@ -12,6 +12,11 @@
   still one source above the last one, and it says so in the same words koinu
   already uses for chain work rather than implying agreement it did not get.
 
+  The source it is driven by is test/cfstub rather than nc: the reply has to be
+  exact, including shapes a real kwd would never send, and nc can bind a unix
+  socket on linux and not on macos, where the gate failed for a reason that had
+  nothing to do with the code under test.
+
   The read now carries a 20 second receive timeout. It ends at EOF, so without
   one a source that answers and never closes held the wallet forever, and a
   filter source is someone else's machine.
