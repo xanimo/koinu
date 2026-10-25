@@ -552,6 +552,47 @@ static long index_count(const char *path)
     return sz < 8 ? -1 : (sz - 8) / 8;
 }
 
+long kw_cfstore_each(const char *path, uint32_t base_height, uint32_t from_height,
+                     size_t count, kw_cfstore_filter_fn fn, void *ctx)
+{
+    if (!path || !fn || count == 0 || from_height < base_height) return -1;
+    if (!ensure_index(path)) return -1;
+    long cnt = index_count(path);
+    if (cnt < 0) return -1;
+
+    size_t start = (size_t)(from_height - base_height);
+    if (start >= (size_t)cnt) return 0;              /* range past the tip */
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (start > 0) {
+        long o = cache_offset(path, start);
+        if (o < 4 || fseek(f, o, SEEK_SET) != 0) { fclose(f); return -1; }
+    } else if (fseek(f, 4, SEEK_SET) != 0) { fclose(f); return -1; }
+
+    uint8_t *buf = NULL;
+    size_t bcap = 0;
+    long n = 0;
+    int ok = 1;
+    for (size_t i = 0; i < count && start + i < (size_t)cnt; i++) {
+        uint8_t h[32];
+        uint64_t fl;
+        if (fread(h, 1, 32, f) != 32 || !rd_varint(f, &fl) ||
+            fl > KW_CFSTORE_MAX_FILTER) { ok = 0; break; }
+        if (fl > bcap) {
+            uint8_t *nb = (uint8_t *)realloc(buf, (size_t)fl);
+            if (!nb) { ok = 0; break; }
+            buf = nb; bcap = (size_t)fl;
+        }
+        if (fread(buf, 1, (size_t)fl, f) != (size_t)fl) { ok = 0; break; }
+        n++;
+        if (!fn(ctx, base_height + (uint32_t)(start + i), buf, (size_t)fl)) break;
+    }
+    free(buf);
+    fclose(f);
+    return ok ? n : -1;
+}
+
 int kw_cfstore_base(const char *path, uint8_t out[32])
 {
     long count = 0;

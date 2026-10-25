@@ -140,6 +140,19 @@ static void hex_rev(const uint8_t v[32], char out[65])
     out[64] = 0;
 }
 
+/* collects what kw_cfstore_each hands over, and can stop early */
+static int each_cb(void *ctx, uint32_t height, const uint8_t *filter, size_t flen)
+{
+    struct cb { int n; int stop_after; uint8_t seen[2][256]; size_t len[2]; uint32_t h[2]; } *g = ctx;
+    if (g->n < 2 && flen <= sizeof g->seen[0]) {
+        memcpy(g->seen[g->n], filter, flen);
+        g->len[g->n] = flen;
+        g->h[g->n] = height;
+    }
+    g->n++;
+    return g->n < g->stop_after;
+}
+
 int main(void)
 {
     const char *tmp = "test_cfstore.tmp";
@@ -213,6 +226,46 @@ int main(void)
         }
         if (kw_cfstore_headers(tmp, 5, 4, base, got, 1) != -1) {
             fprintf(stderr, "FAIL: a height below the base was accepted\n"); return 1;
+        }
+    }
+
+    /* kw_cfstore_each streams what it has, in height order, and stops when the
+       callback says to. What it hands out has to be the filter that went in,
+       since the whole point is that a client can recompute the header from it. */
+    {
+        struct { int n; int stop_after; uint8_t seen[2][256]; size_t len[2]; uint32_t h[2]; } g;
+        memset(&g, 0, sizeof g);
+        g.stop_after = 99;
+
+        long got = kw_cfstore_each(tmp, 0, 0, 8, each_cb, &g);
+        if (got != 2 || g.n != 2) { fprintf(stderr, "FAIL: each got %ld\n", got); return 1; }
+        if (g.h[0] != 0 || g.h[1] != 1) { fprintf(stderr, "FAIL: each out of order\n"); return 1; }
+        if (g.len[0] != (size_t)fal || memcmp(g.seen[0], fa, g.len[0]) ||
+            g.len[1] != (size_t)fbl || memcmp(g.seen[1], fb, g.len[1])) {
+            fprintf(stderr, "FAIL: each handed back a filter that is not the one stored\n");
+            return 1;
+        }
+
+        /* from_height seeks past the first */
+        memset(&g, 0, sizeof g); g.stop_after = 99;
+        if (kw_cfstore_each(tmp, 0, 1, 8, each_cb, &g) != 1 || g.h[0] != 1 ||
+            g.len[0] != (size_t)fbl || memcmp(g.seen[0], fb, g.len[0])) {
+            fprintf(stderr, "FAIL: each did not seek to from_height\n"); return 1;
+        }
+
+        /* a callback that stops is obeyed, and the count reflects what was read */
+        memset(&g, 0, sizeof g); g.stop_after = 1;
+        if (kw_cfstore_each(tmp, 0, 0, 8, each_cb, &g) != 1 || g.n != 1) {
+            fprintf(stderr, "FAIL: each ignored a stop\n"); return 1;
+        }
+
+        /* past the tip is empty, not an error; below the base is an error */
+        memset(&g, 0, sizeof g); g.stop_after = 99;
+        if (kw_cfstore_each(tmp, 0, 9, 8, each_cb, &g) != 0) {
+            fprintf(stderr, "FAIL: each past the tip\n"); return 1;
+        }
+        if (kw_cfstore_each(tmp, 5, 4, 8, each_cb, &g) != -1) {
+            fprintf(stderr, "FAIL: each below the base\n"); return 1;
         }
     }
 
@@ -602,6 +655,6 @@ int main(void)
         rmdir(dir);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
     return 0;
 }

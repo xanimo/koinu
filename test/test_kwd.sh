@@ -126,4 +126,16 @@ for BAD in "1 0" "1 99999" "0 4" "1" "x 4" "1 y"; do
     esac
 done
 
-echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request and one with no since height are refused, the chain\n  it answers from is work-checked over two peers, and cfheaders refuses to\n  serve a chain it has not verified"
+# cffilters is the same refusal story: a node with nothing verified must not
+# answer with filters, and the argument bounds are its own (500, not 2000,
+# because each line is a filter rather than 32 bytes).
+for BAD in "1 4" "1 0" "1 501" "0 4" "1" "z 4"; do
+    R=$(printf 'cffilters %s\n' "$BAD" | nc -w 20 -U "$SOCK" 2>/dev/null | head -1 || true)
+    case "$R" in
+        "1 bad request"|"2 no filters here"|"4 none in that range") ;;
+        "0 "*) echo "FAIL: kwd served filters it never verified: $R" >&2; exit 1;;
+        *) echo "FAIL: cffilters took \"$BAD\": $R" >&2; exit 1;;
+    esac
+done
+
+echo "kwd ok: socket is 0600, a silent client does not block the loop, an\n  unterminated request and one with no since height are refused, the chain\n  it answers from is work-checked over two peers, and cfheaders and\n  cffilters refuse to serve a chain or filters this node has not verified"

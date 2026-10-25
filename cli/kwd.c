@@ -13,8 +13,10 @@
  *   immature coinbase, 1 error.
  *
  *   cfheaders <from> <count>\n
+ *   cffilters <from> <count>\n
  *
- * reply: "0 <from> <n>\n" then n lines of "<height> <filter header>\n", or
+ * reply: "0 <from> <n>\n" then n lines of "<height> <filter header>\n" or
+ *   "<height> <filter hex>\n", or
  *   "<rc> <text>\n" on refusal. The filter-header chain this node verified,
  *   handed out so a light client can check filters it got from somewhere else
  *   against a second source. Nothing here is private: a filter is the same for
@@ -200,6 +202,68 @@ static int write_all(int fd, const char *b, size_t n)
    stopped. */
 #define KWD_CFHEADERS_MAX 2000
 
+/* Filters are variable length and a wide range is megabytes, so this writes
+   each as it reads rather than buffering the range, and stops at the first
+   short write: a client that hung up should cost this loop one filter, not the
+   whole span. The count is lower than cfheaders' because each line here is a
+   filter rather than 32 bytes. */
+#define KWD_CFFILTERS_MAX 500
+
+struct cff_sink { int fd; long wrote; int broken; };
+
+static int cff_one(void *ctx, uint32_t height, const uint8_t *filter, size_t flen)
+{
+    struct cff_sink *o = (struct cff_sink *)ctx;
+    char head[32];
+    int k = snprintf(head, sizeof head, "%u ", height);
+    if (k <= 0 || !write_all(o->fd, head, (size_t)k)) { o->broken = 1; return 0; }
+
+    /* hex straight out, two characters at a time, so a filter never needs a
+       buffer of its own on this side */
+    for (size_t i = 0; i < flen; i++) {
+        static const char x[] = "0123456789abcdef";
+        char b[2] = { x[filter[i] >> 4], x[filter[i] & 15] };
+        if (!write_all(o->fd, b, 2)) { o->broken = 1; return 0; }
+    }
+    if (!write_all(o->fd, "\n", 1)) { o->broken = 1; return 0; }
+    o->wrote++;
+    return 1;
+}
+
+/* "cffilters <from> <count>" -> "0 <from> <n>\n" then n lines of
+   "<height> <filter hex>". The bytes are what the peers served and what this
+   node verified against its filter-header chain, so a client can check them
+   against cfheaders from somewhere else. */
+static void serve_cffilters(const char *filters_path, const char *a, const char *b, int fd)
+{
+    char reply[128];
+    uint32_t from = 0, count = 0;
+
+    if (!g_filters) { write_all(fd, "2 no filters here\n", 18); return; }
+    if (!a || !b || !parse_u32(a, UINT32_MAX, &from) ||
+        !parse_u32(b, KWD_CFFILTERS_MAX, &count) || count == 0 || from == 0) {
+        write_all(fd, "1 bad request\n", 14); return;
+    }
+
+    /* How many are actually there, so the count line is true before any filter
+       is written. A reply that promised n and delivered fewer would be
+       indistinguishable from a truncated connection. */
+    long have = kw_cfstore_count(filters_path);
+    if (have < 0) { write_all(fd, "2 no filters here\n", 18); return; }
+    uint32_t base = 1;
+    if (from < base || (long)(from - base) >= have) {
+        write_all(fd, "4 none in that range\n", 21); return;
+    }
+    long avail = have - (long)(from - base);
+    long n = (long)count < avail ? (long)count : avail;
+
+    int k = snprintf(reply, sizeof reply, "0 %u %ld\n", from, n);
+    if (k <= 0 || !write_all(fd, reply, (size_t)k)) return;
+
+    struct cff_sink sink = { fd, 0, 0 };
+    kw_cfstore_each(filters_path, base, from, (size_t)n, cff_one, &sink);
+}
+
 /* "cfheaders FROM COUNT" -> "0 FROM COUNT" then COUNT lines of "height hash",
    the hash big-endian as everything else on this socket prints it. The filters
    kwd caches start at height 1, and the chain they hang from is the verified
@@ -261,6 +325,10 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
        them; they are positional, not named. */
     if (!strcmp(cmd, "cfheaders")) {
         serve_cfheaders(filters_path, watch, op, fd);
+        return;
+    }
+    if (!strcmp(cmd, "cffilters")) {
+        serve_cffilters(filters_path, watch, op, fd);
         return;
     }
 

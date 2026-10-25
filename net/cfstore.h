@@ -73,4 +73,18 @@ long kw_cfstore_headers(const char *path, uint32_t base_height, uint32_t from_he
    agreed to. */
 int kw_cfstore_base(const char *path, uint8_t out[32]);
 
+/* Hand each cached filter in [from_height, from_height + count) to (fn), in
+   height order, stopping early if it returns 0. Seeks to the first one through
+   the height index rather than walking from the base, so serving the tail does
+   not read the whole cache. Returns how many were passed, or -1.
+ *
+ * Streamed rather than returned in a buffer because a filter is variable length
+ * and a wide range is megabytes: a caller writing to a socket should write as it
+ * reads. The filter bytes belong to the reader and are not valid after (fn)
+ * returns. */
+typedef int (*kw_cfstore_filter_fn)(void *ctx, uint32_t height,
+                                    const uint8_t *filter, size_t flen);
+long kw_cfstore_each(const char *path, uint32_t base_height, uint32_t from_height,
+                     size_t count, kw_cfstore_filter_fn fn, void *ctx);
+
 #endif /* KOINU_CFSTORE_H */

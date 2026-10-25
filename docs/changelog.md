@@ -3,6 +3,19 @@
 ## [Unreleased]
 
 ## What's Changed
+* kwd: serve the filters themselves, streamed rather than buffered
+  `cffilters <from> <count>` completes the pair: cfheaders says what the chain
+  commits to and this hands over the bytes it commits to, so a client can take
+  filters from one node and check them against a chain from another. Bounded at
+  500 a reply rather than 2000, since each line is a filter and not 32 bytes.
+
+  kw_cfstore_each walks the cache from a height, seeking there through the
+  index rather than from the base, and hands each filter to a callback. Nothing
+  buffers a range: kwd hex-encodes straight to the socket two characters at a
+  time and stops at the first short write, so a client that hangs up costs one
+  filter rather than the whole span. The count line is settled against what is
+  actually cached before any filter is written, because a reply promising n and
+  delivering fewer is indistinguishable from a truncated connection.
 * kwd: serve the filter-header chain, so a filter source can be checked
   A light client that takes BIP158 filters from one place has no way to tell a
   missing entry from an empty block, and the filter it needs is the same filter
