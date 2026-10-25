@@ -457,24 +457,45 @@ int main(int argc, char **argv)
 
     kw_ec_start();
 
-    static uint8_t seeds[64][MAXIN];
-    static size_t seedlen[64];
+    /* One allocation per file, sized to the file. This used to be a fixed
+       64 x MAXIN array, which capped the replay at 64 inputs: with 100 seeds
+       committed, 36 of them were never run and the gate said nothing, because
+       a skipped seed looks exactly like a seed that passed. It also reserved
+       4 MiB to hold inputs that average a kilobyte, so lifting the cap costs
+       less memory than keeping it did. */
+    uint8_t **seeds = NULL;
+    size_t *seedlen = NULL;
     int nseed = 0;
-    for (int i = 1; i < argc && nseed < 64; i++) {
+    if (argc > 1) {
+        seeds = (uint8_t **)calloc((size_t)argc - 1, sizeof *seeds);
+        seedlen = (size_t *)calloc((size_t)argc - 1, sizeof *seedlen);
+        if (!seeds || !seedlen) { free(seeds); free(seedlen); return 1; }
+    }
+    for (int i = 1; i < argc; i++) {
         FILE *f = fopen(argv[i], "rb");
         if (!f) continue;
-        seedlen[nseed] = fread(seeds[nseed], 1, MAXIN, f);
+        uint8_t *buf = (uint8_t *)malloc(MAXIN);
+        if (!buf) { fclose(f); break; }
+        size_t n = fread(buf, 1, MAXIN, f);
         fclose(f);
-        if (seedlen[nseed]) {
-            LLVMFuzzerTestOneInput(seeds[nseed], seedlen[nseed]);   /* replay as-is */
-            nseed++;
-        }
+        if (!n) { free(buf); continue; }
+        LLVMFuzzerTestOneInput(buf, n);                 /* replay as-is */
+        uint8_t *fit = (uint8_t *)realloc(buf, n);      /* keep only what was read */
+        seeds[nseed] = fit ? fit : buf;
+        seedlen[nseed] = n;
+        nseed++;
     }
+    static uint8_t noise[8][64];
+    static uint8_t *noisep[8];
+    static size_t noiselen[8];
     if (!nseed) {                       /* no corpus: start from noise */
         for (int i = 0; i < 8; i++) {
-            seedlen[i] = 64;
-            for (size_t k = 0; k < 64; k++) seeds[i][k] = (uint8_t)rnd();
+            for (size_t k = 0; k < 64; k++) noise[i][k] = (uint8_t)rnd();
+            noisep[i] = noise[i];
+            noiselen[i] = 64;
         }
+        seeds = noisep;
+        seedlen = noiselen;
         nseed = 8;
     }
 
@@ -487,6 +508,11 @@ int main(int argc, char **argv)
 
     kw_ec_stop();
     printf("fuzz ok: %d seed(s) replayed, %ld mutations, no crash\n", nseed, iters);
+    if (seeds != noisep) {
+        for (int i = 0; i < nseed; i++) free(seeds[i]);
+        free(seeds);
+        free(seedlen);
+    }
     return 0;
 }
 #endif
