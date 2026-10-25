@@ -282,6 +282,25 @@ int main(void)
         }
     }
 
+    /* A cache that starts partway up the chain is the point of a slice: a phone
+       will never hold filters from genesis, and what it does hold is still
+       worth passing on. Heights are base_height + index, so the same two
+       filters read as 500000 and 500001 when the base says so. */
+    {
+        uint32_t heights[8];
+        long r = kw_cfstore_match_range(tmp, NULL, 500000, 500001, &bt, 1, heights, 8);
+        if (r < 1 || heights[0] != 500001) {
+            fprintf(stderr, "FAIL: a sliced cache did not report its own heights (r=%ld)\n", r);
+            return 1;
+        }
+        struct { int n; int stop_after; uint8_t seen[2][256]; size_t len[2]; uint32_t h[2]; } g;
+        memset(&g, 0, sizeof g); g.stop_after = 99;
+        if (kw_cfstore_each(tmp, 500000, 500000, 8, each_cb, &g) != 2 ||
+            g.h[0] != 500000 || g.h[1] != 500001) {
+            fprintf(stderr, "FAIL: a sliced cache streamed the wrong heights\n"); return 1;
+        }
+    }
+
     /* a corrupt tag is rejected */
     FILE *f = fopen(tmp, "r+b"); if (f) { fputc('X', f); fclose(f); }
     if (kw_cfstore_count(tmp) != -1) { fprintf(stderr, "FAIL: corrupt tag accepted\n"); return 1; }

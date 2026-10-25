@@ -103,6 +103,12 @@ static int peer_dial(kw_peer *p, const char *host)
 static kw_peer g_peer[KWD_MAX_PEERS];
 static int     g_alive[KWD_MAX_PEERS];
 static int     g_filters;            /* the peers serve bip158 and the cache is built */
+/* The height of the first filter in the cache. 1 for a cache built from the
+   start of the chain, which is what a node with the whole thing has. A node
+   holding only a slice says so with --filters-base, and then it can serve that
+   slice: the data does not have to start at genesis to be worth passing on, and
+   a phone will never hold a cache that does. */
+static uint32_t g_cfbase = 1;
 
 /* The first connection still standing, which is what the filter and block queries
    use. They need a peer, not a particular one. */
@@ -250,7 +256,7 @@ static void serve_cffilters(const char *filters_path, const char *a, const char 
        indistinguishable from a truncated connection. */
     long have = kw_cfstore_count(filters_path);
     if (have < 0) { write_all(fd, "2 no filters here\n", 18); return; }
-    uint32_t base = 1;
+    uint32_t base = g_cfbase;
     if (from < base || (long)(from - base) >= have) {
         write_all(fd, "4 none in that range\n", 21); return;
     }
@@ -285,7 +291,7 @@ static void serve_cfheaders(const kw_chainparams *cp, const char *filters_path,
     /* Rooted at the nearest anchor rather than the sidecar: the published cache
        carries a v1 sidecar with no base, so asking for one refused to serve a
        cache this node holds and has verified. */
-    long n = kw_cfstore_headers_anchored(cp, filters_path, 1, from, out, count);
+    long n = kw_cfstore_headers_anchored(cp, filters_path, g_cfbase, from, out, count);
     if (n <= 0) { free(out); write_all(fd, "4 none in that range\n", 21); return; }
 
     int k = snprintf(reply, sizeof reply, "0 %u %ld\n", from, n);
@@ -374,7 +380,7 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
        tying up this single-threaded loop for millions of round trips: the request
        deadline covers reading the line, not the work behind it. */
     kw_outpoint_result r;
-    if (kw_query_outpoint_range(p, s, g_filters ? filters_path : NULL, 1,
+    if (kw_query_outpoint_range(p, s, g_filters ? filters_path : NULL, g_cfbase,
                                 spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
         write_all(fd, "1 scan failed\n", 14); return;
     }
@@ -444,11 +450,21 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--socket")) sock = (++i < argc) ? argv[i] : NULL;
         else if (!strcmp(argv[i], "--headers")) headers_path = (++i < argc) ? argv[i] : NULL;
         else if (!strcmp(argv[i], "--filters")) filters_path = (++i < argc) ? argv[i] : NULL;
+        else if (!strcmp(argv[i], "--filters-base")) {
+            uint32_t u = 0;
+            if (++i >= argc || !parse_u32(argv[i], INT32_MAX, &u) || u == 0) {
+                fprintf(stderr, "kwd: --filters-base needs a height of 1 or more\n");
+                return 2;
+            }
+            g_cfbase = u;
+        }
         else if (argv[i][0] != '-' && seen++ == 0 && nnode < KWD_MAX_PEERS) node[nnode++] = argv[i];
     }
     if (!nnode || !sock || !filters_path) {
         fprintf(stderr, "usage: kwd [--regtest|--testnet] --node HOST [--node HOST ...]\n"
                         "           [--port N] [--tor] --socket PATH --filters PATH\n"
+                        "           [--filters-base HEIGHT]  (the cache holds a slice,\n"
+                        "                                     not the chain from genesis)\n"
                         "           [--headers PATH]\n"
                         "\n"
                         "Several --node weigh the chains they serve and keep the one with\n"
@@ -521,7 +537,7 @@ int main(int argc, char **argv)
         if (fp->peer_services && !(fp->peer_services & KW_NODE_COMPACT_FILTERS)) {
             fprintf(stderr, "kwd: peer serves no compact filters, answering from blocks; "
                             "a request costs every block since its --since\n");
-        } else if (kw_cfstore_sync(fp, &s, filters_path, 1) < 0) {
+        } else if (kw_cfstore_sync(fp, &s, filters_path, g_cfbase) < 0) {
             fprintf(stderr, "kwd: filter sync failed\n"); goto done;
         } else {
             g_filters = 1;
