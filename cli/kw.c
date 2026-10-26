@@ -4914,8 +4914,14 @@ int main(int argc, char **argv)
        kw height reached no network at all while the README said the seeds would
        supply it. Offline commands are excluded so making a key or signing does not
        announce itself with a dns lookup, and --daemon asks kwd rather than a peer. */
+    /* sweep is two commands sharing a name and only one of them is networked.
+       Naming it here resolved the seeds for the signing half too, so the run
+       holding a private key announced itself with a dns lookup before it had
+       even read the key, which is the thing the split exists to prevent.
+       --watch is the half that finds coins; --wif opens nothing. */
     int wants_peer = (!strcmp(cmd, "scan") || !strcmp(cmd, "height") ||
-                      !strcmp(cmd, "sweep") || !strcmp(cmd, "cfcheckpoints") ||
+                      (!strcmp(cmd, "sweep") && watch_arg) ||
+                      !strcmp(cmd, "cfcheckpoints") ||
                       !strcmp(cmd, "send") ||
                       (!strcmp(cmd, "outpoint") && !daemon_arg));
     if (g_nnodes == 0 && wants_peer) {

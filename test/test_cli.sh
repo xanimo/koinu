@@ -457,6 +457,26 @@ case "$GAPOUT" in
         echo "FAIL: --gap 20000 is within the cap and was refused" >&2; exit 1;;
 esac
 
+# sweep is two commands sharing a name and only --watch is networked, but the
+# seed-resolution list named "sweep" outright, so the run holding a private key
+# resolved dns before it had read the key. Mainnet on purpose: regtest has no
+# dns seeds, so nothing here could have caught it. A passing run touches no
+# network at all, and only a regression makes it reach for one.
+if command -v strace >/dev/null 2>&1; then
+    printf 'cQvA6DtKPqKv8Yc8GhV3wvKzE5L6aKJ1mXzN9vZr7qYtH3sWdPmB\n' > "$WORK/swwif"
+    ./kw new --keystore "$WORK/mks" --passphrase "@$WORK/pass" --words 12 >/dev/null 2>&1
+    MADDR=$(./kw address --keystore "$WORK/mks" --passphrase "@$WORK/pass" --index 1 \
+            | awk '{print $NF}')
+    [ -n "$MADDR" ] || { echo "FAIL: no mainnet address for the sweep check" >&2; exit 1; }
+    MSPK=$(./kw address --keystore "$WORK/mks" --passphrase "@$WORK/pass" --index 0 --spk)
+    ./test/mkutxos "$WORK/sw.utxos" "$MSPK" 500000000 2 >/dev/null 2>&1
+    NS=$(strace -f -e trace=socket,connect ./kw sweep --wif "@$WORK/swwif" \
+          --to "$MADDR" --utxos "$WORK/sw.utxos" 2>&1 >/dev/null \
+          | grep -cE '^(socket|connect)\(' || true)
+    [ "$NS" -eq 0 ] || {
+        echo "FAIL: sweep --wif made $NS network call(s) while holding a key" >&2; exit 1; }
+fi
+
 # The psbt crossing: a machine with the account public key composes the spend
 # and cannot sign it, and a machine with the keystore signs it and opens no
 # socket. No node is needed here because mkutxos builds a set whose amounts are
