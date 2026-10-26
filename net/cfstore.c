@@ -616,6 +616,19 @@ long kw_cfstore_headers_anchored(const kw_chainparams *cp, const char *path,
            v1 sidecar does not carry one */
         uint8_t base[32];
         if (!kw_cfstore_base(path, base)) return -1;
+        /* The sidecar's base is by definition the filter header of the block
+           before the first cached filter, so it is the one answer for that
+           height and a cache holding a slice cannot contain it. Checking the
+           slice's first filter needs the header beneath it, which left the one
+           range a sliced cache exists to serve as the one it could not. */
+        if (base_height > 0 && from_height + 1 == base_height) {
+            long n;
+            memcpy(out, base, 32);
+            if (cap == 1) return 1;
+            n = kw_cfstore_headers(path, base_height, base_height, base, out + 32, cap - 1);
+            if (n < 0) return -1;
+            return n + 1;
+        }
         return kw_cfstore_headers(path, base_height, from_height, base, out, cap);
     }
 

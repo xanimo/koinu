@@ -110,6 +110,25 @@ static int     g_filters;            /* the peers serve bip158 and the cache is 
    a phone will never hold a cache that does. */
 static uint32_t g_cfbase = 1;
 
+/* The filter path indexes a header store and a filter cache against each other,
+   so it takes a store whose first entry is the cache's base height. This store
+   always starts at height 1, which is the same thing only when the cache does
+   too: with --filters-base above 1 every filter was checked against the block
+   at the wrong height, the walk-back decided the chain had moved under all of
+   them, and the slice was dropped whole. This hands over the part that lines
+   up. Shallow on purpose, since it borrows the array: never freed, never
+   appended to. */
+static kw_headerstore cf_view(const kw_headerstore *s, uint32_t base)
+{
+    kw_headerstore v = *s;
+    size_t off = base > 1 ? (size_t)(base - 1) : 0;
+    if (off >= v.count) { v.h = NULL; v.count = 0; v.cap = 0; return v; }
+    v.h += off;
+    v.count -= off;
+    v.cap = v.count;
+    return v;
+}
+
 /* The first connection still standing, which is what the filter and block queries
    use. They need a peer, not a particular one. */
 static kw_peer *first_live(void)
@@ -384,7 +403,8 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
        tying up this single-threaded loop for millions of round trips: the request
        deadline covers reading the line, not the work behind it. */
     kw_outpoint_result r;
-    if (kw_query_outpoint_range(p, s, g_filters ? filters_path : NULL, g_cfbase,
+    kw_headerstore sv = cf_view(s, g_cfbase);
+    if (kw_query_outpoint_range(p, &sv, g_filters ? filters_path : NULL, g_cfbase,
                                 spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
         write_all(fd, "1 scan failed\n", 14); return;
     }
@@ -537,11 +557,16 @@ int main(int argc, char **argv)
            start without them meant refusing to start at all. Runs either way and
            says which. */
         kw_peer *fp = first_live();
+        kw_headerstore cfs = cf_view(&s, g_cfbase);
         if (!fp) { fprintf(stderr, "kwd: no peer\n"); goto done; }
+        if (g_cfbase > 1 && cfs.count == 0) {
+            fprintf(stderr, "kwd: --filters-base %u is past the chain tip\n", g_cfbase);
+            goto done;
+        }
         if (fp->peer_services && !(fp->peer_services & KW_NODE_COMPACT_FILTERS)) {
             fprintf(stderr, "kwd: peer serves no compact filters, answering from blocks; "
                             "a request costs every block since its --since\n");
-        } else if (kw_cfstore_sync(fp, &s, filters_path, g_cfbase) < 0) {
+        } else if (kw_cfstore_sync(fp, &cfs, filters_path, g_cfbase) < 0) {
             fprintf(stderr, "kwd: filter sync failed\n"); goto done;
         } else {
             g_filters = 1;

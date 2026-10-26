@@ -759,6 +759,76 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
+    /* A cache holding a slice cannot contain the filter header below its own
+       first record, and that is exactly the one a reader needs to check that
+       record: without it the one range a sliced cache exists to serve is the
+       one it cannot. The sidecar's base is that header by definition. */
+    {
+        const char *sp = "test_cfstore_slice.tmp";
+        char idx[80], fh[80];
+        const uint32_t BASE = 500;               /* a slice starting at height 500 */
+        uint8_t base[32], cur[32], truth[6][32], got[8][32];
+        kw_chainparams cpn = KW_DOGE_REGTEST;
+
+        snprintf(idx, sizeof idx, "%s.idx", sp);
+        snprintf(fh, sizeof fh, "%s.fh", sp);
+        remove(sp); remove(idx); remove(fh);
+
+        cpn.cfcheckpoints = NULL; cpn.ncfcheckpoints = 0;   /* sidecar, not anchors */
+        memset(base, 0x3c, 32);
+        memcpy(cur, base, 32);
+        for (uint32_t i = 0; i < 6; i++) {
+            uint8_t bh[32], filt[20], fhash[32];
+            size_t fl = 5 + (i % 4);
+            memset(bh, (int)(0x50 + i), 32);
+            for (size_t k = 0; k < fl; k++) filt[k] = (uint8_t)(i * 17 + k);
+            if (!kw_cfstore_append(sp, bh, filt, fl)) {
+                fprintf(stderr, "FAIL: slice append %u\n", i); return 1;
+            }
+            kw_hash256(filt, fl, fhash);
+            kw_cf_header_step(fhash, cur, cur);
+            memcpy(truth[i], cur, 32);
+        }
+
+        /* a v2 sidecar: tag, count, the tip, then the base */
+        {
+            FILE *f = fopen(fh, "wb");
+            uint8_t b[4 + 8 + 32 + 32];
+            if (!f) { fprintf(stderr, "FAIL: slice sidecar\n"); return 1; }
+            memcpy(b, "KWFI", 4);
+            for (int i = 0; i < 8; i++) b[4 + i] = (uint8_t)((uint64_t)6 >> (8 * i));
+            memcpy(b + 12, truth[5], 32);
+            memcpy(b + 44, base, 32);
+            if (fwrite(b, 1, sizeof b, f) != sizeof b) { fclose(f); fprintf(stderr, "FAIL: slice sidecar write\n"); return 1; }
+            fclose(f);
+        }
+
+        /* the height below the cache is the base, and the walk carries on from it */
+        if (kw_cfstore_headers_anchored(&cpn, sp, BASE, BASE - 1, got[0], 1) != 1 ||
+            memcmp(got[0], base, 32) != 0) {
+            fprintf(stderr, "FAIL: the header below a slice is not its chain base\n");
+            return 1;
+        }
+        {
+            long n = kw_cfstore_headers_anchored(&cpn, sp, BASE, BASE - 1, got[0], 4);
+            if (n != 4 || memcmp(got[0], base, 32) != 0 ||
+                memcmp(got[1], truth[0], 32) != 0 ||
+                memcmp(got[2], truth[1], 32) != 0 ||
+                memcmp(got[3], truth[2], 32) != 0) {
+                fprintf(stderr, "FAIL: a range starting below a slice does not continue "
+                                "into it (n=%ld)\n", n);
+                return 1;
+            }
+        }
+        /* and the cache's own first height still answers from the base */
+        if (kw_cfstore_headers_anchored(&cpn, sp, BASE, BASE, got[0], 1) != 1 ||
+            memcmp(got[0], truth[0], 32) != 0) {
+            fprintf(stderr, "FAIL: a slice's first height is wrong\n"); return 1;
+        }
+
+        remove(sp); remove(idx); remove(fh);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
     return 0;
 }
