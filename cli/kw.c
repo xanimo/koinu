@@ -1227,6 +1227,20 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
     int watch_cap = scan_watch_cap(gap);
     kw_scan_addr *watch = NULL;
 
+    /* The table holds watch_cap entries per chain and the first pass watches
+       (gap) of them, so a gap past the cap walks off the end of the allocation
+       before a single header is read: receive indices alias the change half and
+       change indices leave the region. --gap takes up to 100000 against a cap
+       of 20000. The growth path below already refuses to reach past what was
+       derived; this is the same refusal for the pass that comes first, and it
+       is a refusal rather than a clamp because a clamp under-watches and
+       reports a balance with coins missing from it. */
+    if (gap > watch_cap) {
+        fprintf(stderr, "kw: --gap %d is past the %d addresses this derives per chain; "
+                        "use --gap %d or less\n", gap, watch_cap, watch_cap);
+        return 1;
+    }
+
     if (xpub_arg) {
         /* Watch-only: no keystore, no passphrase, no secret anywhere in this
            process. The account key walks change and index, which are unhardened,

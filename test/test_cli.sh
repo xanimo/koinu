@@ -433,6 +433,30 @@ if ./kw --regtest backup split --keystore "$WORK/bk.ks" --passphrase "@$WORK/pas
     echo "FAIL: split accepted an unknown --format" >&2; exit 1
 fi
 
+# scan derives watch_cap addresses per chain, capped at 20000, and the first
+# pass watches --gap of them: a gap past the cap indexed off the end of the
+# allocation before a header was read. The check runs before the connection, so
+# an unreachable node is enough to tell the two refusals apart.
+GAPOUT=$(./kw --regtest scan --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+          --node 127.0.0.1 --port 1 --gap 100000 2>&1 | head -1)
+case "$GAPOUT" in
+    *"past the 20000 addresses"*) ;;
+    *) echo "FAIL: --gap 100000 was not refused: $GAPOUT" >&2; exit 1;;
+esac
+# 20001 is the first refused, and 20000 gets as far as the network
+GAPOUT=$(./kw --regtest scan --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+          --node 127.0.0.1 --port 1 --gap 20001 2>&1 | head -1)
+case "$GAPOUT" in
+    *"past the 20000 addresses"*) ;;
+    *) echo "FAIL: --gap 20001 was not refused: $GAPOUT" >&2; exit 1;;
+esac
+GAPOUT=$(./kw --regtest scan --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+          --node 127.0.0.1 --port 1 --gap 20000 2>&1 | head -1)
+case "$GAPOUT" in
+    *"past the 20000 addresses"*)
+        echo "FAIL: --gap 20000 is within the cap and was refused" >&2; exit 1;;
+esac
+
 # The psbt crossing: a machine with the account public key composes the spend
 # and cannot sign it, and a machine with the keystore signs it and opens no
 # socket. No node is needed here because mkutxos builds a set whose amounts are
