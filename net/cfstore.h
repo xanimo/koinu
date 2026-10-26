@@ -105,4 +105,24 @@ typedef int (*kw_cfstore_filter_fn)(void *ctx, uint32_t height,
 long kw_cfstore_each(const char *path, uint32_t base_height, uint32_t from_height,
                      size_t count, kw_cfstore_filter_fn fn, void *ctx);
 
+/* Write the sidecar for a cache whose first record is (base_height), taking the
+ * chain base from the compiled-in anchor at base_height - 1.
+ *
+ * A slice fetched by byte range arrives without one, and koinu refuses a cache
+ * it cannot tie to a verified chain, so such a slice cannot be served at all.
+ * The way out is not to adopt a base from whoever served the bytes, which is
+ * the trust-on-first-use the sidecar exists to end. It is to take the base from
+ * an anchor the release already carries, and that is why the height matters: a
+ * slice starting one block after an anchor hangs from a header this binary
+ * knows, and one starting anywhere else does not.
+ *
+ * This writes the sidecar and nothing else. It does not make the filters true.
+ * The chain it records is derived from the bytes already on disk, and what
+ * tests those is kw cfcheck --with-filters against the same anchor.
+ *
+ * Returns 1, 0 if no anchor sits exactly at base_height - 1, or -1 if the cache
+ * is missing or cannot be walked. */
+int kw_cfstore_sidecar_from_anchor(const kw_chainparams *cp, const char *path,
+                                   uint32_t base_height);
+
 #endif /* KOINU_CFSTORE_H */

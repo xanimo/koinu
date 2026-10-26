@@ -829,6 +829,87 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
+    /* The sidecar a byte-range slice arrives without, built from an anchor
+       rather than adopted from whoever served the bytes. The height is the
+       whole of it: one block after an anchor hangs from a header the binary
+       carries, anywhere else hangs from nothing and has to be refused. */
+    {
+        const char *sp = "test_cfstore_sidecar.tmp";
+        char idx[80], fh[80], ahex[65];
+        const uint32_t BASE = 1001;
+        uint8_t anchor_hdr[32], cur[32], tip[32];
+        kw_chainparams cpa = KW_DOGE_REGTEST;
+        kw_cfcheckpoint anchor[1];
+
+        snprintf(idx, sizeof idx, "%s.idx", sp);
+        snprintf(fh, sizeof fh, "%s.fh", sp);
+        remove(sp); remove(idx); remove(fh);
+
+        memset(anchor_hdr, 0x6e, 32);
+        hex_rev(anchor_hdr, ahex);
+        anchor[0].height = BASE - 1; anchor[0].header = ahex;
+        cpa.cfcheckpoints = anchor; cpa.ncfcheckpoints = 1;
+
+        /* a cache that is not there cannot have a sidecar written for it */
+        if (kw_cfstore_sidecar_from_anchor(&cpa, sp, BASE) != -1) {
+            fprintf(stderr, "FAIL: wrote a sidecar for a cache that is not there\n");
+            return 1;
+        }
+
+        memcpy(cur, anchor_hdr, 32);
+        for (uint32_t i = 0; i < 9; i++) {
+            uint8_t bh[32], filt[16], fhash[32];
+            size_t fl = 4 + (i % 5);
+            memset(bh, (int)(0x70 + i), 32);
+            for (size_t k = 0; k < fl; k++) filt[k] = (uint8_t)(i * 13 + k);
+            if (!kw_cfstore_append(sp, bh, filt, fl)) {
+                fprintf(stderr, "FAIL: sidecar append %u\n", i); return 1;
+            }
+            kw_hash256(filt, fl, fhash);
+            kw_cf_header_step(fhash, cur, cur);
+        }
+        memcpy(tip, cur, 32);
+
+        /* a base that is not one past an anchor has nothing to hang from */
+        if (kw_cfstore_sidecar_from_anchor(&cpa, sp, BASE + 3) != 0) {
+            fprintf(stderr, "FAIL: a base off the anchor was accepted\n"); return 1;
+        }
+        if (kw_cfstore_sidecar_from_anchor(&cpa, sp, 1) != -1) {
+            fprintf(stderr, "FAIL: height 1 has no block below it to anchor on\n"); return 1;
+        }
+
+        if (kw_cfstore_sidecar_from_anchor(&cpa, sp, BASE) != 1) {
+            fprintf(stderr, "FAIL: the sidecar was not written\n"); return 1;
+        }
+        /* and it says what it should: the anchor as base, the chain over the
+           cache as tip, and a count matching the records */
+        {
+            uint8_t gotbase[32];
+            long cnt = 0;
+            if (!kw_cfstore_base(sp, gotbase) || memcmp(gotbase, anchor_hdr, 32) != 0) {
+                fprintf(stderr, "FAIL: the sidecar's base is not the anchor\n"); return 1;
+            }
+            if (!fh_peek(sp, &cnt) || cnt != 9) {
+                fprintf(stderr, "FAIL: the sidecar counts %ld records, not 9\n", cnt); return 1;
+            }
+        }
+        /* the store now serves, rooted at that base */
+        {
+            uint8_t got[32];
+            if (kw_cfstore_headers_anchored(&cpa, sp, BASE, BASE - 1, got, 1) != 1 ||
+                memcmp(got, anchor_hdr, 32) != 0) {
+                fprintf(stderr, "FAIL: the sidecar does not serve its own base\n"); return 1;
+            }
+            if (kw_cfstore_headers_anchored(&cpa, sp, BASE, BASE + 8, got, 1) != 1 ||
+                memcmp(got, tip, 32) != 0) {
+                fprintf(stderr, "FAIL: the sidecar's tip is not the chain over the cache\n");
+                return 1;
+            }
+        }
+
+        remove(sp); remove(idx); remove(fh);
+    }
+
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  a sidecar built from an anchor and refused off one,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
     return 0;
 }

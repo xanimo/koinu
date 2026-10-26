@@ -809,3 +809,24 @@ long kw_cfstore_match(const char *path, const kw_headerstore *s, uint32_t base_h
 {
     return kw_cfstore_match_range(path, s, base_height, base_height, items, nitems, heights, cap);
 }
+
+int kw_cfstore_sidecar_from_anchor(const kw_chainparams *cp, const char *path,
+                                   uint32_t base_height)
+{
+    uint8_t root[32], tip[32];
+    uint32_t ah;
+    long have;
+
+    if (!cp || !path || base_height < 2) return -1;
+
+    /* Exactly at base_height - 1, not merely below it. An anchor further down
+       is the root of a chain that runs through blocks this cache does not hold,
+       so it cannot say what the header above them is. */
+    ah = anchor_below(cp, base_height - 1, root);
+    if (ah != base_height - 1) return 0;
+
+    have = kw_cfstore_count(path);
+    if (have <= 0) return -1;
+    if (!chain_over(path, (size_t)have, root, tip)) return -1;
+    return fh_save(path, have, tip, root) ? 1 : -1;
+}

@@ -90,9 +90,23 @@ cache that has to drop a reorganised tail cannot work out what its new tip's
 header is, which left deleting the whole file as the only answer.
 
 koinu refuses a cache it cannot tie to a verified chain, so the sidecar is
-required rather than an optimisation. a slice pulled with `cfpull.sh` does not
-come with one and cannot be served until it has one, and a slice that starts one
-block after a compiled-in anchor can build its own: the base is that anchor.
+required rather than an optimisation, and a slice pulled with `cfpull.sh`
+arrives without one. `kw cfbase` writes it:
+
+    tools/cfpull.sh <BASE_URL> 6400001 150 slice.filters
+    kw cfbase --filters slice.filters --filters-base 6400001
+
+the base it records is the compiled-in anchor at 6400000, not anything the
+mirror said, which is the whole reason the height is constrained: a slice
+starting one block after an anchor hangs from a header the binary already
+carries, and one starting anywhere else hangs from nothing and is refused.
+
+    kw: this release carries no filter anchor at height 6400049, so a slice
+        starting at 6400050 has nothing to hang from.
+    kw: the nearest usable --filters-base is 6400001
+
+writing the sidecar does not make the filters true. it records the chain the
+bytes on disk produce, and what tests them is the check below.
 
 ## checking any of this yourself
 

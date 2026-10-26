@@ -97,6 +97,9 @@ static void usage(void)
       "  cfcheck  --daemon SOCKET [--daemon SOCKET] --since HEIGHT [--count N]\n"
       "           [--with-filters]   (check a source against the anchors, against\n"
       "           another source, and that its filters fit the chain it served)\n"
+      "  cfbase   --filters PATH --filters-base HEIGHT\n"
+      "                               (write the sidecar for a pulled slice, with\n"
+      "                                the chain base from a compiled-in anchor)\n"
       "  send     --tx HEX|@FILE|- --node HOST [--node HOST ...] [--port N]\n"
       "           [--tor] [--yes]   (--node repeats: relayed by whichever takes it)\n"
       "  psbt     build --utxos PATH --to ADDR:AMOUNT --xpub XPUB (watch only)\n"
@@ -2480,6 +2483,47 @@ static long cffilters_check(const char *sock, uint32_t from, uint32_t count,
    the anchors compiled in here, and where two sources are given, with each
    other. A single source that matches every anchor it covers is still only one
    source above the last one, and this says so rather than implying otherwise. */
+/* The sidecar a byte-range slice arrives without. cfpull fetches bytes and
+   verifies nothing by design, and koinu refuses a cache it cannot tie to a
+   verified chain, so a slice is unservable until it has one. The base comes
+   from an anchor this binary carries rather than from whoever served the
+   bytes, which is why the slice has to begin one block after an anchor. */
+static int cmd_cfbase(const kw_chainparams *cp, const char *filters_arg, long base)
+{
+    if (!filters_arg || base <= 1) { usage(); return 2; }
+    if (base > 0xffffffffL) { fprintf(stderr, "kw: --filters-base is past any height\n"); return 2; }
+
+    int r = kw_cfstore_sidecar_from_anchor(cp, filters_arg, (uint32_t)base);
+    if (r == 0) {
+        fprintf(stderr, "kw: this release carries no filter anchor at height %ld, so a "
+                        "slice starting at %ld has nothing to hang from.\n",
+                base - 1, base);
+        /* Naming the nearest is the difference between a refusal and an
+           instruction: the heights are not guessable from outside. */
+        for (size_t k = 0; k < cp->ncfcheckpoints; k++) {
+            uint32_t h = cp->cfcheckpoints[k].height;
+            if ((long)h + 1 >= base || k + 1 == cp->ncfcheckpoints) {
+                fprintf(stderr, "kw: the nearest usable --filters-base is %llu\n",
+                        (unsigned long long)h + 1);
+                break;
+            }
+        }
+        return 1;
+    }
+    if (r < 0) {
+        fprintf(stderr, "kw: %s is missing, empty or not a filter cache\n", filters_arg);
+        return 1;
+    }
+
+    long n = kw_cfstore_count(filters_arg);
+    printf("sidecar %s.fh\n", filters_arg);
+    printf("base    the anchor at height %ld\n", base - 1);
+    printf("covers  %ld filter(s), heights %ld to %ld\n", n, base, base + n - 1);
+    printf("nothing here checked those filters. That is\n");
+    printf("  kw cfcheck --daemon SOCK --since %ld --with-filters\n", base);
+    return 0;
+}
+
 static int cmd_cfcheck(const kw_chainparams *cp, const char *sock_a, const char *sock_b,
                        long since, long count, int with_filters)
 {
@@ -4735,6 +4779,7 @@ int main(int argc, char **argv)
     const char *node = "127.0.0.1", *utxos_arg = NULL, *wif_arg = NULL;
     const char *watch_arg = NULL, *outpoint_arg = NULL, *headers_arg = NULL, *tx_arg = NULL;
     const char *filters_arg = NULL, *daemon_arg = NULL, *redeem_arg = NULL, *utxo_arg = NULL;
+    long cfbase_arg = 0;
     const char *daemon2_arg = NULL;
     long count_arg = 0;
     int want_filters = 0;
@@ -4796,6 +4841,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--outpoint"))   outpoint_arg = NEXT();
         else if (!strcmp(a, "--headers"))    headers_arg = NEXT();
         else if (!strcmp(a, "--filters"))    filters_arg = NEXT();
+        else if (!strcmp(a, "--filters-base")) { uint32_t u = 0;
+            if (!arg_u32("--filters-base", NEXT(), INT32_MAX, &u)) return 2;
+            cfbase_arg = (long)u; }
         else if (!strcmp(a, "--since"))    { uint32_t u = 0;
             if (!arg_u32("--since", NEXT(), INT32_MAX, &u)) return 2;
             since = (long)u; }
@@ -4870,6 +4918,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
     else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
     else if (!strcmp(cmd, "cfcheck")) rc = cmd_cfcheck(cp, daemon_arg, daemon2_arg, since, count_arg, want_filters);
+    else if (!strcmp(cmd, "cfbase"))  rc = cmd_cfbase(cp, filters_arg, cfbase_arg);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
     else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);

@@ -32,7 +32,9 @@
 # OUT         local cache to write, e.g. slice.filters
 # CACHE_BASE  height of the published cache's first record, default 1
 #
-# Feed the result to kwd with --filters OUT --filters-base FROM.
+# The result has no sidecar and koinu will not serve a cache without one, so
+# FROM has to be one block after a compiled-in anchor and the slice needs
+# "kw cfbase" run over it before kwd will take it.
 set -eu
 
 [ $# -ge 4 ] || { echo "usage: cfpull.sh BASE_URL FROM COUNT OUT [CACHE_BASE]" >&2; exit 2; }
@@ -93,6 +95,10 @@ got=$(( $(wc -c < "$OUT") - 4 ))
     echo "cfpull: wanted $(( END - START )) bytes of records, got $got" >&2; exit 1; }
 
 echo "cfpull: wrote $OUT, $(wc -c < "$OUT") bytes"
+echo "cfpull: sidecar     kw cfbase --filters $OUT --filters-base $FROM"
 echo "cfpull: serve with  kwd --filters $OUT --filters-base $FROM"
-echo "cfpull: check with  kw cfcheck --daemon SOCK --since $(( FROM + 1 )) --with-filters"
-echo "cfpull: nothing here verified anything. The anchors do that, on the far side."
+echo "cfpull: check with  kw cfcheck --daemon SOCK --since $FROM --with-filters"
+echo "cfpull: the sidecar step is not optional: koinu refuses a cache it cannot tie"
+echo "cfpull: to a verified chain, and a slice arrives without one. cfbase takes the"
+echo "cfpull: base from a compiled-in anchor, which is why FROM has to be one block"
+echo "cfpull: after one. Nothing here verified anything; the anchors do, on that side."
