@@ -2321,6 +2321,21 @@ out:
    already spent), 1 on error. Lets a caller confirm a funding output to its own
    depth policy without trusting a claimed height. */
 /* Ask a running kwd over its unix socket. Prints the reply text, returns its rc. */
+/* A reply from a daemon or a filter source is someone else's bytes, and echoing
+   them into an error message hands the terminal whatever they like. OSC 52 is
+   the one that matters here: it replaces the clipboard, and on a wallet that
+   means replacing an address a person is about to paste, which is worse than
+   anything the reply could claim in words. Printable ascii and newline go
+   through, everything else is shown as an escape so the text stays readable and
+   carries no control sequence. */
+static void put_untrusted(FILE *f, const char *s)
+{
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '\n' || (*p >= 0x20 && *p <= 0x7e)) fputc((int)*p, f);
+        else fprintf(f, "\\x%02x", (unsigned)*p);
+    }
+}
+
 /* Read a "0 from n" header then n lines of "height hex" from a kwd socket into
    (out). Returns how many headers landed, or -1 with a reason on stderr. The
    reply is read whole before parsing: these are small, and a line-at-a-time
@@ -2361,7 +2376,9 @@ static long cfheaders_from(const char *sock, uint32_t from, uint32_t count,
 
     if (buf[0] != '0') {
         char *nl = strchr(buf, '\n'); if (nl) *nl = '\0';
-        fprintf(stderr, "kw: %s refused: %s\n", sock, buf);
+        fprintf(stderr, "kw: %s refused: ", sock);
+        put_untrusted(stderr, buf);
+        fputc('\n', stderr);
         free(buf); return -1;
     }
     unsigned got_from = 0, got_n = 0;
@@ -2444,7 +2461,9 @@ static long cffilters_check(const char *sock, uint32_t from, uint32_t count,
     buf[len] = '\0';
     if (!len || buf[0] != '0') {
         char *nl = strchr(buf, '\n'); if (nl) *nl = '\0';
-        fprintf(stderr, "kw: %s refused filters: %s\n", sock, len ? buf : "(nothing)");
+        fprintf(stderr, "kw: %s refused filters: ", sock);
+        put_untrusted(stderr, len ? buf : "(nothing)");
+        fputc('\n', stderr);
         free(buf); return -1;
     }
     unsigned got_from = 0, got_n = 0;
@@ -2652,7 +2671,7 @@ static int outpoint_via_daemon(const char *sock, const char *watch, const char *
     rep[r] = '\0';
     int rc = atoi(rep);
     char *sp = strchr(rep, ' ');
-    printf("%s", sp ? sp + 1 : rep);         /* reply text carries its own newline */
+    put_untrusted(stdout, sp ? sp + 1 : rep);  /* reply text carries its own newline */
     return rc;
 }
 

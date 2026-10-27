@@ -182,7 +182,28 @@ $OUT" >&2; exit 1;;
 esac
 
 
+# A refusal is text from someone else's machine and it used to reach the
+# terminal whole. OSC 52 sets the clipboard, which on a wallet means swapping an
+# address someone is about to paste, and the erase-line that follows hides it.
+# Nothing kw prints may carry an escape byte, whatever the source sends.
+ESC=$(printf '\033')
+BEL=$(printf '\007')
+serve "$D/osc" "9 ${ESC}]52;c;bXJDRHJDeWJCNkoxdlJmYndNNWhlbWRKejczRndEQkM4cg==${BEL}${ESC}[2K${ESC}]0;owned${BEL}
+"
+OUT=$(./kw cfcheck --daemon "$D/osc" --since 100000 --count 1 2>&1 || true)
+case "$OUT" in
+    *"$ESC"*) echo "FAIL: an escape byte from a filter source reached the terminal:
+$(printf '%s' "$OUT" | cat -v)" >&2; exit 1;;
+esac
+# and it is escaped rather than dropped, so the reply is still legible
+case "$OUT" in
+    *'\x1b'*) ;;
+    *) echo "FAIL: the escape was not shown as one:
+$OUT" >&2; exit 1;;
+esac
+
 echo "cfcheck ok: a chain is held to the compiled-in anchors, a contradicting one
   refused, two sources compared where no anchor can settle it, a short reply
-  and a daemon refusal both caught, and filters checked against the chain
-  they were served with, with a swapped pair rejected"
+  and a daemon refusal both caught, filters checked against the chain
+  they were served with, with a swapped pair rejected, and a refusal carrying
+  terminal escapes shown as text rather than handed to the terminal"
