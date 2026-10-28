@@ -278,11 +278,20 @@ fi
 # the mnemonic is the only backup, so a write that fails must not leave a
 # keystore behind: against /dev/full every write failed and kw still sealed one
 # and exited 0.
-if ./kw --regtest new --keystore "$WORK/ksfull" --passphrase "@$WORK/pass" > /dev/full 2>/dev/null; then
-    echo "FAIL: kw new exited 0 with the mnemonic written nowhere" >&2; exit 1
-fi
-if [ -e "$WORK/ksfull" ]; then
-    echo "FAIL: a keystore was sealed whose mnemonic was never shown" >&2; exit 1
+#
+# Guarded on the device existing, and the skip is printed. macOS has no
+# /dev/full, so the redirect failed there, kw never ran, the if saw a non-zero
+# status and both checks below passed having tested nothing, while the suite
+# reported success.
+if : > /dev/full 2>/dev/null; then
+    if ./kw --regtest new --keystore "$WORK/ksfull" --passphrase "@$WORK/pass" > /dev/full 2>/dev/null; then
+        echo "FAIL: kw new exited 0 with the mnemonic written nowhere" >&2; exit 1
+    fi
+    if [ -e "$WORK/ksfull" ]; then
+        echo "FAIL: a keystore was sealed whose mnemonic was never shown" >&2; exit 1
+    fi
+else
+    echo "note: no writable /dev/full, so the out-of-space keystore check did not run" >&2
 fi
 
 # kw backup verify answers "do these words restore this wallet" without putting
@@ -304,13 +313,29 @@ RCV=0
      --mnemonic "@$WORK/bkm2" >/dev/null 2>&1 || RCV=$?
 [ "$RCV" = "3" ] || {
     echo "FAIL: another wallet's words verified, or exited $RCV and not 3" >&2; exit 1; }
-# neither the words nor the seed may appear in the output
+# Neither the words nor the seed may appear in the output. Checked by pinning
+# every line to a known shape rather than by looking for a word inside it: the
+# output carries a fingerprint, an address and a path, and a short BIP39 word
+# lands inside those by chance. Worse, eight of them are substrings of kw's own
+# wording whatever the path is (add, address, dress, finger, first, match,
+# print, word), so one mnemonic in 312 failed this on nothing at all. Pinning
+# the shape catches a leaked word as surely and cannot lose a lottery, since
+# anything extra in the output fails it.
 VOUT=$(./kw --regtest backup verify --keystore "$WORK/bk.ks" --passphrase "@$WORK/pass" \
         --mnemonic "@$WORK/bkm" 2>&1)
-FIRSTWORD=$(printf '%s' "$BK" | cut -d' ' -f1)
-case "$VOUT" in
-    *"$FIRSTWORD"*) echo "FAIL: backup verify printed part of the mnemonic" >&2; exit 1;;
-esac
+VN=$(printf '%s\n' "$VOUT" | wc -l | tr -d ' ')
+[ "$VN" = "3" ] || {
+    echo "FAIL: backup verify printed $VN lines, want 3:
+$VOUT" >&2; exit 1; }
+printf '%s\n' "$VOUT" | sed -n 1p | grep -qE '^fingerprint [0-9a-f]{8}$' || {
+    echo "FAIL: the fingerprint line is not just a fingerprint:
+$(printf '%s\n' "$VOUT" | sed -n 1p)" >&2; exit 1; }
+printf '%s\n' "$VOUT" | sed -n 2p | grep -qE '^first address +[1-9A-HJ-NP-Za-km-z]{26,35}$' || {
+    echo "FAIL: the address line is not just an address:
+$(printf '%s\n' "$VOUT" | sed -n 2p)" >&2; exit 1; }
+printf '%s\n' "$VOUT" | sed -n 3p | grep -qxF "match: those words restore $WORK/bk.ks" || {
+    echo "FAIL: the verdict line says more than it should:
+$(printf '%s\n' "$VOUT" | sed -n 3p)" >&2; exit 1; }
 # and with no keystore it reports what the words derive, for checking by hand
 ./kw --regtest backup verify --mnemonic "@$WORK/bkm" 2>/dev/null | grep -q "^fingerprint" \
     || { echo "FAIL: no fingerprint without a keystore" >&2; exit 1; }
