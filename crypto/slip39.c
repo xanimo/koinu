@@ -631,6 +631,15 @@ kw_slip39_err kw_slip39_combine(const char *const *mnemonics, size_t nm,
     if (!sh) return KW_SLIP39_ARG;
     kw_secure_keep(sh, nm * sizeof *sh);
 
+    /* Kept here rather than after the shares parse, because out: forgets them
+       either way and a forget without a keep is not a no-op: the lock table
+       counts per page, so it decrements whatever else is on that page and
+       unlocks a page another caller is holding. The caller above this one locks
+       a seed, so a single mistyped share word could unlock the seed while it
+       was still in use. */
+    kw_secure_keep(gshare, sizeof gshare);
+    kw_secure_keep(ems, sizeof ems);
+
     for (i = 0; i < nm; i++) {
         if ((err = kw_slip39_decode(mnemonics[i], &sh[i])) != KW_SLIP39_OK) goto out;
         if (sh[i].id != sh[0].id || sh[i].ext != sh[0].ext || sh[i].e != sh[0].e ||
@@ -646,9 +655,6 @@ kw_slip39_err kw_slip39_combine(const char *const *mnemonics, size_t nm,
     n = sh[0].valuelen;
     if (sh[0].group_count < sh[0].group_threshold) { err = KW_SLIP39_GROUPING; goto out; }
     if (n > outcap) { err = KW_SLIP39_ARG; goto out; }
-
-    kw_secure_keep(gshare, sizeof gshare);
-    kw_secure_keep(ems, sizeof ems);
 
     /* One pass per distinct group index, in order of first appearance. Each
        group must contribute exactly its member threshold and no more, so a set

@@ -1263,7 +1263,9 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         uint8_t seed[64];
 
         kw_secure_keep(seed, sizeof seed);
-        if (!open_seed(path, pass_arg, seed)) return 1;
+        /* forgotten on the way out, or the page stays locked for the life of
+           the process against a keep that nothing balances */
+        if (!open_seed(path, pass_arg, seed)) { kw_secure_forget(seed, sizeof seed); return 1; }
         kw_bip32_key master;
         kw_secure_keep(&master, sizeof master);
         int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
@@ -4274,9 +4276,14 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
         return 1;
     }
 
+    /* Both kept before the first thing that can jump to out:, which forgets
+       them whether they were kept or not. A forget without a keep is not a
+       no-op: the lock table counts per page, so it decrements whatever else
+       sits on that page, and an open_seed failure here unlocked a page while
+       the seed on it was still live. */
     kw_secure_keep(seed, sizeof seed);
-    if (!open_seed(path, pass_arg, seed)) goto out;
     kw_secure_keep(&master, sizeof master);
+    if (!open_seed(path, pass_arg, seed)) goto out;
     if (!kw_bip32_from_seed(seed, sizeof seed, cp->bip32, &master)) {
         fprintf(stderr, "kw: cannot derive the master key\n");
         goto out;
@@ -4284,6 +4291,9 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
 
     nkeys = 2 * gap;
     keys = (kw_bip32_key *)malloc((size_t)nkeys * sizeof *keys);
+    /* Kept as soon as it exists, for the same reason: the allocations below can
+       fail and jump to out:, which forgets keys whenever the pointer is set. */
+    if (keys) kw_secure_keep(keys, (size_t)nkeys * sizeof *keys);
     h160 = malloc((size_t)nkeys * 20);
     /* The branch and index each hash came from, so an output paying this wallet
        is named by its derivation rather than guessed at by position: a psbt is
@@ -4291,7 +4301,6 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     hchg = (int *)malloc((size_t)nkeys * sizeof *hchg);
     hidx = (int *)malloc((size_t)nkeys * sizeof *hidx);
     if (!keys || !h160 || !hchg || !hidx) { fprintf(stderr, "kw: out of memory\n"); goto out; }
-    kw_secure_keep(keys, (size_t)nkeys * sizeof *keys);
     for (int chg = 0; chg <= 1; chg++)
         for (int i = 0; i < gap; i++) {
             uint8_t pub[33];
