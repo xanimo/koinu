@@ -32,10 +32,17 @@ CONSUMER_CFLAGS=${1:--std=gnu11 -O1}
 # else stops the run rather than quietly becoming "no shared library".
 SHARED_OK=${2:-}
 if [ -z "$SHARED_OK" ]; then
-    SHARED_OK=$(make -s shared-ok 2>&1) || {
+    # --no-print-directory, and stderr kept out of the value. make adds -w to
+    # MAKEFLAGS for sub-makes and -s does not suppress the directory messages it
+    # turns on, only this does, so run from inside another make the answer
+    # arrives as "Entering directory" and "Leaving directory" around the yes.
+    # Measured with MAKEFLAGS=w MAKELEVEL=2: three lines without it, one with.
+    # The build passes the answer as $2 and never comes through here, so this is
+    # for running the gate on its own, which is the case that has no second
+    # source to fall back to.
+    SHARED_OK=$(make -s --no-print-directory shared-ok 2>/dev/null) || {
         echo "FAIL: could not ask the Makefile whether a shared library builds here." >&2
-        echo "  make -s shared-ok exited $?, saying:" >&2
-        echo "$SHARED_OK" | sed 's/^/    /' >&2
+        echo "  make -s --no-print-directory shared-ok exited $?" >&2
         exit 1
     }
 fi
