@@ -159,7 +159,11 @@ typedef enum {
     KW_UTXOSET_FORMAT,     /* not a utxo set, or a version with unbound amounts */
     KW_UTXOSET_UNBOUND,    /* an entry its named transaction does not carry */
     KW_UTXOSET_SHORT,      /* the end marker is absent or disagrees */
-    KW_UTXOSET_MEMORY
+    KW_UTXOSET_MEMORY,
+    /* At the end, not beside the one it reads with: docs/abi.md bumps the
+       soname for an enumerator inserted anywhere else, since it renumbers
+       every one after it. */
+    KW_UTXOSET_DUPLICATE   /* the same outpoint listed more than once */
 } kw_utxoset_err;
 
 int kw_utxoset_load(kw_utxoset *us, const char *path, kw_utxoset_err *why);

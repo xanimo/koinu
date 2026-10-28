@@ -199,6 +199,17 @@ int kw_utxoset_add(kw_utxoset *us, const uint8_t txid[32], uint32_t vout,
     uint8_t *keep = NULL;
 
     if (spklen > KW_SPK_MAX) return 0;
+
+    /* A chain creates an outpoint once, so a second entry for one is not a
+       second coin: it is the same coin counted twice. Listed twice in a file it
+       loaded at double the balance and kw sign then built a transaction
+       spending the coin twice, which no node accepts, and a block applied twice
+       by a scan would do the same. Refused rather than merged, because a set
+       that says this is wrong about something and the balance it would show is
+       not the balance. */
+    for (size_t i = 0; i < us->count; i++)
+        if (us->u[i].vout == vout && memcmp(us->u[i].txid, txid, 32) == 0) return 0;
+
     if (rawtx) {
         if (!kw_utxo_bind(txid, vout, value, spk, spklen, rawtx, rawlen)) return 0;
         keep = (uint8_t *)malloc(rawlen);
@@ -446,6 +457,7 @@ const char *kw_utxoset_strerror(kw_utxoset_err e)
     case KW_UTXOSET_FORMAT:  return "not a koinu utxo set v2";
     case KW_UTXOSET_UNBOUND: return "an entry names a value its transaction does not carry";
     case KW_UTXOSET_SHORT:   return "cut short, or the count disagrees";
+    case KW_UTXOSET_DUPLICATE: return "the same outpoint is listed more than once";
     case KW_UTXOSET_MEMORY:  return "out of memory";
     }
     return "unknown error";
@@ -562,8 +574,20 @@ int kw_utxoset_load(kw_utxoset *us, const char *path, kw_utxoset_err *why)
             t = prevtx_find(txs, ntx, txid);
             if (!t) { ok = 0; err = KW_UTXOSET_UNBOUND; break; }
             /* kw_utxoset_add binds the value and the script to those bytes. */
+            /* The bind and the duplicate check both refuse here, and they are
+               different complaints, so the set is consulted to tell them apart
+               rather than reporting every refusal as an unbound amount. */
             if (!kw_utxoset_add(us, txid, vout, value, height, spk, spklen, coinbase,
-                                t->raw, t->len)) { ok = 0; err = KW_UTXOSET_UNBOUND; break; }
+                                t->raw, t->len)) {
+                ok = 0;
+                err = KW_UTXOSET_UNBOUND;
+                for (size_t k = 0; k < us->count; k++)
+                    if (us->u[k].vout == vout && memcmp(us->u[k].txid, txid, 32) == 0) {
+                        err = KW_UTXOSET_DUPLICATE;
+                        break;
+                    }
+                break;
+            }
             added++;
         }
     }

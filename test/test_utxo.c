@@ -233,6 +233,31 @@ int main(void)
         kw_utxoset_free(o);
     }
 
+    /* A chain creates an outpoint once, so a second entry for one is the same
+       coin counted twice. Accepted, it doubled the balance and the builder then
+       spent the coin twice in one transaction, which no node takes. */
+    {
+        kw_utxoset *o;
+        uint8_t t1[32], spk[25] = { 0x76, 0xa9, 0x14 };
+        memset(t1, 0x33, 32);
+        if (!(o = kw_utxoset_new())) { fprintf(stderr, "FAIL: init\n"); return 1; }
+        if (!kw_utxoset_add(o, t1, 0, 1000, 100, spk, sizeof spk, 0, NULL, 0))
+            { fprintf(stderr, "FAIL: the first entry was refused\n"); return 1; }
+        if (kw_utxoset_add(o, t1, 0, 1000, 100, spk, sizeof spk, 0, NULL, 0))
+            { fprintf(stderr, "FAIL: the same outpoint was added twice\n"); return 1; }
+        if (kw_utxoset_count(o) != 1 || kw_utxoset_balance(o) != 1000) {
+            fprintf(stderr, "FAIL: count %zu balance %llu after the duplicate\n",
+                    kw_utxoset_count(o), (unsigned long long)kw_utxoset_balance(o));
+            return 1;
+        }
+        /* a different vout of the same transaction is a different coin */
+        if (!kw_utxoset_add(o, t1, 1, 1000, 100, spk, sizeof spk, 0, NULL, 0))
+            { fprintf(stderr, "FAIL: vout 1 of the same txid was refused\n"); return 1; }
+        if (kw_utxoset_count(o) != 2)
+            { fprintf(stderr, "FAIL: vout 1 did not land\n"); return 1; }
+        kw_utxoset_free(o);
+    }
+
     /* Core carries nCoinbaseMaturity in the consensus parameters and picks the
        set by the coin's own height: 30 below 145000 and 240 from there on, on
        mainnet and testnet alike, and 60 throughout on regtest. One constant of
@@ -392,7 +417,7 @@ int main(void)
         kw_watchset_free(bw);
     }
 
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  the same outpoint refused twice,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
            "  and a value that would wrap the total refused,\n"
            "  a saved amount bound to its transaction and a tampered one refused\n");
     return 0;
