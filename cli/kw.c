@@ -3239,6 +3239,22 @@ static int cosign_run(const kw_chainparams *cp, const char *tx_arg, const char *
                             "is a spend\n    rather than a co-signature\n");
             return 1;
         }
+
+        /* Counting keys cannot tell a 2-of-2 from a 1-of-2: both name two. A
+           standard multisig states its threshold outright, so where the script
+           is that shape the threshold is read rather than inferred, and one
+           that needs a single signature is refused however many keys it lists.
+           Only this shape can be read this way. A branching script is still
+           judged by the count above, which is why that comment stands. */
+        int m = 0, nkeys = 0;
+        uint8_t mskeys[16][33];
+        if (kw_script_multisig_parse(redeem, rl, &m, mskeys, &nkeys) && m < 2) {
+            kw_secure_forget(sk, sizeof sk);
+            fprintf(stderr, "kw: --redeem is a %d-of-%d, so one signature spends it; "
+                            "signing it is a spend\n    rather than a co-signature\n",
+                    m, nkeys);
+            return 1;
+        }
     }
 
     /* The coin being spent, which binds the script to what it is locked to. psbt
@@ -4628,10 +4644,15 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
             printf("%s\n", hex); rc = 0;
         }
     } else if (!strcmp(sub, "sign")) {
+        /* Hoisted out of the block below so the checks after the key is decoded
+           can see it: this is the co-signing path and it took any redeem script
+           at all, including one naming no key of the signer's and one a single
+           signature spends. */
+        uint8_t r[KW_PSBT_SCRIPT_MAX];
+        size_t rl = 0;
         if (vin < 0 || (size_t)vin >= kw_tx_nin(kw_psbt_unsigned_tx(p))) { fprintf(stderr, "kw: no input %d\n", vin); goto out; }
         if (redeem_arg) {
-            uint8_t r[KW_PSBT_SCRIPT_MAX];
-            size_t rl = read_hex_arg(redeem_arg, "--redeem", r, sizeof r);
+            rl = read_hex_arg(redeem_arg, "--redeem", r, sizeof r);
             if (!rl || !kw_psbt_set_redeem(p, (size_t)vin, r, rl)) goto out;
         }
         if (utxo_arg) {
@@ -4662,6 +4683,36 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
                 fprintf(stderr, "kw: bad key\n"); goto out;
             }
             kw_hash160(mypub, comp ? 33 : 65, myh);
+
+            /* The same three questions cosign asks of a redeem script, which
+               this path never asked: does it name this key, does it need more
+               than this key, and if it states a threshold is that threshold
+               more than one. Without them a signer handed its own p2pkh script
+               as a redeem signed with exit 0, and a 1-of-2 produced a complete
+               spend out of the half of the split that exists to need two. */
+            if (rl) {
+                int msm = 0, msn = 0;
+                uint8_t mskeys[16][33];
+                if (!comp || !kw_script_names_key(r, rl, mypub)) {
+                    kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
+                    fprintf(stderr, "kw: --redeem does not name this key, so signing it "
+                                    "would not be a co-signature\n");
+                    goto out;
+                }
+                if (kw_script_key_count(r, rl, 4) < 2) {
+                    kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
+                    fprintf(stderr, "kw: --redeem names one key, this one, so a signature "
+                                    "over it is a spend\n    rather than a co-signature\n");
+                    goto out;
+                }
+                if (kw_script_multisig_parse(r, rl, &msm, mskeys, &msn) && msm < 2) {
+                    kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
+                    fprintf(stderr, "kw: --redeem is a %d-of-%d, so one signature spends "
+                                    "it; signing it is a spend\n    rather than a "
+                                    "co-signature\n", msm, msn);
+                    goto out;
+                }
+            }
 
             for (size_t i = 0; i < kw_tx_nin(stx); i++) {
                 const uint8_t *u = NULL;

@@ -734,6 +734,40 @@ for ONE in "21${PUB1}ac" "5121${PUB1}51ae" "21${PUB1}ac61" "21${PUB1}ad51" \
         echo "FAIL: cosign signed a script naming one key: $ONE" >&2; exit 1
     fi
 done
+# A well-formed 1-of-2 is the case the loop above cannot reach: every script in
+# it is paired with a coin paying p2sh(REDEEM), so --utxo refuses them before
+# the key count is ever consulted and the check itself went untested. This coin
+# really does pay p2sh of the 1-of-2, and the spend really does spend that coin,
+# so nothing stands in front of the decision. Two keys are named and one of them
+# signs alone, which is a complete spend out of the command whose whole purpose
+# is that it is not.
+REDEEM1OF2=5121034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa2102466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f2752ae
+PREV1OF2=010000000111000000000000000000000000000000000000000000000000000000000000110000000000ffffffff0100c2eb0b0000000017a9140e8321711b6c80b9137997b99ad33252b6d6a3cb8700000000
+UNS1OF2=0100000001d70d7661dc32c8af7072b55f47fcaa7bc1158fbc66c809b3a3a67f944fcae7e50000000000ffffffff0100e1f505000000001976a914111111111111111111111111111111111111111188ac00000000
+if ./kw --regtest cosign --tx "$UNS1OF2" --redeem "$REDEEM1OF2" --utxo "$PREV1OF2" \
+       --wif "@$WORK/w1" >/dev/null 2>&1; then
+    echo "FAIL: cosign signed a 1-of-2, which one key spends alone" >&2; exit 1
+fi
+# psbt sign takes the same script by the same route and must refuse it too.
+# --maxfee because this fixture pays a 1 DOGE fee on 192 bytes: without it the
+# cap refuses the spend and the test passes without the redeem script ever
+# being judged, which is the test passing for the wrong reason.
+P1OF2=$(./kw --regtest psbt create --tx "$UNS1OF2" --utxo "$PREV1OF2" --vin 0 2>/dev/null)
+[ -n "$P1OF2" ] || { echo "FAIL: psbt create made no psbt for the 1-of-2 coin" >&2; exit 1; }
+if ./kw --regtest psbt sign --psbt "$P1OF2" --wif "@$WORK/w1" \
+       --redeem "$REDEEM1OF2" --vin 0 --maxfee 2 >/dev/null 2>&1; then
+    echo "FAIL: psbt sign signed a 1-of-2, which one key spends alone" >&2; exit 1
+fi
+./kw --regtest psbt sign --psbt "$P1OF2" --wif "@$WORK/w1" --redeem "$REDEEM1OF2" \
+     --vin 0 --maxfee 2 2>&1 | grep -q "1-of-2" \
+    || { echo "FAIL: psbt sign refused the 1-of-2 for some other reason" >&2; exit 1; }
+# and a redeem script naming no key of the signer's is refused, which that path
+# did not check at all: a signer's own p2pkh script signed with exit 0
+if ./kw --regtest psbt sign --psbt "$P1OF2" --wif "@$WORK/w1" \
+       --redeem "$P2PKH" --vin 0 --maxfee 2 >/dev/null 2>&1; then
+    echo "FAIL: psbt sign signed a redeem script that does not name its key" >&2; exit 1
+fi
+
 # and nothing ties the script to the coin without --utxo, so it is required
 if ./kw --regtest cosign --tx "$UNSIGNED" --redeem "$REDEEM" --wif "@$WORK/w1" >/dev/null 2>&1; then
     echo "FAIL: cosign signed without --utxo" >&2; exit 1
