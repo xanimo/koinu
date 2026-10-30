@@ -2,7 +2,209 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-29
+
+## Upgrading
+
+Relink. `KW_ABI` goes 0 to 1, so `libkoinu-sign.so.1` and `libkoinu-chain.so.1`
+replace the `.so.0` pair and the two install side by side. One entry point
+narrowed, which is what the number is for.
+
+What a caller has to change:
+
+- `kw_psbt_sign` refuses a p2sh input whose redeem script does not name the
+  signing key. Binding the script to the coin says the script is the one that
+  coin is locked to and says nothing about whose signature it wants, so a caller
+  handed a script naming somebody else got a signature and a success. A caller
+  that relied on that gets 0 now and cannot tell it from a bug, which is why it
+  bumps the soname. Nothing to change for a caller signing scripts that name its
+  own key.
+- `kw_script_cosignable` is new, and is the question a co-signer asks that a
+  plain signer does not: does this script name my key and still need somebody
+  else. The checks behind it were in the cli until now, so a caller linking the
+  library could sign a 1-of-2 the cli refused. It counts distinct keys and reads
+  the threshold where the script states one, rather than matching known shapes,
+  so a branching redeem of the kind a payment channel uses passes.
+- `kw_utxoset_add` refuses an outpoint the set already holds. A chain creates an
+  outpoint once, so a second entry is the same coin counted twice, and a set
+  carrying one loaded at double the balance. `KW_UTXOSET_DUPLICATE` is appended
+  to `kw_utxoset_err`, at the end so nothing is renumbered.
+
+What a command-line caller has to change:
+
+- `kw cosign` and `kw psbt sign --wif` refuse a redeem script that one signature
+  satisfies, including a well-formed 1-of-2, which they signed before.
+- `kw psbt sign --keystore` prints each output, the inputs and the fee before the
+  psbt, refuses a fee above the cap without `--maxfee`, and refuses an input
+  whose attached transaction is not the one its outpoint names. A script reading
+  its stdout sees the new lines.
+- `kw scan --gap` is capped at 20000 and says so rather than reading past the
+  addresses it derived.
+- Filter-header anchors sit every 10000 rather than every 100000, which only
+  matters to someone regenerating them. Every height the old table carried is in
+  the new one with the same value.
+
 ## What's Changed
+* psbt: the library signed a script that did not name the signing key
+  prevout_code checked that a p2sh redeem hashed to the coin and stopped, which
+  says the script is the one that coin is locked to and nothing about whose
+  signature it wants. A signer handed a script naming somebody else produced a
+  signature over their spend and returned success. The no-redeem branch beside it
+  has always required the prevout to pay the signing key.
+
+  Found by a caller asking whether the refusals added to the cli were in the
+  library too. They were not, and the missing half is the half anyone linking
+  libkoinu-sign consumes.
+
+  Key counts and thresholds stay out of kw_psbt_sign on purpose. It is the
+  general signer and a p2sh over one key is a real thing to own, so refusing it
+  would be the library deciding what its caller may spend. kw_script_cosignable
+  is that question, and cosign and psbt sign --wif both ask it rather than
+  keeping three checks inline in two commands.
+* cosign: a 1-of-2 passed as a script needing two signatures
+  Counting distinct keys cannot tell a 2-of-2 from a 1-of-2, since both name two,
+  so OP_1 <A> <B> OP_2 CHECKMULTISIG satisfied the only test cosign made. One key
+  signed alone and --finish built a complete spend carrying that script. A
+  standard multisig states its threshold, so that is read now instead of
+  inferred.
+
+  The existing one-key cases could not have caught it: every script in that loop
+  is paired with a coin paying p2sh of the good redeem, so --utxo refused them
+  before the key count was consulted and the check itself was never reached.
+* utxo: the same outpoint twice counted the same coin twice
+  kw_utxoset_add had no duplicate check and utxo_remove takes the first match
+  only, so a file listing one entry twice loaded at double the balance. One 1000
+  DOGE coin listed twice funded a 2000 DOGE spend, and the transaction carried
+  two inputs with one distinct outpoint, which no node accepts. Refused rather
+  than merged: a set that says this is wrong about something.
+* scan: --gap past the derived addresses walked off the watch table
+  The table holds 20000 per chain and the first pass watched --gap of them, so
+  above 20000 the receive indices aliased the change half and the change indices
+  read past the allocation, before a header was read. The pass that grows the
+  watch already refused to reach past what was derived; the one that comes first
+  did not. Refused rather than clamped, since an under-watched scan reports a
+  balance with coins missing from it.
+* sweep: the signing half resolved dns before it read the key
+  sweep is two commands sharing a name and only --watch is networked, but the
+  seed-resolution list named sweep outright, so a run given --wif resolved the
+  dns seeds before dispatch. That is the run holding a private key announcing
+  itself to a third party before it had opened the file the key is in. Measured
+  on mainnet, since regtest has no dns seeds: 4 socket, 51 connect and 3 sendto
+  calls, and none at all now.
+* kw: a filter source's refusal reached the terminal whole
+  The three places that echo a reply from kwd or a filter source printed it
+  verbatim, and a reply is someone else's bytes. OSC 52 sets the clipboard, so a
+  hostile source swaps the address a person is about to paste and the erase-line
+  after it hides that anything happened. Printable ascii and newline go through
+  and everything else is shown as an escape.
+* mem: three places forgot pages they had never kept
+  kw_secure_forget decrements a per-page count and unlocks at zero, so calling it
+  on memory never kept decrements whatever else sits on that page: keep 64 bytes
+  of a page and VmLck is 4 kB, forget 64 unkept bytes of the same page and it is
+  0 with the owner still holding it. kw_slip39_combine kept gshare and ems only
+  after the shares parsed, psbt_sign_keystore kept master only after open_seed
+  succeeded, and out: forgot them regardless.
+* cfstore: the anchored walk chained the anchor onto filter number one
+  kw_cfstore_headers always reads from the first record in the file and takes
+  base_height as the label for that one rather than a position to seek to, so
+  passing it ah + 1 chained the anchor root onto the store's first filter and
+  every filter header the anchored path served was wrong. A range starting on an
+  anchor came out as from_height < base_height, which it refuses, and
+  serve_cfheaders folded that -1 into "none in that range".
+* cfstore: --filters-base served a slice against the wrong blocks
+  The filter path indexes a header store and a cache against each other and takes
+  a store whose first entry is the cache's base height. kwd's store always begins
+  at height 1, so a slice had every filter compared with the block at the wrong
+  height, the walk-back found nothing that agreed, and the slice was dropped
+  whole.
+* cfstore: kw cfbase writes the sidecar a pulled slice arrives without
+  A slice fetched by byte range has no sidecar and koinu refuses a cache it
+  cannot tie to a verified chain, so cfpull produced a file nothing would serve
+  and said to serve it. The base comes from an anchor the release carries rather
+  than from whoever served the bytes, which is what constrains the height: a
+  slice starting one block after an anchor hangs from a header the binary knows.
+* chainparams: filter anchors every 10000 rather than every 100000
+  The table stopped at 6400000 with the chain past 6433000, so everything above
+  the last anchor rested on one peer's word. 644 anchors to 6432061, keeping
+  every one of the 64 heights the old table carried with no disagreement, so this
+  extends what was already trusted rather than making a new claim. Denser anchors
+  also bound the anchored walk: a one-header reply on the mainnet cache is 0.022s
+  at an anchor and 0.053s 9999 above one, against 100000 filters before.
+* tools: cfpush.sh publishes a filter cache as a dated snapshot
+  The counterpart to cfpull.sh. Writes a manifest holding the record count, the
+  sidecar's verified tip and a sha256 of each file, then uploads all four under
+  <PREFIX>/<DATE>-<TIP>/ so a reader that fetched a slice an hour ago and one
+  fetching now are not served different bytes under one url. The manifest goes
+  last and anonymous read is opt-in.
+* docs: the filter cache on disk, and that the records are core's
+  cf.filters is a 4-byte tag then dogecoin core's block filter index record
+  stream, 32-byte block hash and CompactSize length and the filter, which is what
+  blockfilterindex.cpp writes. Checked against fltr00000.dat from a node running
+  the bip157/158 backport rather than inferred: 14894 records compared, 14894
+  identical, 0 differing, staggered by one because core indexes from genesis.
+* cfstore: root a served chain at an anchor, not at the sidecar
+  Rooting at a compiled-in anchor is a stronger claim than rooting at something a
+  peer once said, it works for a v1 sidecar which records no base at all, and it
+  reads from the anchor rather than from the first cached filter.
+* kwd: serve the slice a node actually holds
+  --filters-base says the cache starts somewhere other than genesis, so a node
+  holding a slice can serve it. The data does not have to start at genesis to be
+  worth passing on, and a phone will never hold a cache that does.
+* tools/cfpull.sh: take a slice of a published cache by byte range
+  The index is a flat array, so a height maps to a byte range by arithmetic
+  alone and three range requests fetch a slice with no server logic. curl rather
+  than anything in this tree on purpose, since object storage is https and the
+  signing half references no socket call.
+* gcs: build a filter, not only read one
+  Byte-exact against the BIP158 vectors: encode the elements and require the
+  bytes to equal the published filter.
+* gcs: check a filter covers the block it claims to describe
+  kw_gcs_covers walks the elements a block produces and names the first one the
+  filter does not match, which is what auditing a filter means.
+* spv: read the scripts a block creates, for auditing a filter against it
+  Merkle-checked and skipping OP_RETURN, which is what a basic filter omits.
+* cf: a creation filter, which any holder of a block can generate
+  The scripts a block creates need no UTXO set, so any machine holding the block
+  can produce that half. Behind its own type byte, since it is not a BIP158 basic
+  filter and does not interoperate with one.
+* cf: a spent-outpoint filter, kept as a fallback
+  The other half, which does need the set. Documented as the fallback rather than
+  the route.
+* opmap: the outpoint to script map an indexer needs
+  An input names only the outpoint it consumes, so producing a basic filter needs
+  a map from outpoint to script over every unspent output. Open addressing with
+  backward-shift deletion, since a spend removes an entry and tombstones would
+  outnumber the data.
+* opmap: the measurement refutes the reason this was written
+  The claim was that keeping only the script roughly halves the cost against
+  core's chainstate. Measured on mainnet at height 6429620, core holds 202671977
+  outputs in 13636287062 bytes, which is 67.3 an entry, and this map carries the
+  script alone for 67.1. Core already compresses a script to a type byte and 20
+  bytes, so there was nothing to win. At that count an in-memory map is 13.6 GB
+  of RAM to hold what core holds in 13.6 GB of disk behind a cache, so this is
+  useful on regtest and over a bounded range and is not the way to generate
+  mainnet filters.
+* fuzz: replay every committed seed, not the first 64 of them
+  The corpus was read into a fixed 64-entry array, so with 100 seeds committed it
+  replayed 64 and ignored 36 while reporting success.
+* fuzz: the corpus grows to 799, now that all of it is replayed
+* test: the abi gate's fallback read make's directory messages as its answer
+  make adds -w to MAKEFLAGS for sub-makes and -s does not suppress the directory
+  messages that turns on, so asking from inside another make answers with
+  Entering directory, then yes, then Leaving directory. Three lines match neither
+  yes nor no. The build passes the answer as $2 and does not come through there,
+  so this is the gate run on its own, which is the case with no second source.
+* test: backup verify's leak check was a lottery
+  It looked for the mnemonic's first word as a substring of output carrying a
+  fingerprint, an address and a path. Eight wordlist entries are substrings of
+  kw's own wording whatever the path is, so one mnemonic in 312 failed on
+  nothing, and 1 in 120 with a macos-length temp path. Each line is pinned to a
+  known shape now. The /dev/full case beside it skipped silently where that
+  device does not exist, passing two assertions having tested nothing.
+* test: drive cfcheck from a stub this tree builds, not from nc
+  nc cannot bind a unix socket on macos, so the gate needed a stub that can.
+* docs: the release process still said filter anchors every 100000
+  Following it would have put the old table back.
 * kw cfcheck --with-filters: the filters have to fit the chain that carried them
   An anchored chain says nothing about the filters a node then hands over
   unless the two are tied together, and the tie is BIP157's own:
@@ -94,6 +296,8 @@
   knows it, and the query that remains for standalone use distinguishes yes
   from no from a failure, stopping the run on the third rather than guessing.
   make asan goes from 41 ok lines to 51 and reports abi ok.
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.4.0...v0.5.0
 
 ## [0.4.0] - 2026-10-23
 
