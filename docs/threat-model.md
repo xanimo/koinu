@@ -192,7 +192,15 @@ it never sees them. The hmac output whose left half becomes a child secret, and
 the copy of a parent's secret a hardened index makes, are locked for the same
 reason. Also
 the key the keystore derives from a passphrase, a WIF decoded for a sweep or a
-co-signature, and the buffer a passphrase or mnemonic is read into. The master
+co-signature, and the buffer a passphrase or mnemonic is read into.
+
+Not everything the wallet wipes is locked, and the list above is the locked set
+rather than the secret set. The mnemonic buffer `kw new` prints from, the child
+key `derive_watch` walks with, the change key `kw sign` derives, the master HMAC
+output in bip32.c and the entropy and rebuilt mnemonic in bip39.c are zeroed and
+not locked, so each can reach swap between being written and being wiped. Reading
+this section as "every secret is mlock'd" is reading more than it says, and those
+are the ones it does not cover. The master
 xprv is the seed in another encoding, so calling the seed the only secret and
 locking only the seed was a distinction without a difference. Those locks are counted per page, because mlock is not
 and two of them share a page often: the derived key sits a frame below the seed
@@ -235,8 +243,13 @@ observer in that position rather than removing it.
 ### Verified
 
 Every header past the last checkpoint compiled into chainparams has its work
-checked. Its nBits must be the value the retarget rule derives from the headers
-before it rather than a value it claims, and its hash must be under that target. A
+checked. On mainnet its nBits must be the value the retarget rule derives from the
+headers before it rather than a value it claims, and its hash must be under that
+target. Off mainnet only the second half holds: testnet and regtest check the hash
+against the target and check that nBits is no easier than powLimit, and do not
+derive it, so a testnet header claiming any nBits down to powLimit is taken. The
+20-minute minimum-difficulty rule is not implemented either. Testnet has no anchors,
+so this is the whole of what is checked there. A
 merged-mined header is checked through its AuxPoW proof, so the parent block's work
 is what has to be there. `scan`, `outpoint`, `sweep`, `height` and `cfcheckpoints`
 sync through one function, so none of them checks less than the others.
@@ -303,6 +316,17 @@ the comparison unless every peer reached is in on it. For anything accepting
 payment on the strength of a confirmation, prefer a node you control, which is what
 `--node` is for, and pass it more than once.
 
+That holds for headers and not for filters. Headers come from every `--node` and
+are weighed against each other; filters come from the first peer still standing,
+and are pinned only as far as the newest filter anchor. Above it one peer can omit
+a script from a filter and omit the matching cfheaders, and the spend that script
+would have matched is not looked for: `kw_query_outpoint_range` then answers that
+the outpoint is unspent, which is false. Anchors every 10000 bound how far above
+the newest one that reaches, and the `.fh` sidecar then pins whatever chain was
+accepted, so an honest peer later fails with a chain break until the cache is
+deleted. One peer is enough for this, which is the difference from the paragraph
+above, and nothing in the filter path cross-checks peers today.
+
 Over Tor each connection offers a fresh random username and password, which is
 what tor keys a circuit on, so kwd's resident peers, the parallel download's
 workers and the three chains being weighed do not share one exit. With no
@@ -336,9 +360,10 @@ before assembling a spend, and neither signs a script that does not name the
 signing key: a script spending with one key is not a script to co-sign on
 request, which is how a p2pkh scriptPubKey passed off as a redeem script turned a
 cosignature into a spend of the signer's own coin. psbt sign also binds the
-script to the coin, since a psbt carries it; cosign can only do that when
-`--utxo` is given, and without it the key check is the whole of the binding, so a signature that would fail on chain is refused
-locally rather than broadcast. A psbt carrying fields koinu cannot represent is
+script to the coin, since a psbt carries it; cosign requires `--utxo` and refuses
+without it, because the key check alone is not a binding and a script of the
+signer's own choosing would otherwise pass it. A signature that would fail on
+chain is refused locally rather than broadcast. A psbt carrying fields koinu cannot represent is
 refused rather than parsed with those fields dropped, since a combiner that
 silently discards what it does not understand loses the other party's data.
 
