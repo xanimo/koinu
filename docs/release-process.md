@@ -53,14 +53,21 @@ headers sit past the last anchor. Paste the array over
 `KW_DOGE_MAINNET_CHECKPOINTS`. Run against an unchanged cache it reproduces the
 committed table exactly, which is how to tell the generator still agrees with it.
 
-Filter-header anchors sit every 100000 and need a peer that serves BIP157 filters,
+Filter-header anchors sit every 10000 and need a peer that serves BIP157 filters,
 which few do:
 
-    ./kw cfcheckpoints --node HOST --headers main.kwh --since 100000
+    ./kw cfcheckpoints --node HOST --headers main.kwh --since 10000
 
-Paste that over `KW_DOGE_CFCHECKPOINTS`. A filter header commits to every filter
-beneath it, so one anchor is worth carrying: compact filters are served by too few
-nodes to compare peers against each other.
+Paste that over `KW_DOGE_MAINNET_CFCHECKPOINTS`. A filter header commits to every
+filter beneath it, so one anchor is worth carrying: compact filters are served by
+too few nodes to compare peers against each other.
+
+They were every 100000 until the tail above the last one became the thing that
+mattered. Filters come from one peer where headers come from three, so the span
+above the newest anchor is a span one peer's word decides, and the anchored walk
+replays every filter between a height and the anchor below it. At 100000 that
+measured 1.9s for a one-header reply on mainnet and left 33000 blocks unpinned;
+at 10000 it is 0.053s. 644 anchors rather than 64 is the cost.
 
 Neither table changes unless the chain has passed the next anchor height, and that
 is the usual answer at these spacings. Regenerate anyway and diff, rather than
@@ -70,7 +77,7 @@ assuming: the point is that the tail is known, not that the file changed.
 
 Nothing is tagged until all of these pass on the commit being tagged:
 
-    make check          48/48 suites, which now ends with fuzz-syntax and
+    make check          51/51 suites, which now ends with fuzz-syntax and
                         fuzz-run, so the harnesses compile in the fast loop
     make tools          the twelve hand-run diagnostics link; none are run
     make asan           exit 0, which now means what it says: the sanitized
