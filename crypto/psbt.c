@@ -135,6 +135,21 @@ static int prevout_code(const kw_psbt *p, size_t index, const uint8_t pub[33],
         if (!wl || in->redeemlen > cap) return 0;
         if (prev.vout[n].scriptlen != wl ||
             memcmp(prev.vout[n].script, want, wl) != 0) return 0;
+        /* The script has to name this key. Binding it to the coin says the
+           script is the one that coin is locked to, and says nothing about
+           whose signature it wants: a signer handed its own p2pkh script as a
+           redeem produced a signature over someone else's spend and returned
+           success, which is what the no-redeem branch below has always refused
+           and this branch did not. The threat model says neither path signs a
+           script that does not name the signing key, and until now only one of
+           them did.
+
+           Key counts and thresholds are deliberately not checked here. This is
+           the general signer, and a p2sh wrapping a single key is a real thing
+           to sign; refusing it would be this function deciding what its caller
+           is allowed to own. kw_script_cosignable is that question, for the
+           callers whose contract is that a second party is still required. */
+        if (!kw_script_names_key(in->redeem, in->redeemlen, pub)) return 0;
         memcpy(code, in->redeem, in->redeemlen);
         *codelen = in->redeemlen;
         return 1;

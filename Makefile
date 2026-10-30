@@ -101,9 +101,14 @@ split: $(SIGN_LIB) $(CHAIN_LIB)
 
 # ── shared libraries ────────────────────────────────────────────
 # One ABI number for both halves, bumped when a published entry point changes
-# shape or goes away. It is not the release version: 0.4.1 and 0.5.0 both carry
-# soname 0 unless something listed in docs/abi.md moves.
-KW_ABI    = 0
+# shape or goes away. It is not the release version: two releases carry the same
+# soname unless something listed in docs/abi.md moves.
+#
+# 1 because kw_psbt_sign now refuses a p2sh redeem script that does not name the
+# signing key, which docs/abi.md counts as narrowing what a function accepts. A
+# caller that relied on signing one gets a refusal, and cannot tell that from a
+# bug, which is the reason that list has the entry.
+KW_ABI    = 1
 SIGN_SO   = libkoinu-sign.so
 CHAIN_SO  = libkoinu-chain.so
 SIGN_SOV  = $(SIGN_SO).$(KW_VER)

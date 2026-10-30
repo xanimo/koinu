@@ -103,6 +103,54 @@ int main(void)
     if (kw_psbt_sign(a, 0, skA, KW_SIGHASH_ALL) != 1 ||
         kw_psbt_sign(b, 0, skB, KW_SIGHASH_ALL) != 1) { fprintf(stderr, "FAIL: sign\n"); return 1; }
 
+    /* The library refuses a redeem script that does not name the signing key,
+       which until the soname bump only the cli did. Binding the script to the
+       coin says the script is the one the coin is locked to and nothing about
+       whose signature it wants, so a signer handed a script naming somebody
+       else signed it and returned success. Built as its own psbt over a coin
+       that really does pay p2sh of that script, or the binding refuses first
+       and this says nothing. */
+    {
+        uint8_t other[33];
+        memcpy(other, skB, 32);                       /* any key but skA's */
+        if (!kw_ec_pubkey(skB, other)) { fprintf(stderr, "FAIL: pubkey\n"); return 1; }
+        uint8_t only_b[35];
+        only_b[0] = 33;
+        memcpy(only_b + 1, other, 33);
+        only_b[34] = 0xac;                            /* <B> CHECKSIG */
+
+        uint8_t bp2sh[23];
+        size_t bl = kw_script_p2sh(only_b, sizeof only_b, bp2sh);
+        kw_tx bprev; kw_tx_init(&bprev);
+        kw_tx_add_input(&bprev, "0000000000000000000000000000000000000000000000000000000000000000", 0xffffffff);
+        kw_tx_add_output(&bprev, 100000000ULL, bp2sh, bl);
+        uint8_t braw[512];
+        size_t bn = kw_tx_serialize(&bprev, braw, sizeof braw);
+        uint8_t bid[32], bdisp[32]; char bidhex[65];
+        kw_hash256(braw, bn, bid);
+        for (int i = 0; i < 32; i++) bdisp[i] = bid[31 - i];
+        kw_hex_encode(bdisp, 32, bidhex, sizeof bidhex);
+
+        kw_tx btx; kw_tx_init(&btx);
+        kw_tx_add_input(&btx, bidhex, 0);
+        kw_tx_add_output(&btx, 99000000ULL, spk, 25);
+
+        kw_psbt *bad = kw_psbt_new();
+        if (!bad || !kw_psbt_create(bad, &btx) ||
+            !kw_psbt_set_redeem(bad, 0, only_b, sizeof only_b) ||
+            !kw_psbt_set_utxo(bad, 0, braw, bn)) {
+            fprintf(stderr, "FAIL: building the foreign-script psbt\n"); return 1;
+        }
+        /* skB is named by it and signs; skA is not and must not. */
+        if (kw_psbt_sign(bad, 0, skB, KW_SIGHASH_ALL) != 1) {
+            fprintf(stderr, "FAIL: the key the script names could not sign it\n"); return 1;
+        }
+        if (kw_psbt_sign(bad, 0, skA, KW_SIGHASH_ALL) == 1) {
+            fprintf(stderr, "FAIL: signed a redeem script naming another key\n"); return 1;
+        }
+        kw_psbt_free(bad);
+    }
+
     /* Two psbts that disagree about the redeem script are not combinable. Taking
        the first drops the other party's script by argument order, which is the
        thing the parser refuses to do one layer down. */

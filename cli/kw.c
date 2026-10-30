@@ -3167,6 +3167,28 @@ static size_t read_hex_arg(const char *arg, const char *what, uint8_t *out, size
 /* The two transactions are passed in rather than opened here: cosign refuses on
    nineteen paths, and a handle allocated inside would have to be released on
    every one of them. */
+/* One decision, kw_script_cosignable, with the reason worked out only so the
+   refusal can name it. Keeping three checks inline in two commands meant the
+   library and the cli could drift on what co-signable means. */
+static int cosign_script_ok(const uint8_t *redeem, size_t rl, const uint8_t pub[33])
+{
+    int m = 0, n = 0;
+    uint8_t keys[16][33];
+
+    if (kw_script_cosignable(redeem, rl, pub)) return 1;
+    if (!kw_script_names_key(redeem, rl, pub))
+        fprintf(stderr, "kw: --redeem does not name this key, so signing it would not be "
+                        "a co-signature;\n    a script that spends with one key is not one "
+                        "to sign on request\n");
+    else if (kw_script_multisig_parse(redeem, rl, &m, keys, &n) && m < 2)
+        fprintf(stderr, "kw: --redeem is a %d-of-%d, so one signature spends it; signing "
+                        "it is a spend\n    rather than a co-signature\n", m, n);
+    else
+        fprintf(stderr, "kw: --redeem names one key, this one, so a signature over it is "
+                        "a spend\n    rather than a co-signature\n");
+    return 0;
+}
+
 static int cosign_run(const kw_chainparams *cp, const char *tx_arg, const char *redeem_arg,
                       const char *utxo_arg, const char *wif_arg, int vin,
                       const char **sig_args, int nsigs, int finish,
@@ -3217,44 +3239,9 @@ static int cosign_run(const kw_chainparams *cp, const char *tx_arg, const char *
         fprintf(stderr, "kw: cannot derive the public key for that wif\n");
         return 1;
     }
-    if (!kw_script_names_key(redeem, rl, mypub)) {
+    if (!cosign_script_ok(redeem, rl, mypub)) {
         kw_secure_forget(sk, sizeof sk);
-        fprintf(stderr, "kw: --redeem does not name this key, so signing it would not be "
-                        "a co-signature;\n    a script that spends with one key is not one "
-                        "to sign on request\n");
         return 1;
-    }
-    {
-        /* Refusing the exact 35-byte <pub> CHECKSIG shape caught p2pk and nothing
-           else: a 1-of-1 multisig, the same script with an OP_NOP after it, and
-           an OP_IF with this key in both branches all spend with this key alone,
-           and each of them signed. What they have in common is one key, so that
-           is what is counted. A branching two-key script still passes, which is
-           what a payment channel's redeem is; a branch of one that this key can
-           take alone is the counterparty's business to read, and --utxo above
-           ties the script to the coin either way. */
-        if (kw_script_key_count(redeem, rl, 4) < 2) {
-            kw_secure_forget(sk, sizeof sk);
-            fprintf(stderr, "kw: --redeem names one key, this one, so a signature over it "
-                            "is a spend\n    rather than a co-signature\n");
-            return 1;
-        }
-
-        /* Counting keys cannot tell a 2-of-2 from a 1-of-2: both name two. A
-           standard multisig states its threshold outright, so where the script
-           is that shape the threshold is read rather than inferred, and one
-           that needs a single signature is refused however many keys it lists.
-           Only this shape can be read this way. A branching script is still
-           judged by the count above, which is why that comment stands. */
-        int m = 0, nkeys = 0;
-        uint8_t mskeys[16][33];
-        if (kw_script_multisig_parse(redeem, rl, &m, mskeys, &nkeys) && m < 2) {
-            kw_secure_forget(sk, sizeof sk);
-            fprintf(stderr, "kw: --redeem is a %d-of-%d, so one signature spends it; "
-                            "signing it is a spend\n    rather than a co-signature\n",
-                    m, nkeys);
-            return 1;
-        }
     }
 
     /* The coin being spent, which binds the script to what it is locked to. psbt
@@ -4691,25 +4678,11 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
                as a redeem signed with exit 0, and a 1-of-2 produced a complete
                spend out of the half of the split that exists to need two. */
             if (rl) {
-                int msm = 0, msn = 0;
-                uint8_t mskeys[16][33];
-                if (!comp || !kw_script_names_key(r, rl, mypub)) {
+                if (!comp || !cosign_script_ok(r, rl, mypub)) {
                     kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
-                    fprintf(stderr, "kw: --redeem does not name this key, so signing it "
-                                    "would not be a co-signature\n");
-                    goto out;
-                }
-                if (kw_script_key_count(r, rl, 4) < 2) {
-                    kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
-                    fprintf(stderr, "kw: --redeem names one key, this one, so a signature "
-                                    "over it is a spend\n    rather than a co-signature\n");
-                    goto out;
-                }
-                if (kw_script_multisig_parse(r, rl, &msm, mskeys, &msn) && msm < 2) {
-                    kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
-                    fprintf(stderr, "kw: --redeem is a %d-of-%d, so one signature spends "
-                                    "it; signing it is a spend\n    rather than a "
-                                    "co-signature\n", msm, msn);
+                    if (!comp)
+                        fprintf(stderr, "kw: an uncompressed key cannot be named by a "
+                                        "redeem script this checks\n");
                     goto out;
                 }
             }

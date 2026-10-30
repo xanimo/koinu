@@ -330,8 +330,49 @@ int main(void)
         }
     }
 
+    /* kw_script_cosignable: names the key AND still needs somebody else.
+       Counted rather than matched against known shapes, because a shape
+       whitelist fails a payment channel's branching redeem, which is a real
+       caller, and because counting alone cannot tell a 2-of-2 from a 1-of-2.
+       The channel script here is the one payment-channel builds. */
+    {
+        static const char *A = "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+        static const char *B = "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27";
+        struct { const char *what; const char *hex; int want; } cases[] = {
+            { "channel OP_IF/CLTV else 2-of-2",
+              "6304e0c0a166b17521A ac675221A 21B 52ae68", 1 },
+            { "bare 2-of-2",            "5221A 21B 52ae",   1 },
+            { "bare 1-of-2",            "5121A 21B 52ae",   0 },
+            { "bare p2pk",              "21A ac",           0 },
+            { "1-of-1",                 "5121A 51ae",       0 },
+            { "OP_IF, same key twice",  "6321A ac6721A ac68", 0 },
+            { "2-of-2 naming others",   "5221B 21B 52ae",   0 },
+        };
+        uint8_t pub[33];
+        if (!kw_hex_decode(A, 66, pub, 33)) { fprintf(stderr, "FAIL: pub\n"); return 1; }
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            char hex[512] = { 0 };
+            for (const char *p = cases[i].hex; *p; p++) {
+                if (*p == ' ') continue;
+                if (*p == 'A') { strcat(hex, A); continue; }
+                if (*p == 'B') { strcat(hex, B); continue; }
+                size_t l = strlen(hex); hex[l] = *p; hex[l + 1] = 0;
+            }
+            uint8_t sc[512];
+            size_t sl = strlen(hex) / 2;
+            if (!kw_hex_decode(hex, strlen(hex), sc, sl)) {
+                fprintf(stderr, "FAIL: %s did not decode\n", cases[i].what); return 1; }
+            int got = kw_script_cosignable(sc, sl, pub);
+            if (got != cases[i].want) {
+                fprintf(stderr, "FAIL: cosignable(%s) = %d, want %d\n",
+                        cases[i].what, got, cases[i].want);
+                return 1;
+            }
+        }
+    }
+
     kw_ec_stop();
     printf("tx ok: p2pkh byte-for-byte vs libdogecoin, p2sh 2-of-2 co-sign verifies, parse round-trips,\n"
-           "  uncompressed p2pkh verifies, a scriptCode starts at the separator executed\n  before its checksig and not at one after it, and a script a signer cannot\n  resolve is refused rather than guessed\n");
+           "  uncompressed p2pkh verifies, a scriptCode starts at the separator executed\n  before its checksig and not at one after it, and a script a signer cannot\n  resolve is refused rather than guessed,\n  and co-signability judged on key count and threshold over seven shapes\n");
     return 0;
 }

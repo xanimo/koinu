@@ -8,10 +8,17 @@ this on every `make check`.
 
 `KW_ABI` in the Makefile is the soname number and the release version is
 `KW_VERSION` in `include/kw_version.h`. They move independently:
-`libkoinu-sign.so.0.4.0` and `libkoinu-sign.so.0.5.0` both carry soname
+`libkoinu-sign.so.0.2.5` and `libkoinu-sign.so.0.4.0` both carry soname
 `libkoinu-sign.so.0`, and a program linked against either keeps running against
-the other. The number goes to 1 when something below changes, and then the two
-can be installed side by side.
+the other.
+
+It is 1 as of 0.5.0. `kw_psbt_sign` now refuses a p2sh redeem script that does
+not name the signing key, which is the "narrowing what a function accepts" entry
+below: binding the script to the coin says the script is the one the coin is
+locked to and says nothing about whose signature it wants, so a caller handed a
+script naming somebody else got a signature and a success. A caller that relied
+on that now gets a refusal it cannot tell from a bug, which is why that entry is
+on the list. `libkoinu-sign.so.0` and `.so.1` install side by side.
 
 ## The exported set
 
@@ -73,7 +80,11 @@ the field names stay the same.
 
 ## What does not
 
-- Adding an exported function.
+- Adding an exported function. `kw_script_cosignable` arrived this way in 0.5.0:
+  it answers whether a script names a key and still needs somebody else, which is
+  the question a co-signer asks and a plain signer does not. The checks it makes
+  were in the cli until then, so a caller linking the library could sign a 1-of-2
+  the cli would refuse.
 - Adding an enumerator at the end of one of those enums. A caller that switches
   over one and has no `default:` will stop covering every case, which is a
   warning in its build and not a break in ours.

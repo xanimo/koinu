@@ -5,6 +5,6 @@
 #ifndef KOINU_VERSION_H
 #define KOINU_VERSION_H
 
-#define KW_VERSION "0.4.0"
+#define KW_VERSION "0.5.0"
 
 #endif /* KOINU_VERSION_H */

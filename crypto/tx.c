@@ -581,3 +581,18 @@ size_t kw_tx_parse(const uint8_t *raw, size_t len, kw_tx *tx)
     tx->locktime = (uint32_t)rd_le(&r, 4);
     return r.bad ? 0 : r.off;
 }
+
+int kw_script_cosignable(const uint8_t *script, size_t scriptlen,
+                         const uint8_t pub[33])
+{
+    int m = 0, n = 0;
+    uint8_t keys[16][33];
+
+    if (!script || !pub) return 0;
+    if (!kw_script_names_key(script, scriptlen, pub)) return 0;
+    if (kw_script_key_count(script, scriptlen, 4) < 2) return 0;
+    /* Only a standard multisig states a threshold; anything else is left to the
+       count above, which is why this asks rather than requiring the shape. */
+    if (kw_script_multisig_parse(script, scriptlen, &m, keys, &n) && m < 2) return 0;
+    return 1;
+}

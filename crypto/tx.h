@@ -120,6 +120,30 @@ int  kw_tx_set_multisig(kw_tx *tx, size_t index, const uint8_t *const *sigs,
    "co-sign our 2-of-2" from "sign this p2pkh coin of yours". */
 int  kw_script_names_key(const uint8_t *script, size_t scriptlen, const uint8_t pub[33]);
 
+/* Whether (script) names (pub) and still needs somebody else: 1 if it does, 0
+ * if a signature from (pub) alone could satisfy it.
+ *
+ * The question a co-signer has to ask before signing, and it is not the same as
+ * the one kw_psbt_sign asks. That one refuses a script not naming the key, which
+ * every signer wants. This refuses a script that names the key and nothing more,
+ * which only a caller promising a second party is required wants: a general
+ * signer holding a p2sh over one key has every right to spend it.
+ *
+ * Counted rather than matched against known shapes. Distinct keys first, since a
+ * script spending with one key is a spend however it is dressed up, and a bare
+ * p2pk, a 1-of-1, either with a trailing no-op, and an OP_IF with the same key in
+ * both branches all reached a node's mempool as one-key spends. Then, where the
+ * script is a standard multisig and says its own threshold, that threshold:
+ * counting cannot tell a 2-of-2 from a 1-of-2 because both name two.
+ *
+ * A branching script is judged on the count alone, so a payment channel's
+ * OP_IF ... CHECKSIG OP_ELSE 2 ... CHECKMULTISIG OP_ENDIF passes, which is
+ * intended. A branch that this key can take alone inside such a script is the
+ * counterparty's to read, and binding the script to the coin is what stops it
+ * being a script of the signer's own choosing. */
+int  kw_script_cosignable(const uint8_t *script, size_t scriptlen,
+                          const uint8_t pub[33]);
+
 /* How many distinct public keys the script pushes, counting both compressed and
    uncompressed, up to (cap). A script that pushes one key is one that key alone
    can satisfy however it is dressed up: 1-of-1 multisig, <pub> CHECKSIG with an
