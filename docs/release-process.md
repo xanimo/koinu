@@ -73,6 +73,14 @@ Neither table changes unless the chain has passed the next anchor height, and th
 is the usual answer at these spacings. Regenerate anyway and diff, rather than
 assuming: the point is that the tail is known, not that the file changed.
 
+The two diff differently, and the filter one looks wrong when it is not.
+gen_checkpoints emits an anchor only at the multiples, so against a grown cache
+it reproduces the committed table exactly and a difference means something is
+wrong. kw cfcheckpoints also anchors the tip, so its last line is whatever the
+tip was when it ran and differs every time the chain moves. At 0.5.0 that was
+643 of 644 identical with the last entry 6432061 against a regenerated 6437155,
+which is the expected answer and not a finding. Read the diff, do not count it.
+
 ## Gates
 
 Nothing is tagged until all of these pass on the commit being tagged:
