@@ -29,11 +29,16 @@ jobs:
             os: ubuntu-24.04
             cc: gcc
             bits32: true
-          # macos-14 is arm64. There is no x86_64 job: the macos-13 runners
-          # are being retired and a job queued for one waits indefinitely
-          # rather than failing, which stalls the whole matrix.
+          # macos-latest rather than a pinned image, which has now cost two
+          # outages: macos-13 was retired and a job queued for one waited
+          # indefinitely rather than failing, and macos-14 was brownt out on
+          # 2026-10-30 ahead of retiring on 2026-11-02, failing in one second
+          # with every other job green. The pin bought reproducibility that was
+          # never used and an expiry date that was never watched. There is no
+          # x86_64 job: the label tracks arm64 and the retired x86_64 images
+          # stall the matrix rather than failing it.
           - name: macos-arm64-clang
-            os: macos-14
+            os: macos-latest
             cc: clang
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
