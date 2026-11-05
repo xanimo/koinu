@@ -1490,10 +1490,15 @@ static int cmd_sign(const kw_chainparams *cp, const char *path, const char *pass
     /* destination up front, so auto selection knows the target */
     char tob[160];
     snprintf(tob, sizeof tob, "%s", to_arg);
-    char *daddr = strtok(tob, ":"), *dam = strtok(NULL, ":");
+    /* Exactly two fields, through the splitter written for this: strtok folds an
+       empty one and stops at the count asked for, so ADDR::5 read as ADDR:5 and
+       ADDR:5:anything dropped the tail without saying so. */
+    char *tof[2];
     uint64_t send_amt = 0, fee = 0;
     uint8_t dspk[25]; size_t dl = 0;
-    if (!daddr || !dam || !kw_parse_doge(dam, &send_amt)) { fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
+    if (!split_fields(tob, tof, 2) || !kw_parse_doge(tof[1], &send_amt)) {
+        fprintf(stderr, "kw: bad --to, want ADDR:AMOUNT\n"); goto out; }
+    char *daddr = tof[0];
     if (!addr_to_spk(cp, daddr, dspk, &dl)) { fprintf(stderr, "kw: bad --to address\n"); goto out; }
     if (send_amt < KOINU_DUST) { fprintf(stderr, "kw: --to amount is below the dust limit (0.01 DOGE)\n"); goto out; }
 
@@ -2046,9 +2051,19 @@ static int sweep_sign(const kw_chainparams *cp, const char *wif_arg, const char 
 
     if (!to_arg) { usage(); return 2; }
 
+    /* An address and no amount, because a sweep sends the whole balance. This
+       split on a colon and dropped whatever followed, so --to ADDR:5 from
+       somebody carrying kw sign's spelling over swept everything and said so
+       only in the total, which reads as a success. */
+    if (strchr(to_arg, ':')) {
+        fprintf(stderr, "kw: --to takes an address and no amount here, because sweep "
+                        "sends the whole\n    balance. kw sign --to ADDR:AMOUNT sends "
+                        "part of it\n");
+        return 2;
+    }
     snprintf(tob, sizeof tob, "%s", to_arg);
-    daddr = strtok(tob, ":");
-    if (!daddr || !addr_to_spk(cp, daddr, dspk, &dl)) {
+    daddr = tob;
+    if (!addr_to_spk(cp, daddr, dspk, &dl)) {
         fprintf(stderr, "kw: bad --to address\n");
         return 1;
     }

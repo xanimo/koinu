@@ -98,6 +98,16 @@ CH2=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
 
 rm -f "$WORK/ks.utxos"
 
+# --to is exactly two non-empty fields. strtok folded an empty one and stopped at
+# the count asked for, so ADDR::5 read as ADDR:5 and ADDR:5:anything dropped the
+# tail, both signing something other than what was typed.
+for BADTO in "$ADDR1::8.5" "$ADDR1:8.5:extra" "$ADDR1:" ":8.5"; do
+    if ./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+           --input "$IN" --to "$BADTO" --fee 0.001 --change-to "$ADDR1" >/dev/null 2>&1; then
+        echo "FAIL: sign accepted --to $BADTO" >&2; exit 1
+    fi
+done
+
 # a non-interactive broadcast without --yes exits 2, not 1: a caller reads the code
 # and "you forgot a flag" is not the same answer as "the node rejected it"
 set +e

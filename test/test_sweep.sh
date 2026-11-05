@@ -62,6 +62,18 @@ if ./kw --regtest sweep --wif "@$D/wif" --to "$DEST" --utxos "$D/other" >/dev/nu
     echo "FAIL: swept a utxo set holding no coins of this key" >&2; exit 1
 fi
 
+# A sweep sends the whole balance, so --to takes an address and no amount. It
+# split on a colon and dropped whatever followed, so somebody carrying kw sign's
+# ADDR:AMOUNT spelling over swept everything: --to DEST:5 moved 999.99 DOGE of a
+# 1000 DOGE key and reported success. Refused now, and the refusal says which
+# command does take an amount.
+if ./kw --regtest sweep --wif "@$D/wif" --to "$DEST:5" --utxos "$D/u" >/dev/null 2>&1; then
+    echo "FAIL: --to DEST:5 swept the balance instead of being refused" >&2; exit 1
+fi
+./kw --regtest sweep --wif "@$D/wif" --to "$DEST:5" --utxos "$D/u" 2>&1     | grep -q "sends the whole"     || { echo "FAIL: --to DEST:5 was refused for some other reason" >&2; exit 1; }
+# and a bare address still works, so the check is not refusing everything
+$SWEEP >/dev/null 2>&1 || { echo "FAIL: a bare --to address no longer sweeps" >&2; exit 1; }
+
 # 500 DOGE on a ~191 byte transaction is six orders of magnitude over the rate.
 # Before the bound this signed, sending 1 DOGE and paying the other 500.
 if $SWEEP --fee 500 >/dev/null 2>&1; then
