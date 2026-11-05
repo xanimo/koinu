@@ -176,6 +176,10 @@ const char *kw_utxoset_strerror(kw_utxoset_err e);
    the tip height it saw, which is what lets an offline sign tell a mature
    coinbase from one the chain will not let it spend yet.
    Read leaves both at 0 when there is no file. Write returns 1 on success. */
+/* The furthest a scan derives, which is what a sane gap in a .meta is bounded
+   by: cli/kw.c caps the watch table here and a scan cannot have written more. */
+#define KW_SCANMETA_MAX_GAP 20000
+
 int  kw_scanmeta_write(const char *utxos_path, int64_t feerate, int extent, uint32_t tip);
 void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent, uint32_t *tip);
 

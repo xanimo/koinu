@@ -233,6 +233,51 @@ int main(void)
         kw_utxoset_free(o);
     }
 
+    /* A .meta is derived and rewritable by anyone who can write beside the utxo
+       set, and its gap goes on to size a derivation: 2 * extent is a signed
+       overflow above 1073741823, which ubsan catches and a release build does
+       not. A value outside what a scan could have written is read as absent, so
+       the caller's --gap governs rather than a clamp quietly deriving fewer. */
+    {
+        const char *mp = "test_utxo_meta.tmp";
+        char meta[80];
+        snprintf(meta, sizeof meta, "%s.meta", mp);
+        struct { const char *body; int want; } cases[] = {
+            { "feerate 1000\ngap 2000000000\ntip 5\n", 0 },
+            { "feerate 1000\ngap -7\ntip 5\n",         0 },
+            { "feerate 1000\ngap 20001\ntip 5\n",      0 },
+            { "feerate 1000\ngap 20000\ntip 5\n",  20000 },
+            { "feerate 1000\ngap 500\ntip 5\n",      500 },
+        };
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            FILE *f = fopen(meta, "w");
+            if (!f) { fprintf(stderr, "FAIL: meta open\n"); return 1; }
+            fputs(cases[i].body, f);
+            fclose(f);
+            int64_t fr = -1; int ext = -1; uint32_t tp = 0;
+            kw_scanmeta_read(mp, &fr, &ext, &tp);
+            if (ext != cases[i].want) {
+                fprintf(stderr, "FAIL: .meta gap read as %d, want %d\n", ext, cases[i].want);
+                return 1;
+            }
+            /* whatever it read must not overflow when the scan doubles it */
+            if (ext < 0 || ext > KW_SCANMETA_MAX_GAP) {
+                fprintf(stderr, "FAIL: .meta gap %d is outside the bound\n", ext); return 1;
+            }
+        }
+        /* a negative feerate is not a feerate either */
+        {
+            FILE *f = fopen(meta, "w");
+            if (!f) { fprintf(stderr, "FAIL: meta open\n"); return 1; }
+            fputs("feerate -5\ngap 10\ntip 1\n", f);
+            fclose(f);
+            int64_t fr = -1; int ext = 0; uint32_t tp = 0;
+            kw_scanmeta_read(mp, &fr, &ext, &tp);
+            if (fr < 0) { fprintf(stderr, "FAIL: a negative feerate was taken\n"); return 1; }
+        }
+        remove(meta);
+    }
+
     /* A chain creates an outpoint once, so a second entry for one is the same
        coin counted twice. Accepted, it doubled the balance and the builder then
        spent the coin twice in one transaction, which no node takes. */
@@ -417,7 +462,7 @@ int main(void)
         kw_watchset_free(bw);
     }
 
-    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  the same outpoint refused twice,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
+    printf("utxo ok: real coinbase add, spend removes, watch filter, txid outpoint, truncation,\n  save/load 0600 and atomic, a symlinked temp file refused, a cut or empty\n  file refused,\n  the same outpoint refused twice, a .meta gap bounded as it is read,\n  coinbase maturity 30 below 145000 and 240 above it on mainnet and 60 on\n  regtest, and a spendable total that leaves an immature one out,\n"
            "  and a value that would wrap the total refused,\n"
            "  a saved amount bound to its transaction and a tampered one refused\n");
     return 0;

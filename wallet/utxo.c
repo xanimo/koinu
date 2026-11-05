@@ -420,9 +420,19 @@ void kw_scanmeta_read(const char *utxos_path, int64_t *feerate, int *extent, uin
     FILE *f = fopen(p, "r");
     if (!f) return;
     char key[32]; long long v;
+    /* Bounded as they are read. A .meta is derived and rewritable by anyone who
+       can write beside the utxo set, and gap goes on to size a derivation:
+       2 * extent is a signed overflow above 1073741823, which ubsan catches and
+       a release build does not.
+
+       A value outside what a scan could have written is treated as absent
+       rather than clamped to the bound. The caller's --gap then governs, which
+       is the number the operator chose, where a clamp would quietly derive
+       fewer addresses than either of them asked for. */
     while (fscanf(f, "%31s %lld", key, &v) == 2) {
-        if (!strcmp(key, "feerate") && feerate) *feerate = (int64_t)v;
-        else if (!strcmp(key, "gap") && extent) *extent = (int)v;
+        if (!strcmp(key, "feerate") && feerate && v >= 0) *feerate = (int64_t)v;
+        else if (!strcmp(key, "gap") && extent && v >= 0 && v <= KW_SCANMETA_MAX_GAP)
+            *extent = (int)v;
         else if (!strcmp(key, "tip") && tip && v >= 0) *tip = (uint32_t)v;
     }
     fclose(f);
