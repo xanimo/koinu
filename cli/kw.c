@@ -346,6 +346,46 @@ static void kw_tty_restore(int sig)
     raise(sig);
 }
 
+/* Read a line from stdin with the terminal's echo off while it is typed, and
+   restore it afterwards however the read ends. A pipe is not a terminal, so this
+   is a plain read there and the handling costs nothing.
+
+   Shared because the "-" spelling did not have it. It is documented for piping,
+   which is why it was written as a bare read, but a person who types it and then
+   types a mnemonic leaves the mnemonic in scrollback and in the terminal's
+   history, and the prompt path three lines away had guarded against exactly
+   that. */
+static ssize_t read_line_quiet(char *line, size_t cap, const char *prompt)
+{
+    struct termios quiet;
+    int tty = isatty(STDIN_FILENO);
+    ssize_t n;
+
+    if (prompt) fprintf(stderr, "%s", prompt);
+    if (tty) {
+        /* a failed tcgetattr would otherwise hand tcsetattr an uninitialised
+           struct and leave the terminal in whatever the stack held */
+        if (tcgetattr(STDIN_FILENO, &kw_tty_saved) != 0) tty = 0;
+    }
+    if (tty) {
+        quiet = kw_tty_saved;
+        quiet.c_lflag &= ~(tcflag_t)ECHO;
+        kw_tty_off = 1;
+        signal(SIGINT, kw_tty_restore);
+        signal(SIGTERM, kw_tty_restore);
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
+    }
+    n = read_line_fd(STDIN_FILENO, line, cap);
+    if (tty) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &kw_tty_saved);
+        kw_tty_off = 0;
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        fprintf(stderr, "\n");
+    }
+    return n;
+}
+
 /* (sealing) is 1 where an empty passphrase would be written into a new keystore
    and 0 where one is being opened. Refusing an empty line on open locks out every
    keystore 0.2.5 sealed with one, which is a wallet its owner can no longer
@@ -363,36 +403,13 @@ static char *read_secret_mode(const char *arg, const char *prompt, int sealing)
         n = read_line_fd(fd, line, KW_SECRET_MAX);
         close(fd);
     } else if (arg && !strcmp(arg, "-")) {
-        n = read_line_fd(STDIN_FILENO, line, KW_SECRET_MAX);
+        n = read_line_quiet(line, KW_SECRET_MAX, NULL);
     } else if (arg) {
         fprintf(stderr, "kw: pass this via @FILE or - , not on the command line\n");
         secret_free(line);
         return NULL;
     } else {
-        struct termios quiet;
-        int tty = isatty(STDIN_FILENO);
-        fprintf(stderr, "%s", prompt);
-        if (tty) {
-            /* a failed tcgetattr would otherwise hand tcsetattr an uninitialised
-               struct and leave the terminal in whatever the stack held */
-            if (tcgetattr(STDIN_FILENO, &kw_tty_saved) != 0) tty = 0;
-        }
-        if (tty) {
-            quiet = kw_tty_saved;
-            quiet.c_lflag &= ~(tcflag_t)ECHO;
-            kw_tty_off = 1;
-            signal(SIGINT, kw_tty_restore);
-            signal(SIGTERM, kw_tty_restore);
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
-        }
-        n = read_line_fd(STDIN_FILENO, line, KW_SECRET_MAX);
-        if (tty) {
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &kw_tty_saved);
-            kw_tty_off = 0;
-            signal(SIGINT, SIG_DFL);
-            signal(SIGTERM, SIG_DFL);
-            fprintf(stderr, "\n");
-        }
+        n = read_line_quiet(line, KW_SECRET_MAX, prompt);
     }
     if (n == -2) fprintf(stderr, "kw: that is longer than %d bytes, which no mnemonic "
                                  "or passphrase needs\n", KW_SECRET_MAX - 1);
