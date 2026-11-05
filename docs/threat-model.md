@@ -291,14 +291,26 @@ stale defends less than a current one.
 
 Every filter is checked against that peer's cfheaders chain and the verified tip is
 pinned, so a peer cannot rewrite history it already served. The chain is also
-checked against the filter-header anchors in chainparams, every 100000 blocks to
-height 6300000, so a peer serving a different filter set is caught at the first
+checked against the filter-header anchors in chainparams, every 10000 blocks to
+height 6432061, so a peer serving a different filter set is caught at the first
 anchor it crosses. Above the last anchor the base is still the peer's word. Compact
 filters are served by too few nodes to compare peers against each other, so this is
 an anchor table rather than a quorum, and the anchors were generated from one node's
-cfheaders rather than derived from blocks. Too few is currently none: of 48 peers
-from the dns seeds, 47 answered and none advertised bip158, so this section
-describes a backend that needs a node you run yourself.
+cfheaders rather than derived from blocks.
+
+How few is a measurement with a date on it rather than a constant. A sweep of the
+addresses the dns seeds hand out has found, on the runs made so far, either none
+advertising NODE_COMPACT_FILTERS or exactly one, and the one was the node the
+probe's own network runs. Either way the conclusion is the same and it is the
+reason this section exists: there is no public filter server to point a wallet at,
+so this describes a backend that needs a node you run yourself.
+
+Anyone re-running that sweep should know the seeds themselves have decayed, which
+makes a bare count worse than useless. seed.dogecoin.wiki is NXDOMAIN,
+seed.dogecoin.com answers authoritatively with no records, and seed.multidoge.org
+delegates to a seeder daemon that 8.8.8.8 returns nothing for while 1.1.1.1 and
+9.9.9.9 return addresses. A run on the wrong resolver finds no peers at all and
+reads as broken tooling rather than as a measurement.
 
 A header's timestamp has to be newer than the median of the eleven before it and
 no more than two hours ahead of local time, which is what stops a chain writing
