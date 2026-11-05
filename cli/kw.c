@@ -857,7 +857,17 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
                    const char *seedpass_arg, int words)
 {
     if (!path) { usage(); return 2; }
-    size_t entlen = (words == 24) ? 32 : 16;
+    /* BIP39 is 12, 15, 18, 21 or 24 words over 16, 20, 24, 28 or 32 bytes, which
+       is entlen = words * 4 / 3, and kw_bip39_from_entropy takes all five. This
+       read "24 or else 16", so --words 18 asked for 192 bits of entropy and was
+       given 128 without a word said. Asking for more and silently getting less
+       is the one direction this must not fail in. */
+    size_t entlen = (size_t)words * 4 / 3;
+    if (words != 12 && words != 15 && words != 18 && words != 21 && words != 24) {
+        fprintf(stderr, "kw: --words takes 12, 15, 18, 21 or 24, which are the lengths "
+                        "BIP39 defines\n");
+        return 2;
+    }
 
     char mnem[KW_BIP39_MNEMONIC_MAX];
     if (!kw_bip39_generate(entlen, mnem, sizeof mnem)) { fprintf(stderr, "kw: generate failed\n"); return 1; }

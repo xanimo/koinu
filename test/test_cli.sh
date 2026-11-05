@@ -98,6 +98,34 @@ CH2=$(./kw --regtest sign --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
 
 rm -f "$WORK/ks.utxos"
 
+# --words takes the five lengths BIP39 defines and gives what was asked for.
+# entlen read "24 or else 16", so --words 18 asked for 192 bits of entropy and
+# got 128 with nothing said, which is the one direction this must not fail in.
+for N in 12 15 18 21 24; do
+    rm -f "$WORK/w$N.ks"
+    WOUT=$(./kw --regtest new --keystore "$WORK/w$N.ks" --passphrase "@$WORK/pass" \
+            --words "$N" 2>/dev/null | sed -n '2p')
+    GOT=$(printf '%s' "$WOUT" | wc -w | tr -d ' ')
+    [ "$GOT" = "$N" ] || { echo "FAIL: --words $N produced $GOT words" >&2; exit 1; }
+done
+# and a length BIP39 does not define is refused rather than rounded down
+for N in 13 20 23; do
+    if ./kw --regtest new --keystore "$WORK/wbad.ks" --passphrase "@$WORK/pass" \
+           --words "$N" >/dev/null 2>&1; then
+        echo "FAIL: --words $N was accepted" >&2; exit 1
+    fi
+done
+# a mnemonic of a length other than 12 or 24 still restores its own wallet
+rm -f "$WORK/w18b.ks"
+M18=$(./kw --regtest new --keystore "$WORK/w18a.ks" --passphrase "@$WORK/pass" --words 18 \
+       2>/dev/null | sed -n '2p' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+printf '%s\n' "$M18" > "$WORK/m18"
+A18=$(./kw --regtest address --keystore "$WORK/w18a.ks" --passphrase "@$WORK/pass")
+./kw --regtest restore --keystore "$WORK/w18b.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/m18" >/dev/null 2>&1
+B18=$(./kw --regtest address --keystore "$WORK/w18b.ks" --passphrase "@$WORK/pass")
+[ "$A18" = "$B18" ] || { echo "FAIL: an 18-word mnemonic restored another wallet" >&2; exit 1; }
+
 # --to is exactly two non-empty fields. strtok folded an empty one and stopped at
 # the count asked for, so ADDR::5 read as ADDR:5 and ADDR:5:anything dropped the
 # tail, both signing something other than what was typed.
