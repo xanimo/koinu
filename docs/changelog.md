@@ -2,6 +2,60 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-05
+
+A security release. Three ways to get a co-signature on a script one key
+spends, all of them live in 0.5.0. Reported by @MishaBoar
+<mishaboar@protonmail.com>.
+
+### Fixed
+
+- `kw psbt sign --wif` ran no co-signing check at all unless `--redeem` was
+  passed on the command line, which is not the ordinary way to use a psbt. A
+  psbt carrying an embedded 1-of-2 and no `--redeem` argument came back with a
+  real signature, and that is the one signature the script needs. The check now
+  runs against the script the psbt holds, and an input carrying no redeem script
+  is refused rather than waved through.
+- `kw_script_cosignable` returned 1 for any script pushing two distinct keys.
+  `OP_1 <A> <B> OP_2 CHECKMULTISIG OP_NOP` is one such script and one signature
+  spends it: the threshold test sat behind `&&` after a parse that a trailing
+  opcode fails, so it never ran.
+- `kw_script_cosignable` counted distinct keys, so `OP_2 <A> <A> <B> OP_3
+  CHECKMULTISIG` read as two keys at a threshold of two and passed.
+  `CHECKMULTISIG` walks the signatures against the key list in order, so one
+  signature from A satisfies both copies of A and the script spends on A alone.
+  None of the three is stopped by relay policy: `AreInputsStandard` runs no
+  `Solver` on a p2sh subscript, only a sigop bound of 15.
+
+### Changed
+
+- Co-signing is canonical multisig only. `kw_script_cosignable` now requires an
+  m-of-n `CHECKMULTISIG` with nothing before or after it, m at least two, every
+  key distinct, and the signing key among them. Branching scripts are refused,
+  which is a capability removed rather than a bug fixed: the command cannot read
+  such a script, so it cannot say the spend still needs somebody else, and the
+  old header comment conceded that while relying on it anyway. A caller that
+  needs one calls `kw_psbt_sign`, which makes no co-signing claim.
+- A refusal names the shape it refused rather than a key count, so a branching
+  redeem is told it is a branching redeem.
+- `KW_ABI` goes 1 to 2, for that narrowing and for the removal below.
+  `libkoinu-sign.so.1` and `.so.2` install side by side.
+- The payload filename carries the abi, `libkoinu-sign.so.2.0.5.1` rather than
+  `libkoinu-sign.so.0.5.1`. Without it a soname bump at an unchanged
+  `KW_VERSION` overwrites a published payload while the old soname symlink still
+  points at that name, so a caller linked against the old abi loads the new code
+  with no diagnostic.
+- `make uninstall` removes this abi and leaves any other installed beside it,
+  which the side-by-side promise requires and a glob broke.
+
+### Removed
+
+- `kw_script_key_count`. It had no caller inside the library and its own comment
+  said a co-signing script names at least two keys, which is the rule that
+  produced two of the findings above.
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.5.0...v0.5.1
+
 ## [0.5.0] - 2026-10-29
 
 ## Upgrading
