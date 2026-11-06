@@ -129,6 +129,29 @@ static long sync_round(const kw_headerstore *s, const char *path,
     return sync_round_cp(NULL, s, path, msgs, lens, cmds, nmsg);
 }
 
+/* One kw_cfstore_agree run against a second socketpair peer holding one
+   cfheaders reply. (len) of 0 preloads nothing, which is the silent peer. */
+static int agree_round(const kw_chainparams *cp, const kw_headerstore *s, const char *path,
+                       const uint8_t *msg, size_t len)
+{
+    uint32_t magic = KW_DOGE_REGTEST.magic;
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -2;
+    struct timeval tv = { 5, 0 };
+    setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    if (len && !put_msg(sv[1], magic, "cfheaders", msg, len)) {
+        close(sv[0]); close(sv[1]); return -2;
+    }
+    if (!len) close(sv[1]);          /* eof rather than a hang */
+    kw_peer q;
+    kw_peer_from_fd(&q, magic, sv[0]);
+    q.cp = cp;
+    int r = kw_cfstore_agree(cp, &q, s, path, 1, 1);
+    kw_peer_close(&q);
+    if (len) close(sv[1]);
+    return r;
+}
+
 /* internal-order bytes to the display (reversed) hex a checkpoint table holds */
 static void hex_rev(const uint8_t v[32], char out[65])
 {
@@ -502,6 +525,60 @@ int main(void)
             fprintf(stderr, "FAIL: filter cached despite anchor mismatch\n"); return 1; }
 
         kw_headerstore_free(&s2);
+        remove(sp);
+        snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
+        snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
+
+        /* Above the newest anchor nothing is pinned, so a second peer is asked.
+           One header settles the span: the chain is a hash over every filter
+           beneath it, so a peer differing anywhere below differs here. The
+           cache here holds h1 and the anchor sits at height 1, which is the
+           shape a real tail has with the anchor below it. */
+        kw_headerstore s3; kw_headerstore_init(&s3);
+        kw_headerstore_append(&s3, &h1);
+        anchor[0].header = good;
+        if (sync_round_cp(&cpa, &s3, sp, msgs, lens, cmds, 2) != 1) {
+            fprintf(stderr, "FAIL: cannot build the cache the agreement reads\n"); return 1; }
+
+        lens[0] = mk_cfheaders(msgs, h1.hash, prev0, hash1);
+        if (agree_round(&cpa, &s3, sp, msgs, lens[0]) != 1) {
+            fprintf(stderr, "FAIL: a second peer serving the same chain was called a "
+                            "disagreement\n"); return 1; }
+
+        /* A different previous header is a different chain beneath, and that is
+           what this exists to catch: the filter hash it serves is the same. */
+        {
+            uint8_t lie[32]; memset(lie, 0x7e, 32);
+            size_t n = mk_cfheaders(msgs, h1.hash, lie, hash1);
+            if (agree_round(&cpa, &s3, sp, msgs, n) != 0) {
+                fprintf(stderr, "FAIL: a second peer serving another chain was accepted\n");
+                return 1; }
+        }
+        /* A peer that says nothing is not agreement. It was tempting to treat a
+           silent second peer as one fewer objection. */
+        if (agree_round(&cpa, &s3, sp, msgs, 0) != -1) {
+            fprintf(stderr, "FAIL: a silent second peer did not report an error\n");
+            return 1; }
+
+        /* That case is also the one that found this: writing to a peer which
+           has hung up raises SIGPIPE, and only kwd installed a handler, so kw,
+           kwui and anything linking the library died on exit 141 with nothing
+           printed. A library does not get to end its host's process. */
+        {
+            int sv[2];
+            if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+                fprintf(stderr, "FAIL: socketpair\n"); return 1; }
+            close(sv[1]);
+            kw_peer dead;
+            kw_peer_from_fd(&dead, KW_DOGE_REGTEST.magic, sv[0]);
+            uint8_t body[256] = { 0 };
+            int sent = kw_peer_send(&dead, "getdata", body, sizeof body);
+            kw_peer_close(&dead);
+            if (sent) { fprintf(stderr, "FAIL: a send to a hung-up peer reported success\n");
+                        return 1; }
+        }
+
+        kw_headerstore_free(&s3);
         remove(sp);
         snprintf(aux, sizeof aux, "%s.idx", sp); remove(aux);
         snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
@@ -910,6 +987,6 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  a sidecar built from an anchor and refused off one,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  a sidecar built from an anchor and refused off one,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed,\n  a second peer asked about the span no anchor settles,\n  and a hung-up peer reported rather than signalled\n");
     return 0;
 }

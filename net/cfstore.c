@@ -830,3 +830,30 @@ int kw_cfstore_sidecar_from_anchor(const kw_chainparams *cp, const char *path,
     if (!chain_over(path, (size_t)have, root, tip)) return -1;
     return fh_save(path, have, tip, root) ? 1 : -1;
 }
+
+int kw_cfstore_agree(const kw_chainparams *cp, kw_peer *q, const kw_headerstore *s,
+                     const char *path, uint32_t base_height, uint32_t height)
+{
+    uint8_t mine[32], prev[32], hash[32], theirs[32];
+
+    if (!cp || !q || !s || !path) return -1;
+    if (height < base_height) return -1;
+    size_t idx = (size_t)(height - base_height);
+    if (idx >= s->count) return -1;
+
+    if (kw_cfstore_headers_anchored(cp, path, base_height, height, mine, 1) != 1) return -1;
+
+    /* One block, not the range: the reply carries the previous filter header,
+       so chaining it with this block's filter hash gives the head of the whole
+       chain beneath. A peer that differs anywhere below differs here. */
+    if (!kw_cf_fetch_headers(q, s, base_height, idx, idx + 1, prev, (uint8_t (*)[32])hash))
+        return -1;
+    kw_cf_header_step(hash, prev, theirs);
+
+    if (memcmp(mine, theirs, 32) != 0) {
+        kw_logf(KW_LOG_ERROR, "two peers disagree on the filter chain at height %u, so "
+                              "nothing above the newest anchor is settled", height);
+        return 0;
+    }
+    return 1;
+}

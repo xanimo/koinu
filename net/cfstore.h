@@ -125,4 +125,21 @@ long kw_cfstore_each(const char *path, uint32_t base_height, uint32_t from_heigh
 int kw_cfstore_sidecar_from_anchor(const kw_chainparams *cp, const char *path,
                                    uint32_t base_height);
 
+/* Ask (q) for the filter header at (height) and compare it against the one this
+ * cache computes. 1 if they agree, 0 on a real disagreement, -1 if (q) could not
+ * answer or the cache could not be walked.
+ *
+ * Below the newest compiled-in anchor a chain is already pinned by a hash in
+ * this binary, and nothing above it is: compact filters are served by few enough
+ * nodes that koinu takes them from one peer, so the span above the newest anchor
+ * is a span one peer's word decides. Asking a second peer closes that, and it
+ * costs one message rather than a second download: a filter header is the head
+ * of a hash chain over every filter beneath it, so two peers agreeing on one
+ * 32-byte header at the tip agree on the whole span below it.
+ *
+ * (q) must not be the peer the cache was synced from, which this cannot check.
+ * A caller holding one peer has not verified anything by calling this twice. */
+int kw_cfstore_agree(const kw_chainparams *cp, kw_peer *q, const kw_headerstore *s,
+                     const char *path, uint32_t base_height, uint32_t height);
+
 #endif /* KOINU_CFSTORE_H */
