@@ -46,6 +46,12 @@ int kw_peer_from_fd(kw_peer *p, uint32_t magic, int fd)
     memset(p, 0, sizeof *p);
     p->fd = fd;
     p->magic = magic;
+#ifdef SO_NOSIGPIPE
+    /* The BSD and macOS half of what MSG_NOSIGNAL does in write_all. Best
+       effort: a socket that refuses it still writes, it just keeps the default
+       signal, which is what every platform did before. */
+    { int on = 1; setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on); }
+#endif
     p->rbuf = (uint8_t *)malloc(RBUF_INIT);
     if (!p->rbuf) return 0;
     p->rcap = RBUF_INIT;
@@ -102,10 +108,22 @@ int kw_peer_connect_socks5(kw_peer *p, const kw_chainparams *cp,
     return 1;
 }
 
+/* A peer that hangs up mid-write raises SIGPIPE, whose default action is to
+   kill the process. kwd installed a handler for it and nothing else did, so kw,
+   kwui and any program linking this library died on a peer disconnecting, with
+   no message and exit 141. A library has no business ending its host's process,
+   and a handler is the host's to install or not: suppressed at the send instead,
+   where the write already reports EPIPE and every caller already handles a
+   failed send. Linux takes the flag, BSD and macOS take the socket option (set
+   in kw_peer_from_fd), and a platform with neither falls back to what it did. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 static int write_all(int fd, const uint8_t *b, size_t n)
 {
     while (n) {
-        ssize_t w = write(fd, b, n);
+        ssize_t w = send(fd, b, n, MSG_NOSIGNAL);
         if (w < 0) { if (errno == EINTR) continue; return 0; }
         if (w == 0) return 0;
         b += w; n -= (size_t)w;
