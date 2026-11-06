@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
 # kw sweep against a regtest node: the fee bound on the path that spends an
-# entire key. Skips when dogecoind is absent or its regtest port is taken, so
-# make check stays hermetic.
+# entire key. Skips when dogecoind is absent, so make check stays hermetic.
+#
+# Its ports are found rather than assumed. On the default pair this suite
+# skipped whenever any other regtest node was up on the machine, and the run
+# still exited 0 and printed no failure, so a release went out with the sweep
+# path untested and nothing said so.
 set -eu
 cd "$(dirname "$0")/.."
 
 command -v dogecoind >/dev/null 2>&1 || { echo "sweep skipped: no dogecoind"; exit 0; }
 command -v dogecoin-cli >/dev/null 2>&1 || { echo "sweep skipped: no dogecoin-cli"; exit 0; }
-if (exec 3<>/dev/tcp/127.0.0.1/18444) 2>/dev/null; then
-    exec 3>&- 2>/dev/null || true
-    echo "sweep skipped: port 18444 in use"; exit 0
-fi
+
+port_free() { ! (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }
+P2P=""
+for p in $(seq 18444 2 18542); do
+    if port_free "$p" && port_free "$((p + 1))"; then P2P=$p; break; fi
+done
+[ -n "$P2P" ] || { echo "FAIL: no free port pair in 18444-18542" >&2; exit 1; }
+RPC=$((P2P + 1))
 
 D=$(mktemp -d)
-cleanup() { dogecoin-cli -regtest -datadir="$D" stop >/dev/null 2>&1 || true; sleep 1; rm -rf "$D"; }
+C="dogecoin-cli -regtest -datadir=$D -rpcport=$RPC"
+cleanup() { $C stop >/dev/null 2>&1 || true; sleep 1; rm -rf "$D"; }
 trap cleanup EXIT
 
-dogecoind -regtest -datadir="$D" -daemon >/dev/null 2>&1 || { echo "sweep skipped: dogecoind would not start"; exit 0; }
-C="dogecoin-cli -regtest -datadir=$D"
+# Failures from here on, not skips: dogecoind is installed and the ports are
+# free, so a node that will not come up is this suite's problem to report.
+dogecoind -regtest -datadir="$D" -port=$P2P -rpcport=$RPC -daemon >/dev/null 2>&1 \
+    || { echo "FAIL: dogecoind would not start on $P2P" >&2; exit 1; }
 for _ in $(seq 1 20); do $C getblockcount >/dev/null 2>&1 && break; sleep 1; done
-$C getblockcount >/dev/null 2>&1 || { echo "sweep skipped: regtest node never came up"; exit 0; }
+$C getblockcount >/dev/null 2>&1 || { echo "FAIL: the regtest node never came up" >&2; exit 1; }
 
 MINE=$($C getnewaddress)
 $C generatetoaddress 101 "$MINE" >/dev/null
@@ -30,7 +41,7 @@ $C generatetoaddress 3 "$MINE" >/dev/null
 DEST=$($C getnewaddress)
 
 # step one is the networked half and reads no key: an address, a node, a file
-./kw --regtest sweep --watch "$ADDR" --utxos "$D/u" --node 127.0.0.1 --port 18444 --spv \
+./kw --regtest sweep --watch "$ADDR" --utxos "$D/u" --node 127.0.0.1 --port $P2P --spv \
      >/dev/null 2>&1 || { echo "FAIL: the --watch step failed" >&2; exit 1; }
 [ -f "$D/u" ] || { echo "FAIL: the --watch step wrote no utxo set" >&2; exit 1; }
 [ -f "$D/u.meta" ] || { echo "FAIL: the --watch step wrote no metadata" >&2; exit 1; }
@@ -40,7 +51,7 @@ SWEEP="./kw --regtest sweep --wif @$D/wif --to $DEST --utxos $D/u"
 
 # the halves must not be combinable, which is the whole point of the split
 if ./kw --regtest sweep --watch "$ADDR" --wif "@$D/wif" --to "$DEST" --utxos "$D/u" \
-        --node 127.0.0.1 --port 18444 >/dev/null 2>&1; then
+        --node 127.0.0.1 --port $P2P >/dev/null 2>&1; then
     echo "FAIL: --watch and --wif were accepted in one run" >&2; exit 1
 fi
 # and a sign step with no file to read must say so rather than reach for a peer
@@ -52,11 +63,11 @@ fi
 # a set of someone else's coins is left out rather than signed into a
 # transaction the network refuses
 OTHER=$($C getnewaddress)
-./kw --regtest sweep --watch "$OTHER" --utxos "$D/other" --node 127.0.0.1 --port 18444 --spv \
+./kw --regtest sweep --watch "$OTHER" --utxos "$D/other" --node 127.0.0.1 --port $P2P --spv \
      >/dev/null 2>&1 || { echo "FAIL: the --watch step for another address failed" >&2; exit 1; }
 $C sendtoaddress "$OTHER" 7 >/dev/null
 $C generatetoaddress 3 "$MINE" >/dev/null
-./kw --regtest sweep --watch "$OTHER" --utxos "$D/other" --node 127.0.0.1 --port 18444 --spv \
+./kw --regtest sweep --watch "$OTHER" --utxos "$D/other" --node 127.0.0.1 --port $P2P --spv \
      >/dev/null 2>&1
 if ./kw --regtest sweep --wif "@$D/wif" --to "$DEST" --utxos "$D/other" >/dev/null 2>&1; then
     echo "FAIL: swept a utxo set holding no coins of this key" >&2; exit 1

@@ -85,8 +85,11 @@ which is the expected answer and not a finding. Read the diff, do not count it.
 
 Nothing is tagged until all of these pass on the commit being tagged:
 
-    make check          51/51 suites, which now ends with fuzz-syntax and
-                        fuzz-run, so the harnesses compile in the fast loop
+    make check          53/53 suites, which now ends with fuzz-syntax and
+                        fuzz-run, so the harnesses compile in the fast loop.
+                        A skipped suite is not a pass: sweep and scan find a
+                        free port pair rather than skipping on a busy one, so
+                        the count is the count
     make tools          the twelve hand-run diagnostics link; none are run
     make asan           exit 0, which now means what it says: the sanitized
                         builds carry -fno-sanitize-recover=undefined, so a

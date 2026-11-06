@@ -5,29 +5,35 @@
 # checks both the utxo set and the journal. Scanning twice must not record a
 # receive twice, which is the assertion that was previously code-reading only.
 #
-# Its own ports, so it cannot be skipped by test_sweep.sh's node still shutting
-# down. Skips when dogecoind is absent, so make check stays hermetic.
+# Its own ports, found rather than assumed, so neither test_sweep.sh's node
+# still shutting down nor any other regtest node on the machine turns this into
+# a skip the run then reports as success. Its range sits above test_sweep.sh's
+# so the two cannot land on the same pair. Skips when dogecoind is absent, so
+# make check stays hermetic.
 set -eu
 cd "$(dirname "$0")/.."
 
 command -v dogecoind >/dev/null 2>&1 || { echo "scan skipped: no dogecoind"; exit 0; }
 command -v dogecoin-cli >/dev/null 2>&1 || { echo "scan skipped: no dogecoin-cli"; exit 0; }
-P2P=18544
-RPC=18545
-if (exec 3<>/dev/tcp/127.0.0.1/$P2P) 2>/dev/null; then
-    exec 3>&- 2>/dev/null || true
-    echo "scan skipped: port $P2P in use"; exit 0
-fi
+port_free() { ! (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }
+P2P=""
+for p in $(seq 18544 2 18642); do
+    if port_free "$p" && port_free "$((p + 1))"; then P2P=$p; break; fi
+done
+[ -n "$P2P" ] || { echo "FAIL: no free port pair in 18544-18642" >&2; exit 1; }
+RPC=$((P2P + 1))
 
 D=$(mktemp -d)
 C="dogecoin-cli -regtest -datadir=$D -rpcport=$RPC"
 cleanup() { $C stop >/dev/null 2>&1 || true; sleep 1; rm -rf "$D"; }
 trap cleanup EXIT
 
+# Failures from here on, not skips: dogecoind is installed and the ports are
+# free, so a node that will not come up is this suite's problem to report.
 dogecoind -regtest -datadir="$D" -port=$P2P -rpcport=$RPC -daemon >/dev/null 2>&1 \
-    || { echo "scan skipped: dogecoind would not start"; exit 0; }
+    || { echo "FAIL: dogecoind would not start on $P2P" >&2; exit 1; }
 for _ in $(seq 1 20); do $C getblockcount >/dev/null 2>&1 && break; sleep 1; done
-$C getblockcount >/dev/null 2>&1 || { echo "scan skipped: regtest node never came up"; exit 0; }
+$C getblockcount >/dev/null 2>&1 || { echo "FAIL: the regtest node never came up" >&2; exit 1; }
 
 printf 'a test passphrase\n' > "$D/pass"
 K="--keystore $D/ks --passphrase @$D/pass"

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `test/test_sweep.sh` and `test/test_scan.sh` find a free port pair rather
+  than skipping when the first one is busy. Any other regtest node on the
+  machine turned both into skips, and the run still exited 0 and printed no
+  failure, so v0.5.1's own fix was verified on a tree where the sweep path had
+  not run. A node that will not come up on a free port is a failure now rather
+  than a skip, since dogecoind being installed has already been checked by
+  that point.
+
 ## [0.5.1] - 2026-11-05
 
 A security release. Three ways to get a co-signature on a script one key
