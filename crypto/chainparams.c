@@ -277,7 +277,8 @@ static const kw_checkpoint KW_DOGE_MAINNET_CHECKPOINTS[] = {
     { 6425000, "8d64c0345b4b8f582f66afe354a2fb579231d0b31ab4892b5612ef03df1b8381" },
 };
 
-/* Basic-filter (BIP158) header anchors, every 100000 blocks. Each value is the
+/* Basic-filter (BIP158) header anchors, every 10000 blocks and then the tip the
+   table was generated against, which is why the last gap is 2061. Each value is the
    filter header at that height, which commits to every filter beneath it, so a
    peer serving a different filter set is caught at the first anchor it crosses
    rather than believed because it answered first.

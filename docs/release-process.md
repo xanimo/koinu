@@ -56,11 +56,18 @@ committed table exactly, which is how to tell the generator still agrees with it
 Filter-header anchors sit every 10000 and need a peer that serves BIP157 filters,
 which few do:
 
-    ./kw cfcheckpoints --node HOST --headers main.kwh --since 10000
+    ./kw cfcheckpoints --node HOST --headers main.kwh
 
-Paste that over `KW_DOGE_MAINNET_CFCHECKPOINTS`. A filter header commits to every
-filter beneath it, so one anchor is worth carrying: compact filters are served by
-too few nodes to compare peers against each other.
+10000 is the default, so the flag is only for changing it, and it is `--spacing`.
+`--since` is a start height everywhere else in the tool and is refused here
+rather than read as a spacing, since `--since 6400000` produced a one-entry
+table that reads as the generator failing.
+
+Paste that over `KW_DOGE_MAINNET_CFCHECKPOINTS`. The run prints to stderr how
+many anchors it wrote and where the last one sits, which is the number this step
+exists to move. A filter header commits to every filter beneath it, so one
+anchor is worth carrying: compact filters are served by too few nodes to compare
+peers against each other.
 
 They were every 100000 until the tail above the last one became the thing that
 mattered. Filters come from one peer where headers come from three, so the span
@@ -69,9 +76,19 @@ replays every filter between a height and the anchor below it. At 100000 that
 measured 1.9s for a one-header reply on mainnet and left 33000 blocks unpinned;
 at 10000 it is 0.053s. 644 anchors rather than 64 is the cost.
 
-Neither table changes unless the chain has passed the next anchor height, and that
-is the usual answer at these spacings. Regenerate anyway and diff, rather than
-assuming: the point is that the tail is known, not that the file changed.
+The block table changes only when the chain has passed the next 25000, and that
+is usually the answer. Regenerate anyway and diff, rather than assuming: the
+point is that the tail is known, not that the file changed.
+
+The filter table is regenerated at every release, not only when the chain has
+passed the next 10000, because its last entry is the tip and the tip is the
+whole point. Everything below the newest anchor this release ships is settled by
+a hash in the binary; everything above it is a span one peer's word decides.
+Regenerating sets that span to zero at tag time, so what a user carries is the
+blocks mined since the release rather than the blocks mined since whenever the
+table was last touched. Record the newest anchor height in the release notes, so
+the span is a number somebody can look up rather than one they have to work out
+from a tag date.
 
 The two diff differently, and the filter one looks wrong when it is not.
 gen_checkpoints emits an anchor only at the multiples, so against a grown cache

@@ -82,7 +82,7 @@ int kw_cfstore_base(const char *path, uint8_t out[32]);
  *   - it works for a v1 sidecar, which records no base at all. The published
  *     mainnet cache is v1, so without this a node cannot serve what it holds;
  *   - it reads from the anchor rather than from the first cached filter. Anchors
- *     sit every 100000, so this is at most 100000 entries instead of every entry
+ *     sit every 10000, so this is at most 10000 entries instead of every entry
  *     below the range.
  *
  * Falls back to the sidecar's base where no anchor sits below (from_height).

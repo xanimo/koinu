@@ -869,4 +869,15 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
-echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket, sign --raw pipes into send"
+# --since is a start height for outpoint and was a spacing for cfcheckpoints,
+# two lines apart in one usage text. Refused rather than read as a spacing:
+# --since 6400000 wrote a one-entry table that reads as the generator failing.
+if ./kw cfcheckpoints --node 127.0.0.1 --since 6400000 >/dev/null 2>&1; then
+    echo "FAIL: cfcheckpoints read --since as a spacing" >&2; exit 1
+fi
+./kw cfcheckpoints --node 127.0.0.1 --since 6400000 2>&1 | grep -q -- "--spacing" \
+    || { echo "FAIL: the --since refusal does not name --spacing" >&2; exit 1; }
+./kw 2>&1 | grep -q -- "--spacing N" \
+    || { echo "FAIL: usage does not offer --spacing" >&2; exit 1; }
+
+echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket, sign --raw pipes into send, cfcheckpoints refuses --since"

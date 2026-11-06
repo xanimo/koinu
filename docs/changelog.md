@@ -4,6 +4,27 @@
 
 ### Fixed
 
+- The filter-anchor table is regenerated at every release rather than only when
+  the chain passes the next 10000. Its last entry is the tip, and everything
+  above the newest anchor a release ships is a span one peer's word decides,
+  since too few nodes serve filters to compare peers against each other.
+  Regenerating sets that span to zero at tag time, so a user carries the blocks
+  mined since the release rather than the blocks mined since the table was last
+  touched. `docs/release-process.md` also asks for the newest anchor height in
+  the release notes. Two comments said anchors sit every 100000, which stopped
+  being true in 0.5.0.
+
+- `kw cfcheckpoints` read `--since` as a spacing, while `--since` is a start
+  height for every other subcommand and is documented as both two lines apart in
+  one usage text. `--since 6400000` wrote a one-entry table that reads as the
+  generator failing. It takes `--spacing` and refuses `--since`, and its default
+  is the 10000 the shipped table uses rather than the 100000 it was, which a
+  forgotten flag turned into a table a tenth the size that compiles and looks
+  right.
+- `kw cfcheckpoints` prints how many anchors it wrote and where the last one
+  sits. `gen_checkpoints` has always reported its tail and this reported
+  nothing, so the span above the newest anchor had to be counted out of the
+  array it had just printed.
 - `kw_secure_forget` released a page it never took a reference on. The counter
   was keyed on the page alone, so a forget of a range nobody kept spent the
   reference belonging to one somebody did, and the secret still in use went

@@ -90,7 +90,7 @@ static void usage(void)
       "                [--backup-passphrase @FILE|-]\n"
       "  height   --node HOST [--port N] [--tor]\n"
       "  cfcheckpoints --node HOST [--port N] [--tor] [--headers PATH]\n"
-      "           [--since SPACING]   (filter-header anchors, for a release)\n"
+      "           [--spacing N]       (filter-header anchors, for a release)\n"
       "  outpoint --watch ADDR|SPKHEX --outpoint TXID:VOUT --node HOST\n"
       "           [--port N] [--tor] [--cf|--spv] [--since HEIGHT --filters PATH]\n"
       "           [--daemon SOCKET]   (ask a running kwd instead)\n"
@@ -2265,7 +2265,10 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
 {
     if (!node) { usage(); return 2; }
     if (port <= 0) port = cp->p2p_port;
-    if (spacing <= 0) spacing = 100000;
+    /* What the shipped table uses. At 100000 a forgotten flag produced a table a
+       tenth the size that compiles and looks right, and the tail it leaves
+       unpinned is the thing the spacing exists to bound. */
+    if (spacing <= 0) spacing = 10000;
     want_trace = 1;
     node = headers_parallel_fill(cp, node, port, tor, peers, headers_path, validate_pow);
 
@@ -2290,6 +2293,7 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
     if (!fh) { fprintf(stderr, "kw: out of memory\n"); goto out; }
 
     printf("static const kw_cfcheckpoint %s_CFCHECKPOINTS[] = {\n", "KW_DOGE_MAINNET");
+    size_t emitted = 0, last_multiple = 0;
     {
         uint8_t chain[32];
         const size_t CHUNK = 1000;
@@ -2315,11 +2319,23 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
                     char hex[65]; kw_hex_encode(d, 32, hex, sizeof hex);
                     printf("    { %zu, \"%s\" },\n", k + 1, hex);
                     fflush(stdout);
+                    emitted++;
+                    if ((long)(k + 1) % spacing == 0) last_multiple = k + 1;
                 }
             }
         }
     }
     printf("};\n");
+    /* The number a release is deciding: everything below the newest anchor is
+       pinned by this binary, and the span above it is a span one peer's word
+       decides, since too few nodes serve filters to compare peers. The tip
+       anchor makes it zero at generation, so what the release carries is
+       whatever the chain adds after it. Named here rather than left to be
+       worked out from the array, which is how it went stale before. */
+    fprintf(stderr, "kw: %zu anchors every %ld to %zu, then the tip at %zu\n",
+            emitted, spacing, last_multiple, (size_t)s.count);
+    fprintf(stderr, "kw: nothing above %zu is pinned by this table, so the tail a\n"
+                    "    release carries is the blocks mined after it\n", (size_t)s.count);
     rc = 0;
 out:
     free(fh);
@@ -4935,6 +4951,7 @@ int main(int argc, char **argv)
     int raw_only = 0;
     int npsbt = 0;
     long since = -1;
+    long spacing = -1;
     int vin = -1, nsigs = 0, finish = 0, peers = 1;   /* -1: every input */
     const char *inputs[KW_TX_MAX_IN], *sigs[16];
 
@@ -4992,6 +5009,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--since"))    { uint32_t u = 0;
             if (!arg_u32("--since", NEXT(), INT32_MAX, &u)) return 2;
             since = (long)u; }
+        else if (!strcmp(a, "--spacing")) { uint32_t u = 0;
+            if (!arg_u32("--spacing", NEXT(), INT32_MAX, &u)) return 2;
+            spacing = (long)u; }
         else if (!strcmp(a, "--daemon")) {
             /* twice means two sources to compare, which is the only way the
                agreement cfcheck reports means anything */
@@ -5067,7 +5087,19 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap, raw_only);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, watch_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);
-    else if (!strcmp(cmd, "cfcheckpoints")) rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, since, validate_pow);
+    else if (!strcmp(cmd, "cfcheckpoints")) {
+        /* --since means a start height everywhere else in this tool and meant a
+           spacing only here, two lines apart in the same usage text. Refused
+           rather than read as a spacing: --since 6400000 would have produced a
+           one-entry table that looks like a generator failure. */
+        if (since >= 0) {
+            fprintf(stderr, "kw: cfcheckpoints takes --spacing, not --since; --since is a "
+                            "start height\n    elsewhere and this would have been read as "
+                            "a spacing of %ld\n", since);
+            return 2;
+        }
+        rc = cmd_cfcheckpoints(cp, node, port, tor, headers_arg, peers, spacing, validate_pow);
+    }
     else if (!strcmp(cmd, "cfcheck")) rc = cmd_cfcheck(cp, daemon_arg, daemon2_arg, since, count_arg, want_filters);
     else if (!strcmp(cmd, "cfbase"))  rc = cmd_cfbase(cp, filters_arg, cfbase_arg);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
