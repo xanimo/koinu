@@ -104,15 +104,20 @@ split: $(SIGN_LIB) $(CHAIN_LIB)
 # shape or goes away. It is not the release version: two releases carry the same
 # soname unless something listed in docs/abi.md moves.
 #
-# 1 because kw_psbt_sign now refuses a p2sh redeem script that does not name the
-# signing key, which docs/abi.md counts as narrowing what a function accepts. A
-# caller that relied on signing one gets a refusal, and cannot tell that from a
-# bug, which is the reason that list has the entry.
-KW_ABI    = 1
+# 2 because kw_script_cosignable now refuses custom scripts and repeated keys,
+# so a caller relying on its former key-count rule gets 0, and because
+# kw_script_key_count is gone from the exported set. Both are on the list in
+# docs/abi.md. 1 was kw_psbt_sign refusing a p2sh redeem that does not name the
+# signing key, which is the same kind of narrowing.
+KW_ABI    = 2
 SIGN_SO   = libkoinu-sign.so
 CHAIN_SO  = libkoinu-chain.so
-SIGN_SOV  = $(SIGN_SO).$(KW_VER)
-CHAIN_SOV = $(CHAIN_SO).$(KW_VER)
+# The ABI is in the payload filename as well as the soname. Without it an ABI
+# bump at an unchanged KW_VERSION overwrites a published payload while the
+# soname symlink still points at it, so a caller linked against the old one
+# silently gets the new code.
+SIGN_SOV  = $(SIGN_SO).$(KW_ABI).$(KW_VER)
+CHAIN_SOV = $(CHAIN_SO).$(KW_ABI).$(KW_VER)
 
 # A separate object set: the archives are -fPIE, and a PIE object is not a PIC
 # object on every target even where the two happen to agree here.
@@ -242,7 +247,12 @@ endif
 uninstall:
 	rm -rf $(DESTDIR)$(includedir)/koinu
 	rm -f $(DESTDIR)$(libdir)/$(SIGN_LIB) $(DESTDIR)$(libdir)/$(CHAIN_LIB)
-	rm -f $(DESTDIR)$(libdir)/$(SIGN_SO)* $(DESTDIR)$(libdir)/$(CHAIN_SO)*
+	# This abi only, not a glob: docs/abi.md promises .so.1 and .so.2 install
+	# side by side, and a glob here removes the one this tree did not build.
+	rm -f $(DESTDIR)$(libdir)/$(SIGN_SOV) $(DESTDIR)$(libdir)/$(SIGN_SO).$(KW_ABI) \
+	      $(DESTDIR)$(libdir)/$(SIGN_SO) \
+	      $(DESTDIR)$(libdir)/$(CHAIN_SOV) $(DESTDIR)$(libdir)/$(CHAIN_SO).$(KW_ABI) \
+	      $(DESTDIR)$(libdir)/$(CHAIN_SO)
 	rm -f $(DESTDIR)$(pkgconfdir)/koinu-sign.pc $(DESTDIR)$(pkgconfdir)/koinu-chain.pc
 	rm -f $(DESTDIR)$(bindir)/kw $(DESTDIR)$(bindir)/kwd $(DESTDIR)$(bindir)/kwui
 

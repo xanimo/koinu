@@ -1,6 +1,6 @@
 # ABI
 
-What a program linked against `libkoinu-sign.so.0` or `libkoinu-chain.so.0` can
+What a program linked against `libkoinu-sign.so.2` or `libkoinu-chain.so.2` can
 rely on, and what it cannot. `test/test_abi.sh` checks the mechanical half of
 this on every `make check`.
 
@@ -8,17 +8,30 @@ this on every `make check`.
 
 `KW_ABI` in the Makefile is the soname number and the release version is
 `KW_VERSION` in `include/kw_version.h`. They move independently:
-`libkoinu-sign.so.0.2.5` and `libkoinu-sign.so.0.4.0` both carry soname
-`libkoinu-sign.so.0`, and a program linked against either keeps running against
-the other.
+`libkoinu-sign.so.2.0.5.1` and a later `libkoinu-sign.so.2.0.6.0` both carry
+soname `libkoinu-sign.so.2`, and a program linked against either keeps running
+against the other.
 
-It is 1 as of 0.5.0. `kw_psbt_sign` now refuses a p2sh redeem script that does
-not name the signing key, which is the "narrowing what a function accepts" entry
-below: binding the script to the coin says the script is the one the coin is
-locked to and says nothing about whose signature it wants, so a caller handed a
-script naming somebody else got a signature and a success. A caller that relied
-on that now gets a refusal it cannot tell from a bug, which is why that entry is
-on the list. `libkoinu-sign.so.0` and `.so.1` install side by side.
+The payload filename carries both, `libkoinu-$half.so.$KW_ABI.$KW_VERSION`.
+Without the abi in it, a soname bump at an unchanged `KW_VERSION` writes over a
+published payload while the old soname symlink still points at that name, so a
+caller linked against the old abi loads the new code with no diagnostic. `make
+uninstall` removes this abi and leaves any other in place, for the same reason
+they are allowed to sit side by side.
+
+It is 2 as of 0.5.1. `kw_script_cosignable` now answers only for a canonical
+m-of-n `CHECKMULTISIG` with m at least two and no key repeated, where it used to
+answer for any script pushing two distinct keys. A caller relying on the old
+rule gets 0 for a script it used to get 1 for. `kw_script_key_count` is gone
+from the exported set in the same release, having had no caller inside the
+library and a name that invited exactly that misuse.
+
+It was 1 as of 0.5.0, for `kw_psbt_sign` refusing a p2sh redeem script that does
+not name the signing key: binding the script to the coin says the script is the
+one the coin is locked to and says nothing about whose signature it wants, so a
+caller handed a script naming somebody else got a signature and a success.
+
+`libkoinu-sign.so.1` and `.so.2` install side by side.
 
 ## The exported set
 
@@ -84,7 +97,8 @@ the field names stay the same.
   it answers whether a script names a key and still needs somebody else, which is
   the question a co-signer asks and a plain signer does not. The checks it makes
   were in the cli until then, so a caller linking the library could sign a 1-of-2
-  the cli would refuse.
+  the cli would refuse. What it accepts narrowed in 0.5.1, which is on the list
+  above and not here.
 - Adding an enumerator at the end of one of those enums. A caller that switches
   over one and has no `default:` will stop covering every case, which is a
   warning in its build and not a break in ours.

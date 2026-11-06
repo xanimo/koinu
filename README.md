@@ -196,9 +196,15 @@ whether it has been spent. --since bounds the search to a height range so a
 recent outpoint resolves without touching the whole chain.
 
 cosign signs one input of a p2sh multisig spend and prints the signature for
-the counterparty; --finish combines the collected signatures with its own into
-the finished transaction, checking each against the sighash first, so a
-signature that would fail on chain is refused before broadcast.
+the counterparty. the redeem script has to be a canonical m-of-n
+CHECKMULTISIG with m at least two and no key repeated, and has to name the
+signing key: anything else is refused, since a script the command cannot read
+is a script it cannot say still needs a second signature. the same rule applies
+to psbt sign, which reads the script out of the psbt.
+
+--finish combines the collected signatures with its own into the finished
+transaction, checking each against the sighash first, so a signature that would
+fail on chain is refused before broadcast.
 
 psbt is the same co-signing as bip174 partially signed transactions, for a
 caller that already speaks that format. each subcommand takes a psbt as hex
@@ -214,8 +220,9 @@ and prints one:
 
 tx is what a counterparty reads before it signs, rather than trusting what it
 was handed. finalize takes the scriptSig from the caller because the scripts
-this is for, a payment channel's OP_IF branch among them, do not classify for
-any standard finalizer. the legacy field set is what dogecoin needs; a psbt
+it is given do not classify for any standard finalizer. it makes no co-signing
+claim, which is why it accepts what sign refuses; a caller wanting to sign a
+branching script calls kw_psbt_sign from C, where the same is true. the legacy field set is what dogecoin needs; a psbt
 carrying segwit or unknown fields is refused rather than parsed with those
 fields dropped.
 

@@ -67,8 +67,13 @@ ABI=$(sed -n 's/^KW_ABI *= *//p' Makefile)
 fail() { echo "FAIL: $*"; exit 1; }
 
 for half in sign chain; do
-    so="libkoinu-$half.so.$VER"
+    # The payload carries the abi as well as the release, so a bump at an
+    # unchanged KW_VERSION writes a new file rather than overwriting the one the
+    # old soname still points at.
+    so="libkoinu-$half.so.$ABI.$VER"
     [ -f "$so" ] || fail "$so was not built"
+    [ -f "libkoinu-$half.so.$VER" ] \
+        && fail "libkoinu-$half.so.$VER is built without the abi in its name"
 
     # the soname carries the abi number, not the release version: a consumer
     # linked today keeps working across 0.4.1 and 0.5.0
@@ -96,14 +101,14 @@ done
 # secp256k1 is linked in and not re-exported. Both halves of that matter: if it
 # were absent the .so would not load, and if it were exported a consumer linking
 # its own copy would get two in one process with no warning.
-nm -D --defined-only libkoinu-sign.so."$VER" | grep -q secp256k1 \
+nm -D --defined-only libkoinu-sign.so."$ABI.$VER" | grep -q secp256k1 \
     && fail "libkoinu-sign re-exports secp256k1"
-nm libkoinu-sign.so."$VER" 2>/dev/null | grep -qE ' [tT] secp256k1_ec_pubkey_create' \
+nm libkoinu-sign.so."$ABI.$VER" 2>/dev/null | grep -qE ' [tT] secp256k1_ec_pubkey_create' \
     || fail "libkoinu-sign does not carry secp256k1 at all"
 echo "  secp256k1 is inside libkoinu-sign and not on its exported list"
 
 # chain against sign by soname, not by path
-readelf -d libkoinu-chain.so."$VER" | grep -q "Shared library: \[libkoinu-sign.so.$ABI\]" \
+readelf -d libkoinu-chain.so."$ABI.$VER" | grep -q "Shared library: \[libkoinu-sign.so.$ABI\]" \
     || fail "libkoinu-chain does not link libkoinu-sign by its soname"
 
 # And it runs: the consumer is the same one test_install.sh compiles, linked

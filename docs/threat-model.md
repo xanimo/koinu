@@ -368,16 +368,30 @@ consensus does, so a signature over a script containing one is the signature a
 node checks rather than one that verifies only locally.
 
 `kw psbt` and `kw cosign` verify every counterparty signature against the sighash
-before assembling a spend, and neither signs a script that does not name the
-signing key: a script spending with one key is not a script to co-sign on
-request, which is how a p2pkh scriptPubKey passed off as a redeem script turned a
-cosignature into a spend of the signer's own coin. psbt sign also binds the
-script to the coin, since a psbt carries it; cosign requires `--utxo` and refuses
-without it, because the key check alone is not a binding and a script of the
-signer's own choosing would otherwise pass it. A signature that would fail on
-chain is refused locally rather than broadcast. A psbt carrying fields koinu cannot represent is
-refused rather than parsed with those fields dropped, since a combiner that
-silently discards what it does not understand loses the other party's data.
+before assembling a spend, and both co-sign only a canonical m-of-n
+`CHECKMULTISIG` with m at least two, every key distinct, and the signing key
+among them. Everything else is refused, custom scripts included, because the
+only question these commands exist to answer is whether the spend still needs
+somebody else and a script the command cannot read cannot answer it. A key
+repeated in the list is refused for the same reason: `CHECKMULTISIG` walks the
+signatures against the keys in order, so one signature satisfies both copies and
+`OP_2 <A> <A> <B> OP_3` spends on A alone. A script naming one key is not a
+script to co-sign on request, which is how a p2pkh scriptPubKey passed off as a
+redeem script turned a cosignature into a spend of the signer's own coin.
+
+psbt sign judges the script the input will be signed over, which is `--redeem`
+where one was given and the psbt's own otherwise, and refuses an input carrying
+neither. Judging the argument instead meant the rule did not run at all on the
+ordinary path, where the script travels inside the psbt. Signing hashes that
+script against the scriptPubKey being spent either way, so a script of the
+signer's own choosing is refused for not being the one the coin is locked to.
+cosign has no psbt to read and requires `--utxo` for that binding, refusing
+without it.
+
+A signature that would fail on chain is refused locally rather than broadcast. A
+psbt carrying fields koinu cannot represent is refused rather than parsed with
+those fields dropped, since a combiner that silently discards what it does not
+understand loses the other party's data.
 
 The journal, the utxo set and its scan metadata are 0600 and written through a
 temp file and a rename, since all three name amounts, heights and addresses. The

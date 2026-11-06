@@ -502,35 +502,6 @@ int kw_script_names_key(const uint8_t *script, size_t scriptlen, const uint8_t p
     return 0;
 }
 
-size_t kw_script_key_count(const uint8_t *script, size_t scriptlen, size_t cap)
-{
-    uint8_t seen[16][65];
-    size_t seenlen[16], n = 0, i = 0;
-    if (cap > 16) cap = 16;
-    while (i < scriptlen) {
-        uint8_t op = script[i];
-        size_t datalen = 0, hdr = 1;
-        if (op >= 1 && op <= 75) datalen = op;
-        else if (op == 0x4c) { if (i + 2 > scriptlen) break; datalen = script[i + 1]; hdr = 2; }
-        else if (op == 0x4d) { if (i + 3 > scriptlen) break;
-            datalen = (size_t)script[i + 1] | (size_t)script[i + 2] << 8; hdr = 3; }
-        else if (op == 0x4e) { if (i + 5 > scriptlen) break;
-            datalen = (size_t)script[i + 1] | (size_t)script[i + 2] << 8 |
-                      (size_t)script[i + 3] << 16 | (size_t)script[i + 4] << 24; hdr = 5; }
-        if (!datalen) { i++; continue; }
-        if (i + hdr + datalen > scriptlen) break;
-        const uint8_t *p = script + i + hdr;
-        if (datalen == 33 || datalen == 65) {
-            int dup = 0;
-            for (size_t k = 0; k < n; k++)
-                if (seenlen[k] == datalen && memcmp(seen[k], p, datalen) == 0) { dup = 1; break; }
-            if (!dup && n < cap) { memcpy(seen[n], p, datalen); seenlen[n] = datalen; n++; }
-        }
-        i += hdr + datalen;
-    }
-    return n;
-}
-
 int kw_script_multisig_parse(const uint8_t *script, size_t scriptlen,
                              int *m, uint8_t (*pubkeys)[33], int *n)
 {
@@ -589,10 +560,33 @@ int kw_script_cosignable(const uint8_t *script, size_t scriptlen,
     uint8_t keys[16][33];
 
     if (!script || !pub) return 0;
-    if (!kw_script_names_key(script, scriptlen, pub)) return 0;
-    if (kw_script_key_count(script, scriptlen, 4) < 2) return 0;
-    /* Only a standard multisig states a threshold; anything else is left to the
-       count above, which is why this asks rather than requiring the shape. */
-    if (kw_script_multisig_parse(script, scriptlen, &m, keys, &n) && m < 2) return 0;
-    return 1;
+
+    /* Canonical m-of-n only, and m at least two. Counting keys was the previous
+       rule and it cannot establish that a second signature is required, which is
+       the one thing this predicate exists to say:
+
+         OP_1 <A> <B> OP_2 CHECKMULTISIG OP_NOP   two keys, one signature, and
+                                                  the trailing byte defeats the
+                                                  canonical-shape test, so the
+                                                  threshold was never read
+         <A> CHECKSIG <B> DROP                    two keys, one signature
+
+       The old comment here said a branching redeem passes and that this was
+       intended. It also conceded, in the same breath, that a branch this key can
+       take alone is the counterparty's business to read. A check whose own
+       documentation says it does not check the thing is worse than no check,
+       because the next reader relies on it. A caller that genuinely wants to sign
+       a custom script calls kw_psbt_sign, which makes no co-signing claim. */
+    if (!kw_script_multisig_parse(script, scriptlen, &m, keys, &n) || m < 2) return 0;
+
+    /* CHECKMULTISIG walks the signatures against the key list in order, so a key
+       appearing twice can be satisfied twice by one signature: OP_2 <A> <A> <B>
+       OP_3 names two distinct keys and has m == 2, and A alone spends it. */
+    int mine = 0;
+    for (int i = 0; i < n; i++) {
+        if (memcmp(keys[i], pub, 33) == 0) mine = 1;
+        for (int j = 0; j < i; j++)
+            if (memcmp(keys[i], keys[j], 33) == 0) return 0;
+    }
+    return mine;
 }

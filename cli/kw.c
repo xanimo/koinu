@@ -3210,24 +3210,44 @@ static size_t read_hex_arg(const char *arg, const char *what, uint8_t *out, size
    nineteen paths, and a handle allocated inside would have to be released on
    every one of them. */
 /* One decision, kw_script_cosignable, with the reason worked out only so the
-   refusal can name it. Keeping three checks inline in two commands meant the
-   library and the cli could drift on what co-signable means. */
+   refusal can name it. Keeping the checks inline in two commands meant the
+   library and the cli could drift on what co-signable means.
+
+   The refusal names the shape rather than the key count, because the key count
+   is no longer the reason and telling somebody their branching redeem has a key
+   problem sends them to look in the wrong place. "the redeem script" rather
+   than "--redeem": the psbt path may be judging one the psbt carried, where no
+   --redeem was passed at all. */
 static int cosign_script_ok(const uint8_t *redeem, size_t rl, const uint8_t pub[33])
 {
     int m = 0, n = 0;
     uint8_t keys[16][33];
 
     if (kw_script_cosignable(redeem, rl, pub)) return 1;
-    if (!kw_script_names_key(redeem, rl, pub))
-        fprintf(stderr, "kw: --redeem does not name this key, so signing it would not be "
-                        "a co-signature;\n    a script that spends with one key is not one "
-                        "to sign on request\n");
-    else if (kw_script_multisig_parse(redeem, rl, &m, keys, &n) && m < 2)
-        fprintf(stderr, "kw: --redeem is a %d-of-%d, so one signature spends it; signing "
-                        "it is a spend\n    rather than a co-signature\n", m, n);
-    else
-        fprintf(stderr, "kw: --redeem names one key, this one, so a signature over it is "
-                        "a spend\n    rather than a co-signature\n");
+
+    if (!kw_script_multisig_parse(redeem, rl, &m, keys, &n)) {
+        fprintf(stderr, "kw: the redeem script is not a canonical m-of-n multisig, so "
+                        "nothing here can tell\n    whether it still needs another "
+                        "signature. A branching script may have a branch\n    this key "
+                        "takes alone. Co-signing accepts canonical multisig only; sign a\n"
+                        "    custom script through the library if you have read every "
+                        "branch yourself\n");
+    } else if (m < 2) {
+        fprintf(stderr, "kw: the redeem script is a %d-of-%d, so one signature spends it; "
+                        "signing it is a\n    spend rather than a co-signature\n", m, n);
+    } else {
+        int dup = 0;
+        for (int i = 0; i < n && !dup; i++)
+            for (int j = 0; j < i; j++)
+                if (memcmp(keys[i], keys[j], 33) == 0) { dup = 1; break; }
+        if (dup)
+            fprintf(stderr, "kw: the redeem script is a %d-of-%d that repeats a key, so one "
+                            "signature can fill\n    two of its slots and this key spends "
+                            "it alone\n", m, n);
+        else
+            fprintf(stderr, "kw: the redeem script does not name this key, so signing it "
+                            "would not be a\n    co-signature\n");
+    }
     return 0;
 }
 
@@ -4719,8 +4739,25 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
                more than one. Without them a signer handed its own p2pkh script
                as a redeem signed with exit 0, and a 1-of-2 produced a complete
                spend out of the half of the split that exists to need two. */
-            if (rl) {
-                if (!comp || !cosign_script_ok(r, rl, mypub)) {
+            /* The effective script, not the argument. A psbt can already carry
+               its redeem, in which case rl is zero and gating on it skipped
+               every check: a 1-of-2 arriving inside the psbt got the one
+               signature it needs. With no redeem at all this path signed an
+               ordinary p2pkh input, which is a spend and not a co-signature.
+               This command co-signs, so a redeem is required and the policy
+               applies to whichever one the psbt will actually sign over. */
+            {
+                const uint8_t *er = NULL;
+                size_t erl = 0;
+                if (!kw_psbt_redeem(p, (size_t)vin, &er, &erl) || !erl) {
+                    kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
+                    fprintf(stderr, "kw: psbt sign --wif co-signs a p2sh input and needs a "
+                                    "redeem script;\n    this input carries none, and "
+                                    "signing it would be a spend rather than a\n    "
+                                    "co-signature\n");
+                    goto out;
+                }
+                if (!comp || !cosign_script_ok(er, erl, mypub)) {
                     kw_tx_free(sprev); kw_secure_forget(sk, sizeof sk);
                     if (!comp)
                         fprintf(stderr, "kw: an uncompressed key cannot be named by a "
