@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- `kw_secure_forget` released a page it never took a reference on. The counter
+  was keyed on the page alone, so a forget of a range nobody kept spent the
+  reference belonging to one somebody did, and the secret still in use went
+  back to being pageable. `kw_secure_keep` records its range and only a forget
+  naming that base releases it, which is what `crypto/mem.h` already said
+  happened. No soname bump: a caller cannot have relied on a forget releasing a
+  range it never kept, since that was documented as doing nothing.
 - `test/test_sweep.sh` and `test/test_scan.sh` find a free port pair rather
   than skipping when the first one is busy. Any other regtest node on the
   machine turned both into skips, and the run still exited 0 and printed no

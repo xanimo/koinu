@@ -95,6 +95,39 @@ static int check_nested_locks(void)
     return 1;
 }
 
+/* A forget of a range nobody kept must not release a page somebody did. The
+   counter was keyed on the page alone, so any forget touching that page spent
+   a reference it never took: the tree has 19 forgets of a seed against 13
+   keeps, and each spare one lands wherever that buffer happens to sit. A
+   keystore key a frame below a live seed is the shape that matters. Runs
+   before the overflow check, which stops this process unlocking for good. */
+static int check_unkept_forget(void)
+{
+    size_t ps = (size_t)sysconf(_SC_PAGESIZE);
+    unsigned char *page = NULL;
+    if (posix_memalign((void **)&page, ps, ps) != 0 || !page) {
+        fprintf(stderr, "FAIL: cannot align a page\n");
+        return 0;
+    }
+    unsigned char *a = page, *b = page + 64;
+
+    size_t base = locked_bytes();
+    if (base == (size_t)-1) { free(page); return 1; }
+
+    kw_secure_keep(a, 32);
+    if (locked_bytes() <= base) { free(page); return 1; }   /* cannot lock here */
+
+    kw_secure_forget(b, 32);                                /* b was never kept */
+    int ok = locked_bytes() > base;
+    if (!ok)
+        fprintf(stderr, "FAIL: forgetting a range that was never kept unlocked "
+                        "the page under one that was\n");
+
+    kw_secure_forget(a, 32);
+    free(page);
+    return ok;
+}
+
 /* Past the counter's capacity a page is locked but untracked, and a later secret
    landing on it would take a freed slot and unlock it under the first. So an
    overflowed process must stop unlocking entirely. Runs after the check above
@@ -148,6 +181,7 @@ int main(void)
     if (kw_memcmp_ct(x, z, 4) == 0)     { fprintf(stderr, "FAIL: ct compare differ\n"); return 1; }
 
     if (!check_nested_locks()) return 1;
+    if (!check_unkept_forget()) return 1;
     if (!check_overflow_keeps_locks()) return 1;
 
     /* mlock keeps a secret out of swap and says nothing about a core file, and a
@@ -178,6 +212,7 @@ int main(void)
     }
 
     printf("rng ok: 64-byte draws differ, selftest passed, secure_zero, ct-compare,\n"
-           "  nested locks, no release once the lock table overflows, and core dumps off\n");
+           "  nested locks, an unkept forget releases nothing, no release once the lock\n"
+           "  table overflows, and core dumps off\n");
     return 0;
 }

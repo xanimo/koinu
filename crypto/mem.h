@@ -36,9 +36,15 @@ int kw_munlock(void *p, size_t n);
    bytes are gone before the page can be paged out again.
 
    They nest by page, so two secrets sharing a page survive each other's forget.
-   Passing a range that was never kept is allowed and unlocks nothing. A process
-   that holds secrets on more pages than the counter tracks keeps every lock for
-   the rest of its life rather than risk releasing one it cannot account for. */
+   A forget releases nothing unless it names the base a keep was given, because
+   counting per page alone could not tell the two apart and a wipe of a buffer
+   nobody kept released the page under one somebody did. Forgetting a range that
+   was never kept wipes it and nothing else, which is the ordinary case: every
+   path wipes, only the paths that hold a secret across a call keep.
+
+   A process that holds secrets on more pages than the counter tracks, or on
+   more ranges than it can record, keeps those locks for the rest of its life
+   rather than risk releasing one it cannot account for. */
 void kw_secure_keep(void *p, size_t n);
 void kw_secure_forget(void *p, size_t n);
 

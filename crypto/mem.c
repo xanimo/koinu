@@ -44,8 +44,21 @@ int kw_munlock(void *p, size_t n) { return munlock(p, n); }
    so the overflow is remembered and stops this process unlocking at all. */
 #define KW_LOCK_PAGES 64
 
+/* The page counter alone cannot tell a forget that matches a keep from one that
+   merely lands on the same page, and it spent a reference for both: a forget of
+   a range nobody kept released the page under one somebody did. The tree has
+   more forgets than keeps of the same buffer names by design, since forgetting
+   is also how a caller wipes, so those spare calls are the ordinary case rather
+   than a mistake to find. So a keep records its range and only a forget naming
+   that range spends its reference.
+
+   Unrecordable is the safe direction: the pages are still locked and counted,
+   and with no range to match, nothing ever releases them. */
+#define KW_KEEP_RANGES 64
+
 static pthread_mutex_t lock_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct { uintptr_t page; unsigned refs; } lock_tab[KW_LOCK_PAGES];
+static struct { uintptr_t base; size_t len; } keep_tab[KW_KEEP_RANGES];
 static int lock_overflow;
 
 static size_t page_size(void)
@@ -65,6 +78,11 @@ void kw_secure_keep(void *p, size_t n)
     int err = 0;
 
     pthread_mutex_lock(&lock_mu);
+    for (int i = 0; i < KW_KEEP_RANGES; i++) {
+        if (keep_tab[i].len) continue;
+        keep_tab[i].base = (uintptr_t)p; keep_tab[i].len = n;
+        break;
+    }
     for (uintptr_t pg = first; pg <= last; pg += ps) {
         int slot = -1;
         for (int i = 0; i < KW_LOCK_PAGES; i++) {
@@ -120,15 +138,26 @@ void kw_secure_forget(void *p, size_t n)
     if (!p || n == 0) return;
 
     size_t ps = page_size();
-    uintptr_t first = (uintptr_t)p & ~(uintptr_t)(ps - 1);
-    uintptr_t last  = ((uintptr_t)p + n - 1) & ~(uintptr_t)(ps - 1);
 
     pthread_mutex_lock(&lock_mu);
-    for (uintptr_t pg = first; pg <= last; pg += ps) {
-        for (int i = 0; i < KW_LOCK_PAGES; i++) {
-            if (!lock_tab[i].refs || lock_tab[i].page != pg) continue;
-            if (--lock_tab[i].refs == 0 && !lock_overflow) kw_munlock((void *)pg, ps);
-            break;
+    /* The kept length, not the one passed: a caller wiping part of what it kept
+       is not giving the rest of it up. No match means this range was never kept,
+       so there is no reference here to spend. */
+    size_t len = 0;
+    for (int i = 0; i < KW_KEEP_RANGES; i++) {
+        if (!keep_tab[i].len || keep_tab[i].base != (uintptr_t)p) continue;
+        len = keep_tab[i].len; keep_tab[i].len = 0;
+        break;
+    }
+    if (len) {
+        uintptr_t first = (uintptr_t)p & ~(uintptr_t)(ps - 1);
+        uintptr_t last  = ((uintptr_t)p + len - 1) & ~(uintptr_t)(ps - 1);
+        for (uintptr_t pg = first; pg <= last; pg += ps) {
+            for (int i = 0; i < KW_LOCK_PAGES; i++) {
+                if (!lock_tab[i].refs || lock_tab[i].page != pg) continue;
+                if (--lock_tab[i].refs == 0 && !lock_overflow) kw_munlock((void *)pg, ps);
+                break;
+            }
         }
     }
     pthread_mutex_unlock(&lock_mu);
