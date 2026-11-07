@@ -79,7 +79,8 @@ count above there is no second peer to ask, so the span above the newest anchor
 is a span one peer's word decides, and the anchored walk
 replays every filter between a height and the anchor below it. At 100000 that
 measured 1.9s for a one-header reply on mainnet and left 33000 blocks unpinned;
-at 10000 it is 0.053s. 644 anchors rather than 64 is the cost.
+at 10000 it is 0.053s. 645 anchors rather than 64 is the cost, and it grows by
+one per 10000 blocks.
 
 The block table changes only when the chain has passed the next 25000, and that
 is usually the answer. Regenerate anyway and diff, rather than assuming: the
@@ -100,8 +101,10 @@ gen_checkpoints emits an anchor only at the multiples, so against a grown cache
 it reproduces the committed table exactly and a difference means something is
 wrong. kw cfcheckpoints also anchors the tip, so its last line is whatever the
 tip was when it ran and differs every time the chain moves. At 0.5.0 that was
-643 of 644 identical with the last entry 6432061 against a regenerated 6437155,
-which is the expected answer and not a finding. Read the diff, do not count it.
+643 of 643 multiples identical, the committed tip 6432061 absent because it was
+the previous run's tip and not a multiple, and 6440000 and 6447218 added. That
+is the expected answer and not a finding. Compare the multiples, do not count
+the lines.
 
 ## Gates
 

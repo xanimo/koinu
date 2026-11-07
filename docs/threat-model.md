@@ -292,7 +292,7 @@ stale defends less than a current one.
 Every filter is checked against that peer's cfheaders chain and the verified tip is
 pinned, so a peer cannot rewrite history it already served. The chain is also
 checked against the filter-header anchors in chainparams, every 10000 blocks to
-height 6432061, so a peer serving a different filter set is caught at the first
+height 6447218, so a peer serving a different filter set is caught at the first
 anchor it crosses. Above the last anchor the base is still the peer's word, which
 is what the settled height below refuses to pass on. Compact
 filters are served by too few nodes to compare peers against each other, so this is

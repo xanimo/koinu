@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Filter-header anchors run to 6447218, 645 of them, where 0.5.1 shipped 644 to
+  6432061. Every one of the 643 heights both tables hold is byte-identical; the
+  0.5.1 tip entry is absent because it was that run's tip rather than a
+  multiple. The span above the newest anchor is what one peer's word decides, so
+  regenerating closes it at tag time: it stood at 15048 blocks before this.
+
 ### Added
 
 - `kwd` serves filters and filter headers only up to a height something settles:
