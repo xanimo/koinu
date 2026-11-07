@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-06
+
+Everything one peer's word decides, bounded. Filters come from a single peer
+because nothing on the public network serves them, and the span above the
+newest compiled-in anchor was served and believed as though it were checked.
+
 ### Changed
 
 - Filter-header anchors run to 6447218, 645 of them, where 0.5.1 shipped 644 to
@@ -41,7 +47,6 @@
   touched. `docs/release-process.md` also asks for the newest anchor height in
   the release notes. Two comments said anchors sit every 100000, which stopped
   being true in 0.5.0.
-
 - `kw cfcheckpoints` read `--since` as a spacing, while `--since` is a start
   height for every other subcommand and is documented as both two lines apart in
   one usage text. `--since 6400000` wrote a one-entry table that reads as the
@@ -67,6 +72,8 @@
   not run. A node that will not come up on a free port is a failure now rather
   than a skip, since dogecoind being installed has already been checked by
   that point.
+
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.5.1...v0.5.2
 
 ## [0.5.1] - 2026-11-05
 
