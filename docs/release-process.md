@@ -53,8 +53,12 @@ headers sit past the last anchor. Paste the array over
 `KW_DOGE_MAINNET_CHECKPOINTS`. Run against an unchanged cache it reproduces the
 committed table exactly, which is how to tell the generator still agrees with it.
 
-Filter-header anchors sit every 10000 and need a peer that serves BIP157 filters,
-which few do:
+Filter-header anchors sit every 10000 and need a peer that serves BIP157
+filters. On 2026-11-06 none of the 45 seed-advertised nodes that completed a
+handshake advertised NODE_COMPACT_FILTERS, every one offering NODE_NETWORK and
+NODE_BLOOM and nothing else, which is the sweep docs/threat-model.md describes
+and the reason that document says this needs a node you run. The anchors are
+what everyone else gets instead:
 
     ./kw cfcheckpoints --node HOST --headers main.kwh
 
@@ -70,8 +74,9 @@ anchor is worth carrying: compact filters are served by too few nodes to compare
 peers against each other.
 
 They were every 100000 until the tail above the last one became the thing that
-mattered. Filters come from one peer where headers come from three, so the span
-above the newest anchor is a span one peer's word decides, and the anchored walk
+mattered. Filters come from one peer where headers come from three, and on the
+count above there is no second peer to ask, so the span above the newest anchor
+is a span one peer's word decides, and the anchored walk
 replays every filter between a height and the anchor below it. At 100000 that
 measured 1.9s for a one-header reply on mainnet and left 33000 blocks unpinned;
 at 10000 it is 0.053s. 644 anchors rather than 64 is the cost.

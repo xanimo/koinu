@@ -293,7 +293,8 @@ Every filter is checked against that peer's cfheaders chain and the verified tip
 pinned, so a peer cannot rewrite history it already served. The chain is also
 checked against the filter-header anchors in chainparams, every 10000 blocks to
 height 6432061, so a peer serving a different filter set is caught at the first
-anchor it crosses. Above the last anchor the base is still the peer's word. Compact
+anchor it crosses. Above the last anchor the base is still the peer's word, which
+is what the settled height below refuses to pass on. Compact
 filters are served by too few nodes to compare peers against each other, so this is
 an anchor table rather than a quorum, and the anchors were generated from one node's
 cfheaders rather than derived from blocks.
@@ -329,15 +330,31 @@ payment on the strength of a confirmation, prefer a node you control, which is w
 `--node` is for, and pass it more than once.
 
 That holds for headers and not for filters. Headers come from every `--node` and
-are weighed against each other; filters come from the first peer still standing,
-and are pinned only as far as the newest filter anchor. Above it one peer can omit
-a script from a filter and omit the matching cfheaders, and the spend that script
-would have matched is not looked for: `kw_query_outpoint_range` then answers that
-the outpoint is unspent, which is false. Anchors every 10000 bound how far above
-the newest one that reaches, and the `.fh` sidecar then pins whatever chain was
-accepted, so an honest peer later fails with a chain break until the cache is
-deleted. One peer is enough for this, which is the difference from the paragraph
-above, and nothing in the filter path cross-checks peers today.
+are weighed against each other; filters come from the first peer still standing.
+The attack it allows is omission: one peer leaves a script out of a filter and
+leaves the matching cfheaders out to match, the spend that script would have
+matched is never looked for, and the answer comes back unspent, which is false.
+
+`kwd` tracks the highest height something settles and will neither serve nor
+believe a filter above it. That height is the newest compiled-in anchor, moved
+up to the tip only when a second peer on a different machine agrees on one
+filter header there, which settles every filter beneath it because the chain is
+a hash over them. Different machine is checked by the socket's peer address, so
+`--node X --node X` is one node agreeing with itself and does not count, and an
+address this process cannot read, which includes every peer under `--tor`,
+counts as the same machine. Above that height an outpoint query fetches the
+blocks whole rather than reading a filter, which costs the blocks in that span
+and is why the anchor table is regenerated every release.
+
+On the count above there is usually no second filter peer to ask, so in practice
+the line sits at the newest anchor and the protection is refusing the tail rather
+than comparing it. A second node you run yourself is what moves it.
+
+`kw_query_outpoint_range` believes every filter and is what this paragraph
+described before: the entry point that takes the settled height is
+`kw_query_outpoint_settled`, and a caller using the older one still has the
+omission above. The `.fh` sidecar pins whatever chain was accepted either way, so
+an honest peer later fails with a chain break until the cache is deleted.
 
 Over Tor each connection offers a fresh random username and password, which is
 what tor keys a circuit on, so kwd's resident peers, the parallel download's
