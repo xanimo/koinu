@@ -2,8 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- `kwd` serves filters and filter headers only up to a height something settles:
+  a compiled-in anchor, or a second peer agreeing on one filter header at the
+  tip, which settles everything beneath it since the chain is a hash over it.
+  Above that line one peer's word is all there is, and serving it passed that
+  word on as the node's answer with nothing on the wire to say so. A request
+  past the line is answered `4 none in that range`, and an outpoint query
+  fetches those blocks whole rather than believing a filter: the lie that
+  matters is omission, and a filter leaving a spend out reads as an empty block
+  and comes back unspent. One peer, a disagreement, or a peer that cannot
+  answer each say which. A network pinning no anchors, which is every one but
+  mainnet, is unaffected.
+- `kw_query_outpoint_settled` takes that height. `kw_query_outpoint_range` keeps
+  its signature and passes `UINT32_MAX`, so no soname bump.
+
 ### Fixed
 
+- Writing to a peer that had hung up raised `SIGPIPE`, and only `kwd` installed
+  a handler, so `kw`, `kwui` and anything linking the library died on exit 141
+  with nothing printed. Suppressed at the send instead, which a host cannot
+  forget to do.
 - The filter-anchor table is regenerated at every release rather than only when
   the chain passes the next 10000. Its last entry is the tip, and everything
   above the newest anchor a release ships is a span one peer's word decides,

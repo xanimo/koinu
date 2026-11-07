@@ -161,4 +161,15 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
                             const uint8_t txid[32], uint32_t vout, uint32_t since,
                             kw_outpoint_result *res);
 
+/* The same, told which heights a filter may be believed for. At or below
+   (settled) a match comes from the filter; above it every block is fetched,
+   because a filter that omits a spend reads as a block with nothing in it and
+   the answer comes back unspent. UINT32_MAX believes every filter, which is
+   what kw_query_outpoint_range passes. */
+int kw_query_outpoint_settled(kw_peer *p, const kw_headerstore *s, const char *filters_path,
+                              uint32_t base_height, uint32_t settled,
+                              const uint8_t *spk, size_t spklen,
+                              const uint8_t txid[32], uint32_t vout, uint32_t since,
+                              kw_outpoint_result *res);
+
 #endif /* KOINU_CF_H */

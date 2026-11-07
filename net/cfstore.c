@@ -857,3 +857,11 @@ int kw_cfstore_agree(const kw_chainparams *cp, kw_peer *q, const kw_headerstore 
     }
     return 1;
 }
+
+int kw_cfstore_clamp(uint32_t from, uint32_t count, uint32_t settled, uint32_t *out)
+{
+    if (!out || !count || from > settled) return 0;
+    uint32_t room = settled - from + 1;      /* from <= settled, so this cannot wrap */
+    *out = count < room ? count : room;
+    return 1;
+}

@@ -393,6 +393,16 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
                             const uint8_t txid[32], uint32_t vout, uint32_t since,
                             kw_outpoint_result *res)
 {
+    return kw_query_outpoint_settled(p, s, filters_path, base_height, UINT32_MAX,
+                                     spk, spklen, txid, vout, since, res);
+}
+
+int kw_query_outpoint_settled(kw_peer *p, const kw_headerstore *s, const char *filters_path,
+                              uint32_t base_height, uint32_t settled,
+                              const uint8_t *spk, size_t spklen,
+                              const uint8_t txid[32], uint32_t vout, uint32_t since,
+                              kw_outpoint_result *res)
+{
     uint32_t *heights = (uint32_t *)malloc((s->count ? s->count : 1) * sizeof *heights);
     if (!heights) return -1;
 
@@ -402,6 +412,28 @@ int kw_query_outpoint_range(kw_peer *p, const kw_headerstore *s, const char *fil
         kw_gcs_item it = { spk, spklen };
         nm = kw_cfstore_match_range(filters_path, s, base_height, since, &it, 1, heights, s->count);
         if (nm < 0) { free(heights); return -1; }
+
+        /* A filter above (settled) is one peer's word, and the lie that matters
+           is the omission: a filter that leaves a spend out reads as a block
+           with nothing in it, and the answer comes back unspent. So every height
+           above it is a candidate whatever its filter says, which costs the
+           blocks in that span and not the span below it. The span is the blocks
+           since the release that pinned the newest anchor, which is why the
+           anchor table is regenerated at every release. */
+        uint32_t tip = base_height + (uint32_t)(s->count ? s->count - 1 : 0);
+        if (settled < tip) {
+            uint32_t lo = settled + 1 > since ? settled + 1 : since;
+            long added = 0;
+            for (uint32_t h = lo; h <= tip && (size_t)(nm + added) < s->count; h++) {
+                int seen = 0;
+                for (long i = 0; i < nm + added; i++) if (heights[i] == h) { seen = 1; break; }
+                if (!seen) heights[nm + added++] = h;
+            }
+            nm += added;
+            if (added)
+                kw_logf(KW_LOG_TRACE, "[cf] %ld block(s) above %u fetched whole: "
+                                      "no anchor settles them", added, settled);
+        }
     } else {
         /* No filters, so every block in the range is a candidate. A filter only
            ever narrowed which blocks to fetch, and the script is still what

@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
@@ -110,6 +111,12 @@ static int     g_filters;            /* the peers serve bip158 and the cache is 
    a phone will never hold a cache that does. */
 static uint32_t g_cfbase = 1;
 
+/* The highest height whose filter chain is settled: anything at or below it is
+   either pinned by a compiled-in anchor or agreed by a second peer. Above it one
+   peer's word decides, which is not something to serve as though it were
+   checked, so requests are clamped here. 0 until the first sync sets it. */
+static uint32_t g_cfsettled;
+
 /* The filter path indexes a header store and a filter cache against each other,
    so it takes a store whose first entry is the cache's base height. This store
    always starts at height 1, which is the same thing only when the cache does
@@ -135,6 +142,100 @@ static kw_peer *first_live(void)
 {
     for (int i = 0; i < dial.nnode; i++) if (g_alive[i]) return &g_peer[i];
     return NULL;
+}
+
+/* Whether two sockets lead to the same machine, which is not the same question
+   as whether they are the same socket. --node X --node X opens two connections
+   to one host, and so does giving its name once and its address once. The port
+   is left out: two ports on one machine is still one machine.
+
+   Unknown counts as same. getpeername failing, an address family this does not
+   know, and every connection through one socks proxy all land here, and the
+   safe answer to "is this a second opinion" is no. Under --tor that means no
+   agreement is ever claimed, which is correct rather than unfortunate: the
+   proxy is the only address this process can see. */
+static int same_endpoint(int a, int b)
+{
+    struct sockaddr_storage sa, sb;
+    socklen_t la = sizeof sa, lb = sizeof sb;
+
+    if (getpeername(a, (struct sockaddr *)&sa, &la) != 0 ||
+        getpeername(b, (struct sockaddr *)&sb, &lb) != 0) return 1;
+    if (sa.ss_family != sb.ss_family) return 0;
+    if (sa.ss_family == AF_INET) {
+        const struct sockaddr_in *x = (const struct sockaddr_in *)&sa;
+        const struct sockaddr_in *y = (const struct sockaddr_in *)&sb;
+        return x->sin_addr.s_addr == y->sin_addr.s_addr;
+    }
+    if (sa.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)&sa;
+        const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)&sb;
+        return memcmp(&x->sin6_addr, &y->sin6_addr, sizeof x->sin6_addr) == 0;
+    }
+    return 1;
+}
+
+/* Another live connection to a different machine, which is what makes an
+   agreement an agreement. One node answering twice agrees with itself every
+   time: given --node X --node X this moved the settled height to the tip and
+   served 15000 blocks above the newest anchor on the strength of it. */
+static kw_peer *other_live(const kw_peer *not_this)
+{
+    for (int i = 0; i < dial.nnode; i++) {
+        if (!g_alive[i] || &g_peer[i] == not_this) continue;
+        if (same_endpoint(g_peer[i].fd, not_this->fd)) continue;
+        return &g_peer[i];
+    }
+    return NULL;
+}
+
+/* The newest compiled-in anchor at or below (tip), or 0 where this network pins
+   none. Everything at or below it is settled by this binary. */
+static uint32_t newest_anchor(const kw_chainparams *cp, uint32_t tip)
+{
+    uint32_t best = 0;
+    for (size_t i = 0; i < cp->ncfcheckpoints; i++) {
+        uint32_t h = cp->cfcheckpoints[i].height;
+        if (h <= tip && h > best) best = h;
+    }
+    return best;
+}
+
+/* What of the filter cache can be served as checked. The anchor settles its own
+   height and everything under it. For the span above, one peer's word is all
+   there is unless a second agrees, and a filter header is the head of a hash
+   chain over every filter beneath it, so one header at the tip settles the lot.
+   Refusing to serve the tail is the cost: resolving it from blocks instead is
+   every block since the release, which is not a fallback, it is a download. */
+static void settle_filters(const kw_chainparams *cp, const kw_headerstore *cfs,
+                           const char *filters_path, kw_peer *from)
+{
+    uint32_t tip = g_cfbase + (uint32_t)(cfs->count ? cfs->count - 1 : 0);
+    g_cfsettled = tip;
+
+    /* Only mainnet pins filter anchors. On a network that pins none there is no
+       height this clamp could settle anything against, so clamping to the newest
+       one would mean clamping to zero and serving nothing at all, which is how
+       regtest found this. Nothing is checked on such a network either way. */
+    if (!cp->ncfcheckpoints || !cfs->count) return;
+
+    uint32_t anchored = newest_anchor(cp, tip);
+    if (tip <= anchored) return;
+    g_cfsettled = anchored;
+
+    kw_peer *q = other_live(from);
+    if (!q) {
+        fprintf(stderr, "kwd: one filter peer, so heights above %u are unchecked and "
+                        "not served;\n     give --node twice to have them compared\n",
+                anchored);
+        return;
+    }
+    int agreed = kw_cfstore_agree(cp, q, cfs, filters_path, g_cfbase, tip);
+    if (agreed == 1) { g_cfsettled = tip; return; }
+    fprintf(stderr, agreed == 0
+            ? "kwd: two peers disagree on the filters above %u, serving only to there\n"
+            : "kwd: the second peer could not answer for the filters above %u, "
+              "serving only to there\n", anchored);
 }
 
 /* Every live peer's chain, weighed, with the work of everything above the newest
@@ -279,6 +380,13 @@ static void serve_cffilters(const char *filters_path, const char *a, const char 
     if (from < base || (long)(from - base) >= have) {
         write_all(fd, "4 none in that range\n", 21); return;
     }
+    /* Same bound as the headers. A filter served above what is settled is a
+       filter only one peer vouches for, and a client that checks it against the
+       header chain this node serves would find them consistent with each other
+       and with nothing else. */
+    if (!kw_cfstore_clamp(from, count, g_cfsettled, &count)) {
+        write_all(fd, "4 none in that range\n", 21); return;
+    }
     long avail = have - (long)(from - base);
     long n = (long)count < avail ? (long)count : avail;
 
@@ -304,6 +412,13 @@ static void serve_cfheaders(const kw_chainparams *cp, const char *filters_path,
         !parse_u32(b, KWD_CFHEADERS_MAX, &count) || count == 0 || from == 0) {
         write_all(fd, "1 bad request\n", 14); return;
     }
+    /* Not past what a second peer or an anchor settles. Serving the tail would
+       pass one peer's word on as this node's answer, and a client cannot tell
+       the two apart once it is on the wire. */
+    if (!kw_cfstore_clamp(from, count, g_cfsettled, &count)) {
+        write_all(fd, "4 none in that range\n", 21); return;
+    }
+
     uint8_t *out = (uint8_t *)malloc((size_t)count * 32);
     if (!out) { write_all(fd, "5 out of memory\n", 16); return; }
 
@@ -404,8 +519,9 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
        deadline covers reading the line, not the work behind it. */
     kw_outpoint_result r;
     kw_headerstore sv = cf_view(s, g_cfbase);
-    if (kw_query_outpoint_range(p, &sv, g_filters ? filters_path : NULL, g_cfbase,
-                                spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
+    if (kw_query_outpoint_settled(p, &sv, g_filters ? filters_path : NULL, g_cfbase,
+                                  g_filters ? g_cfsettled : UINT32_MAX,
+                                  spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {
         write_all(fd, "1 scan failed\n", 14); return;
     }
     int n;
@@ -570,6 +686,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "kwd: filter sync failed\n"); goto done;
         } else {
             g_filters = 1;
+            settle_filters(cp, &cfs, filters_path, fp);
         }
         if (stop) goto done;
     }

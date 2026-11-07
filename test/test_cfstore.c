@@ -584,6 +584,37 @@ int main(void)
         snprintf(aux, sizeof aux, "%s.fh", sp);  remove(aux);
     }
 
+    /* The bound two request paths share. An off-by-one here serves one
+       unchecked height as though an anchor settled it, which is not a
+       difference anything on the wire can see, so the edges are named. */
+    {
+        struct { uint32_t from, count, settled, want_n; int want_ok; } v[] = {
+            { 10, 5, 100, 5, 1 },      /* wholly below */
+            { 96, 5, 100, 5, 1 },      /* ends exactly on it */
+            { 97, 5, 100, 4, 1 },      /* one past, so one fewer */
+            { 100, 1, 100, 1, 1 },     /* the settled height itself is settled */
+            { 101, 1, 100, 0, 0 },     /* the first unsettled height is refused */
+            { 1, 0, 100, 0, 0 },       /* a count of zero, not a wrap to 2^32-1 */
+            { 1, 0xffffffffu, 100, 100, 1 },
+            { 0xffffffffu, 1, 0xffffffffu, 1, 1 },
+            { 5, 5, 0, 0, 0 },         /* nothing settled yet */
+        };
+        for (size_t i = 0; i < sizeof v / sizeof *v; i++) {
+            uint32_t got = 0xdeadbeef;
+            int ok = kw_cfstore_clamp(v[i].from, v[i].count, v[i].settled, &got);
+            if (ok != v[i].want_ok || (ok && got != v[i].want_n)) {
+                fprintf(stderr, "FAIL: clamp(from=%u count=%u settled=%u) = %d/%u, "
+                                "want %d/%u\n", v[i].from, v[i].count, v[i].settled,
+                        ok, got, v[i].want_ok, v[i].want_n);
+                return 1;
+            }
+        }
+        uint32_t ignored = 0;
+        if (kw_cfstore_clamp(1, 1, 100, NULL) || kw_cfstore_clamp(1, 0, 100, &ignored)) {
+            fprintf(stderr, "FAIL: clamp accepted a null out or a zero count\n"); return 1;
+        }
+    }
+
     /* The .idx sidecar is a file like any other. An entry claiming an offset past
        the end of the cache used to reach truncate(), which grows a file rather
        than refusing: a 64 MiB entry made 64 MiB of zeros and the rebuild walked
@@ -987,6 +1018,6 @@ int main(void)
         remove(sp); remove(idx); remove(fh);
     }
 
-    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  a sidecar built from an anchor and refused off one,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed,\n  a second peer asked about the span no anchor settles,\n  and a hung-up peer reported rather than signalled\n");
+    printf("cfstore ok: append, count, match hit/miss, height-range skip, corrupt tag rejected, commitment chain pinned, tamper refused,\n  a cache with no sidecar refused and one past it re-fetched,\n  a reorganised entry dropped and refetched, a cache longer than the chain\n  walked back rather than refused,\n  an index offset past the end and a torn record refused,\n  the cache fsynced before its sidecar, the sidecar written before the cache\n  is cut, and a stale index dropped with it,\n  filter-header anchor enforced, the anchored walk matching the chain\n  the filters build at every offset, a slice answering for the height below it,\n  a sidecar built from an anchor and refused off one,\n  the served header chain rebuilt from the vectors the other way, and the\n  streamed filters handed back byte for byte with an early stop obeyed,\n  a second peer asked about the span no anchor settles,\n  and a hung-up peer reported rather than signalled,\n  the served range clamped to what is settled at every edge\n");
     return 0;
 }

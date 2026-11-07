@@ -142,4 +142,14 @@ int kw_cfstore_sidecar_from_anchor(const kw_chainparams *cp, const char *path,
 int kw_cfstore_agree(const kw_chainparams *cp, kw_peer *q, const kw_headerstore *s,
                      const char *path, uint32_t base_height, uint32_t height);
 
+/* How much of [from, from+count) a server may answer for when everything above
+ * (settled) is unchecked. Writes the permitted count to (out) and returns 1, or
+ * returns 0 when the range starts past (settled) and nothing may be served.
+ *
+ * Its own function because two request paths need the same bound and an
+ * off-by-one in either serves one unchecked height as though it were pinned,
+ * which is not a difference a client can see. (count) of 0 is refused rather
+ * than wrapped. */
+int kw_cfstore_clamp(uint32_t from, uint32_t count, uint32_t settled, uint32_t *out);
+
 #endif /* KOINU_CFSTORE_H */
