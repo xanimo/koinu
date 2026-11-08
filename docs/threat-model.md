@@ -348,7 +348,18 @@ and is why the anchor table is regenerated every release.
 
 On the count above there is usually no second filter peer to ask, so in practice
 the line sits at the newest anchor and the protection is refusing the tail rather
-than comparing it. A second node you run yourself is what moves it.
+than comparing it. A second node you run yourself is what moves it, and on
+2026-11-08 it did: two nodes that had never spoken to each other, each synced
+from the public network, agreed on the filter header at the tip and the settled
+height moved from 6447218 to it, so 1582 blocks no anchor pins were served. The
+same cache behind one of those nodes alone answered `4 none in that range` for
+the same heights, and the last header it served was the anchor itself.
+
+Both of those nodes being yours is the point rather than a weakness: what this
+defends against is a remote peer lying about a filter, and two of your own nodes
+that fetched their blocks separately do not lie together. What it does not
+defend against is whatever reached both of them, which is the same caveat as
+running one node.
 
 `kw_query_outpoint_range` believes every filter and is what this paragraph
 described before: the entry point that takes the settled height is

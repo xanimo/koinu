@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `docs/threat-model.md` records the cross-peer check running against two
+  independent mainnet nodes rather than only against the fake peer in
+  `test/test_cfstore.c`. 0.5.2 shipped the agreeing branch exercised only by a
+  unit test, which is the branch that opens the gate: a bug there serves
+  unchecked filters and reports them as checked.
+
 ## [0.5.2] - 2026-11-06
 
 Everything one peer's word decides, bounded. Filters come from a single peer
