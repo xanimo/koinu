@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- A wallet records the height it was created at. `kw new` and `kw restore` take
+  `--birthday HEIGHT:HASH`, `kw height` prints that pair ready to paste, and a
+  scan starts there instead of at the bottom of the chain. Nothing can pay an
+  address derived from a seed that did not exist yet, so a wallet that knows
+  when it began reads a few thousand filters rather than 6.45 million, which is
+  the difference between a first scan that finishes on a phone and one that
+  does not. `kw scan --since HEIGHT` overrides it.
+- The hash is required alongside the height because a height on its own names
+  nothing a scan can check. A keystore carried to another network, or one whose
+  birthday was reorged out, would otherwise start above every block it owns and
+  report an empty wallet. It is refused by name instead.
+- The birthday travels inside the sealed secret rather than in the keystore
+  header, so it is covered by the existing tag and the keystore format does not
+  move. A keystore written before this is exactly 64 bytes of seed and still
+  opens, which is what the length distinguishes.
+- `kw_seedfile_pack` / `kw_seedfile_unpack` in `wallet/seedfile.h`, and
+  `kw_headerstore_from`, which is how a scan is bounded: the three scan backends
+  are exported and take a `base_height` already, so a narrower view of the
+  header store does it without a wider signature. No soname bump.
+
 ### Changed
 
 - `docs/threat-model.md` records the cross-peer check running against two

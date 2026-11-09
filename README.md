@@ -101,6 +101,19 @@ backup.
     kw restore --keystore w.ks --mnemonic -  seal an existing mnemonic
     kw address --keystore w.ks               derive m/44'/coin'/0'/0/index
 
+a wallet can record the height it was created at, and then no scan of it looks
+below that height, since nothing can pay an address derived from a seed that did
+not exist yet. kw height prints the pair to paste:
+
+    kw height --node NODE --headers h        prints  birthday 6447218:8f5d0063...
+    kw new --keystore w.ks --birthday 6447218:8f5d0063...
+
+the hash comes with the height because a height alone names nothing a scan can
+check. a keystore carried to another network, or one whose birthday was reorged
+out, would otherwise start above every block it owns and report an empty wallet;
+instead the scan refuses and says so, and kw scan --since HEIGHT overrides it. a
+wallet with no birthday scans from the bottom of the chain as before.
+
 new asks for four of the twenty-four words back before it writes anything, and
 backup verify answers later whether a written phrase restores a wallet by
 comparing derived seeds in constant time, printing neither. with no --keystore

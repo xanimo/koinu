@@ -63,6 +63,20 @@ int kw_auxpow_skip(const uint8_t *in, size_t len, size_t *off);
 /* An append-only header chain: each header must link to the current tip. */
 typedef struct { kw_block_header *h; size_t count, cap; } kw_headerstore;
 
+/* The same store seen as though it began at (from_height), for a caller that
+ * wants a scan to start above the bottom of the chain. Index 0 of a store built
+ * by kw_sync_headers is height 1, so the view drops (from_height - 1) entries
+ * and the caller passes (from_height) as the base_height the backends take.
+ *
+ * Shallow: it borrows the array rather than copying it, so it must not outlive
+ * the store, must not be freed, and must not be appended to. The scan backends
+ * are exported and take a base_height already, so bounding a scan is a narrower
+ * view rather than a wider signature.
+ *
+ * A (from_height) past the tip gives an empty view, which scans nothing rather
+ * than reading off the end. */
+kw_headerstore kw_headerstore_from(const kw_headerstore *s, uint32_t from_height);
+
 int  kw_headerstore_init(kw_headerstore *s);
 /* Append (h). The first header seeds the chain; each later one must have prev
    equal to the tip's hash. Returns 1 on success, 0 if it does not connect. */

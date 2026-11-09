@@ -57,6 +57,7 @@ CORE_SRC = crypto/cpu.c crypto/rng.c crypto/mem.c crypto/log.c crypto/hex.c cryp
            crypto/chacha20.c crypto/aead.c crypto/kdf.c crypto/keystore.c crypto/tx.c crypto/psbt.c \
            net/pow.c net/auxpow.c net/powq.c net/proto.c net/msg.c net/peer.c net/socks5.c net/headers.c net/sync.c net/chainsel.c net/psync.c net/seed.c net/spv.c net/gcs.c net/cf.c net/cfstore.c net/opmap.c \
            wallet/utxo.c wallet/fee.c wallet/journal.c wallet/change.c \
+           wallet/seedfile.c \
            crypto/vendor/poly1305-donna/poly1305-donna.c \
            crypto/vendor/argon2/argon2.c crypto/vendor/argon2/core.c \
            crypto/vendor/argon2/encoding.c crypto/vendor/argon2/ref.c \
@@ -214,7 +215,8 @@ SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
             crypto/keystore.h crypto/mem.h crypto/pbkdf2.h crypto/psbt.h \
             crypto/ripemd160.h crypto/rng.h crypto/scrypt.h crypto/sha2.h \
             crypto/siphash.h crypto/slip39.h crypto/tx.h \
-            wallet/change.h wallet/fee.h wallet/journal.h wallet/utxo.h
+            wallet/change.h wallet/fee.h wallet/journal.h wallet/seedfile.h \
+            wallet/utxo.h
 
 # The prefix is a prerequisite, through a stamp file, because it is not one of
 # the inputs make can see: two installs with different PREFIX values used to put

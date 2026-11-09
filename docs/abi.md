@@ -61,6 +61,7 @@ These are records, and their layout is frozen for the life of a soname:
     kw_bip32_key        an extended key, whose shape BIP32 fixes
     kw_chainparams      a network's constants
     kw_keystore_params  the kdf cost a seal is written with
+    kw_birthday         the height a wallet was created at, and that block's hash
     kw_slip39_group     a member threshold and a member count
     kw_slip39_share     one decoded share
     kw_codex32          one decoded codex32 string

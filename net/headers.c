@@ -302,3 +302,14 @@ int kw_headerstore_load(kw_headerstore *s, const char *path)
     return ok;
 }
 
+
+kw_headerstore kw_headerstore_from(const kw_headerstore *s, uint32_t from_height)
+{
+    kw_headerstore v = *s;
+    size_t off = from_height > 1 ? (size_t)(from_height - 1) : 0;
+    if (off >= v.count) { v.h = NULL; v.count = 0; v.cap = 0; return v; }
+    v.h += off;
+    v.count -= off;
+    v.cap = v.count;
+    return v;
+}

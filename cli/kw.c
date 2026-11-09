@@ -18,6 +18,7 @@
 #include "address.h"
 #include "base58.h"
 #include "keystore.h"
+#include "seedfile.h"
 #include "ripemd160.h"
 #include "sha2.h"
 #include "tx.h"
@@ -65,13 +66,16 @@ static void usage(void)
       "\n"
       "  new      --keystore PATH [--passphrase @FILE|-] [--words 12|24]\n"
       "                                          [--seed-passphrase @FILE|-]\n"
+      "                                          [--birthday HEIGHT:HASH]\n"
       "  restore  --keystore PATH [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "                                          [--seed-passphrase @FILE|-]\n"
+      "                                          [--birthday HEIGHT:HASH]\n"
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "                                          [--index N] [--change] [--spk]\n"
       "  scan     --keystore PATH [--passphrase @FILE|-] --node HOST [--port N]\n"
       "           or --xpub XPUB (watch only, no keys on this machine)\n"
       "           [--tor] [--cf|--spv] [--gap N] [--utxos PATH] [--validate-pow]\n"
+      "           [--since HEIGHT]    (default: the wallet's birthday)\n"
       "  sign     --keystore PATH [--passphrase @FILE|-] --to ADDR:AMOUNT [--raw]\n"
       "           [--fee DOGE | --feerate DOGE_PER_KB] [--maxfee DOGE]\n"
       "           [--change-to ADDR] [--gap N] [--utxos PATH]\n"
@@ -588,19 +592,32 @@ static void h160_to_spk(const uint8_t h160[20], uint8_t spk[25])
     spk[0]=0x76; spk[1]=0xa9; spk[2]=0x14; memcpy(spk+3, h160, 20); spk[23]=0x88; spk[24]=0xac;
 }
 
-/* Open the keystore at (path) with the passphrase and recover the 64-byte seed. */
-static int open_seed(const char *path, const char *pass_arg, uint8_t seed[64])
+/* Open the keystore at (path) with the passphrase and recover the seed, and the
+   birthday where one was recorded. (birth) may be NULL. A keystore written
+   before birthdays existed holds the seed alone and comes back with height 0,
+   which is why this reads through kw_seedfile_unpack rather than insisting on
+   64 bytes as every caller used to. */
+static int open_seed_birth(const char *path, const char *pass_arg, uint8_t seed[64],
+                           kw_birthday *birth)
 {
     uint8_t blob[8192]; size_t n = 0;
     if (!read_keystore(path, blob, sizeof blob, &n)) return 0;
     char *pass = read_secret(pass_arg, "passphrase: ");
     if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 0; }
-    size_t slen = 0;
-    int ok = kw_keystore_open(blob, n, pass, seed, 64, &slen);
+    uint8_t packed[KW_SEEDFILE_MAX]; size_t slen = 0;
+    kw_secure_keep(packed, sizeof packed);
+    int ok = kw_keystore_open(blob, n, pass, packed, sizeof packed, &slen);
     secret_free(pass);
     kw_secure_zero(blob, sizeof blob);
-    if (!ok || slen != 64) { fprintf(stderr, "kw: wrong passphrase or corrupt keystore\n"); return 0; }
+    if (ok) ok = kw_seedfile_unpack(packed, slen, seed, birth);
+    kw_secure_forget(packed, sizeof packed);
+    if (!ok) { fprintf(stderr, "kw: wrong passphrase or corrupt keystore\n"); return 0; }
     return 1;
+}
+
+static int open_seed(const char *path, const char *pass_arg, uint8_t seed[64])
+{
+    return open_seed_birth(path, pass_arg, seed, NULL);
 }
 
 /* every --node given, so the parallel fill can spread over several */
@@ -770,10 +787,15 @@ static void headers_open(kw_headerstore *s, const kw_chainparams *cp, const char
 
 /* seal a seed under a passphrase and write it, then print the first address */
 static int seal_with_pass(const kw_chainparams *cp, const char *path,
-                          char *pass, const uint8_t seed[64])
+                          char *pass, const uint8_t seed[64],
+                          const kw_birthday *birth)
 {
     uint8_t blob[8192];
-    size_t n = kw_keystore_seal(seed, 64, pass, &KW_KEYSTORE_DEFAULT, blob, sizeof blob);
+    uint8_t packed[KW_SEEDFILE_MAX];
+    kw_secure_keep(packed, sizeof packed);
+    size_t pn = kw_seedfile_pack(seed, birth, packed, sizeof packed);
+    size_t n = pn ? kw_keystore_seal(packed, pn, pass, &KW_KEYSTORE_DEFAULT, blob, sizeof blob) : 0;
+    kw_secure_forget(packed, sizeof packed);
     secret_free(pass);
     if (!n) { fprintf(stderr, "kw: seal failed\n"); return 1; }
     if (!write_new_keystore(path, blob, n)) { kw_secure_zero(blob, sizeof blob); return 1; }
@@ -787,11 +809,12 @@ static int seal_with_pass(const kw_chainparams *cp, const char *path,
 }
 
 static int seal_and_report(const kw_chainparams *cp, const char *path,
-                           const char *pass_arg, const uint8_t seed[64])
+                           const char *pass_arg, const uint8_t seed[64],
+                           const kw_birthday *birth)
 {
     char *pass = read_secret_mode(pass_arg, "new passphrase: ", 1);
     if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 1; }
-    return seal_with_pass(cp, path, pass, seed);
+    return seal_with_pass(cp, path, pass, seed, birth);
 }
 
 /* The nth word of a space-separated mnemonic into (out). Returns 0 if there is
@@ -871,6 +894,7 @@ static int confirm_words(const char *mnem, int words)
    no longer restore the wallet. A wrong one is indistinguishable from a
    different wallet, which is both the point and the hazard. */
 static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_arg,
+                   const kw_birthday *birth,
                    const char *seedpass_arg, int words)
 {
     if (!path) { usage(); return 2; }
@@ -955,12 +979,13 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
     }
     kw_secure_zero(mnem_copy, sizeof mnem_copy);
 
-    int rc = seal_with_pass(cp, path, pass, seed);
+    int rc = seal_with_pass(cp, path, pass, seed, birth);
     kw_secure_forget(seed, sizeof seed);
     return rc;
 }
 
 static int cmd_restore(const kw_chainparams *cp, const char *path,
+                       const kw_birthday *birth,
                        const char *pass_arg, const char *seedpass_arg,
                        const char *mnem_arg)
 {
@@ -994,7 +1019,7 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     }
     secret_free(mnem);
 
-    int rc = seal_and_report(cp, path, pass_arg, seed);
+    int rc = seal_and_report(cp, path, pass_arg, seed, birth);
     kw_secure_forget(seed, sizeof seed);
     return rc;
 }
@@ -1012,12 +1037,16 @@ static int cmd_address(const kw_chainparams *cp, const char *path, const char *p
     if (!pass) { fprintf(stderr, "kw: no passphrase\n"); return 1; }
 
     uint8_t seed[64]; size_t slen = 0;
+    uint8_t packed[KW_SEEDFILE_MAX];
 
     kw_secure_keep(seed, sizeof seed);
-    int opened = kw_keystore_open(blob, n, pass, seed, sizeof seed, &slen);
+    kw_secure_keep(packed, sizeof packed);
+    int opened = kw_keystore_open(blob, n, pass, packed, sizeof packed, &slen);
+    if (opened) opened = kw_seedfile_unpack(packed, slen, seed, NULL);
+    kw_secure_forget(packed, sizeof packed);
     secret_free(pass);
     kw_secure_zero(blob, sizeof blob);
-    if (!opened || slen != 64) { fprintf(stderr, "kw: wrong passphrase or corrupt keystore\n"); return 1; }
+    if (!opened) { fprintf(stderr, "kw: wrong passphrase or corrupt keystore\n"); return 1; }
 
     char addr[128];
     int ok = derive_address(cp, seed, account, change, index, addr, sizeof addr);
@@ -1237,8 +1266,13 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
                     const char *xpub_arg,
                     const char *node, int port, int tor, int use_cf, int gap,
                     const char *utxos_path, const char *headers_path, const char *filters_path,
-                    int peers, int validate_pow)
+                    int peers, int validate_pow, long since)
 {
+    /* Where the scan starts. --since wins, then the keystore's birthday, then
+       the bottom of the chain, which is what every scan did before. */
+    uint32_t scan_from = 1;
+    kw_birthday birth = { 0, { 0 } };
+
     if ((!path && !xpub_arg) || !node) { usage(); return 2; }
     if (path && xpub_arg) {
         fprintf(stderr, "kw: --xpub watches a wallet and --keystore holds one; give one\n");
@@ -1292,7 +1326,7 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
         kw_secure_keep(seed, sizeof seed);
         /* forgotten on the way out, or the page stays locked for the life of
            the process against a keep that nothing balances */
-        if (!open_seed(path, pass_arg, seed)) { kw_secure_forget(seed, sizeof seed); return 1; }
+        if (!open_seed_birth(path, pass_arg, seed, &birth)) { kw_secure_forget(seed, sizeof seed); return 1; }
         kw_bip32_key master;
         kw_secure_keep(&master, sizeof master);
         int have_master = kw_bip32_from_seed(seed, 64, cp->bip32, &master);
@@ -1379,9 +1413,37 @@ static int cmd_scan(const kw_chainparams *cp, const char *path, const char *pass
                             "records no history\n", jpath);
         }
 
-        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &s, us, ws, 1, filters_path)
-                : use_cf ? kw_cf_sync(&p, &s, us, ws, 1)
-                : kw_spv_sync_blocks(&p, &s, us, ws, 1);
+        /* Nothing can pay an address derived from a seed that did not exist
+           yet, so a wallet with a birthday never looks below it. Without one
+           this is height 1 and the scan is what it always was.
+
+           Resolved here rather than at the top because it needs the synced
+           chain: a height on its own names nothing, and the recorded hash is
+           what says the birthday is a block on this chain. A keystore carried
+           to another network, or one whose birthday was reorged out, would
+           otherwise start the scan above every block it owns and report an
+           empty wallet, which is the worst way to be wrong. */
+        if (since > 0) {
+            scan_from = (uint32_t)since;
+        } else if (birth.height) {
+            const kw_block_header *bh = birth.height <= s.count ? &s.h[birth.height - 1] : NULL;
+            if (!bh || memcmp(bh->hash, birth.hash, 32) != 0) {
+                fprintf(stderr, "kw: this wallet records a birthday at height %u, and that "
+                                "is not the block\n    this chain has there. Refusing to "
+                                "scan from it; pass --since to override\n", birth.height);
+                kw_headerstore_free(&s);
+                goto done;
+            }
+            scan_from = birth.height;
+        }
+        if (scan_from > 1)
+            fprintf(stderr, "kw: scanning from height %u, which is %s\n", scan_from,
+                    since > 0 ? "--since" : "this wallet's birthday");
+
+        kw_headerstore sv = kw_headerstore_from(&s, scan_from);
+        long nb = (use_cf && filters_path) ? kw_cf_scan_cached(&p, &sv, us, ws, scan_from, filters_path)
+                : use_cf ? kw_cf_sync(&p, &sv, us, ws, scan_from)
+                : kw_spv_sync_blocks(&p, &sv, us, ws, scan_from);
 
         kw_utxoset_observe(us, NULL);
         if (history_ok) {
@@ -2366,6 +2428,10 @@ static int cmd_height(const kw_chainparams *cp, const char *node, int port, int 
         char d[65] = "(none)";
         if (tip) { uint8_t r[32]; for (int i = 0; i < 32; i++) r[i] = tip->hash[31 - i]; kw_hex_encode(r, 32, d, sizeof d); }
         printf("height %zu\ntip %s\n", s.count, d);
+        /* The pair again, joined, because that is what kw new --birthday takes
+           and retyping 64 hex characters off the line above is a way to record
+           a birthday for a block that is not the one you meant. */
+        if (tip) printf("birthday %zu:%s\n", s.count, d);
         kw_headerstore_free(&s);
         rc = 0;
     }
@@ -4010,7 +4076,7 @@ static int backup_combine(const kw_chainparams *cp, const char *path, const char
                         "one, this is a\n    different wallet rather than an error, so "
                         "check the address below\n");
 
-    rc = seal_and_report(cp, path, pass_arg, seed);
+    rc = seal_and_report(cp, path, pass_arg, seed, NULL);
 
 out:
     kw_secure_zero(seed, sizeof seed);
@@ -4952,6 +5018,8 @@ int main(int argc, char **argv)
     int npsbt = 0;
     long since = -1;
     long spacing = -1;
+    kw_birthday birth = { 0, { 0 } };
+    int have_birth = 0;
     int vin = -1, nsigs = 0, finish = 0, peers = 1;   /* -1: every input */
     const char *inputs[KW_TX_MAX_IN], *sigs[16];
 
@@ -5012,6 +5080,34 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--spacing")) { uint32_t u = 0;
             if (!arg_u32("--spacing", NEXT(), INT32_MAX, &u)) return 2;
             spacing = (long)u; }
+        /* HEIGHT:HASH, both, because a height on its own names nothing a scan
+           can check: with the hash it can say whether that block is on the
+           chain it is syncing, and refuse a birthday from another network or
+           one that was reorged out rather than start from a point that never
+           existed. kw height --node HOST prints the pair. */
+        else if (!strcmp(a, "--birthday")) {
+            const char *v = NEXT();
+            const char *colon = v ? strchr(v, ':') : NULL;
+            uint32_t u = 0;
+            char hbuf[16];
+            if (!colon || (size_t)(colon - v) >= sizeof hbuf) {
+                fprintf(stderr, "kw: --birthday wants HEIGHT:HASH, as kw height prints\n");
+                return 2;
+            }
+            memcpy(hbuf, v, (size_t)(colon - v)); hbuf[colon - v] = 0;
+            if (!arg_u32("--birthday", hbuf, INT32_MAX, &u)) return 2;
+            if (!u) { fprintf(stderr, "kw: --birthday height 0 is the genesis block, "
+                                      "which is the same as none\n"); return 2; }
+            uint8_t disp[32];
+            if (strlen(colon + 1) != 64 || !kw_hex_decode(colon + 1, 64, disp, sizeof disp)) {
+                fprintf(stderr, "kw: --birthday hash is not 64 hex characters\n"); return 2;
+            }
+            /* kw height prints it the way a block explorer does, which is the
+               reverse of how the header store holds it. */
+            for (int k = 0; k < 32; k++) birth.hash[k] = disp[31 - k];
+            birth.height = u;
+            have_birth = 1;
+        }
         else if (!strcmp(a, "--daemon")) {
             /* twice means two sources to compare, which is the only way the
                agreement cfcheck reports means anything */
@@ -5080,10 +5176,10 @@ int main(int argc, char **argv)
         if (sn) node = sn;
     }
     int rc;
-    if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, seedpass_arg, words);
-    else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, pass_arg, seedpass_arg, mnem_arg);
+    if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, have_birth ? &birth : NULL, seedpass_arg, words);
+    else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, have_birth ? &birth : NULL, pass_arg, seedpass_arg, mnem_arg);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
-    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, xpub_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
+    else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, xpub_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow, since);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap, raw_only);
     else if (!strcmp(cmd, "sweep"))   rc = cmd_sweep(cp, wif_arg, to_arg, watch_arg, node, port, tor, use_cf, fee_arg, feerate_arg, maxfee_arg, utxos_arg, headers_arg, filters_arg, peers, validate_pow);
     else if (!strcmp(cmd, "height"))  rc = cmd_height(cp, node, port, tor, headers_arg, peers, validate_pow);

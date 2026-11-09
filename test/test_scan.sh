@@ -276,7 +276,46 @@ fi
 
 echo "scan ok: 104 headers proved their work, one peer said so, 15 DOGE over 2 addresses found and"
 echo "  journaled with heights, a rescan adds nothing, a later payment appends, and"
+# A wallet that records its birthday must not look below it, and must refuse a
+# birthday this chain does not have at that height rather than scan from a point
+# that was never here and report an empty wallet.
+TIPH=$($C getblockcount)
+TIPHASH=$($C getblockhash "$TIPH")
+printf 'a test passphrase\n' > "$D/bpass"
+
+# born at the tip: the funded addresses are all below it, so it finds nothing
+./kw --regtest new --keystore "$D/born.ks" --passphrase @"$D/bpass" \
+     --birthday "$TIPH:$TIPHASH" >/dev/null 2>&1 \
+    || { echo "FAIL: --birthday was refused" >&2; exit 1; }
+./kw --regtest scan --keystore "$D/born.ks" --passphrase @"$D/bpass" \
+     --node "127.0.0.1:$P2P" --spv --utxos "$D/born.utxos" > "$D/born.out" 2>&1 \
+    || { echo "FAIL: a scan from a birthday at the tip failed" >&2; sed 's/^/    /' "$D/born.out" >&2; exit 1; }
+# the scan must have found nothing: every funded address is below the birthday
+[ -s "$D/born.utxos" ] && grep -q "^u " "$D/born.utxos" \
+    && { echo "FAIL: a wallet born at the tip found a utxo below its birthday" >&2; exit 1; }
+./kw --regtest scan --keystore "$D/born.ks" --passphrase @"$D/bpass" \
+     --node "127.0.0.1:$P2P" --spv --utxos "$D/born.utxos" 2>&1 \
+    | grep -q "scanning from height $TIPH" \
+    || { echo "FAIL: the scan did not say it started from the birthday" >&2; exit 1; }
+
+# a birthday this chain does not have there is refused, not scanned from
+./kw --regtest new --keystore "$D/bogus.ks" --passphrase @"$D/bpass" \
+     --birthday "2:$(printf 'ab%.0s' $(seq 32))" >/dev/null 2>&1
+if ./kw --regtest scan --keystore "$D/bogus.ks" --passphrase @"$D/bpass" \
+        --node "127.0.0.1:$P2P" --spv --utxos "$D/bogus.utxos" >/dev/null 2>&1; then
+    echo "FAIL: scanned from a birthday that is not on this chain" >&2; exit 1
+fi
+./kw --regtest scan --keystore "$D/bogus.ks" --passphrase @"$D/bpass" \
+     --node "127.0.0.1:$P2P" --spv --utxos "$D/bogus.utxos" 2>&1 \
+    | grep -q "not the block" \
+    || { echo "FAIL: the refusal did not name the reason" >&2; exit 1; }
+# and --since overrides it, which is the documented way out
+./kw --regtest scan --keystore "$D/bogus.ks" --passphrase @"$D/bpass" --since 1 \
+     --node "127.0.0.1:$P2P" --spv --utxos "$D/bogus.utxos" >/dev/null 2>&1 \
+    || { echo "FAIL: --since did not override a bad birthday" >&2; exit 1; }
+
 echo "  outpoint finds it having checked $CHK headers' work with stdout left parseable,"
 echo "  a spent address still counts as used, an immature coinbase says so, a"
 echo "  watch-only scan from the account xpub finds what the keyed scan finds, and send"
-echo "  tells a relayed transaction from one the node does not hold"
+echo "  tells a relayed transaction from one the node does not hold, and a wallet"
+echo "  born at the tip skips what is below it while a birthday off this chain is refused"

@@ -12,6 +12,7 @@
 #include "chainparams.h"
 #include "log.h"
 #include "keystore.h"
+#include "seedfile.h"
 #include "bip32.h"
 #include "bip44.h"
 #include "address.h"
@@ -623,11 +624,15 @@ static void send_flow(const kw_chainparams *cp, const char *ks, const char *utxo
     char *pass = ask_pass();
     if (!pass) return;
     uint8_t seed[64]; size_t slen = 0;
+    uint8_t packed[KW_SEEDFILE_MAX];
     kw_secure_keep(seed, sizeof seed);
-    int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
+    kw_secure_keep(packed, sizeof packed);
+    int opened = kw_keystore_open(blob, bn, pass, packed, sizeof packed, &slen);
+    if (opened) opened = kw_seedfile_unpack(packed, slen, seed, NULL);
+    kw_secure_forget(packed, sizeof packed);
     kw_secure_forget(pass, KWUI_SECRET_MAX); free(pass);
     kw_secure_zero(blob, sizeof blob);
-    if (!opened || slen != 64) {
+    if (!opened) {
         ask_line("   wrong passphrase. enter to go back ", yes, sizeof yes);
         return;
     }
@@ -826,11 +831,15 @@ int main(int argc, char **argv)
     char *pass = ask_pass();
     if (!pass) { fprintf(stderr, "kwui: no passphrase\n"); return 1; }
     uint8_t seed[64]; size_t slen = 0;
+    uint8_t packed[KW_SEEDFILE_MAX];
     kw_secure_keep(seed, sizeof seed);
-    int opened = kw_keystore_open(blob, bn, pass, seed, sizeof seed, &slen);
+    kw_secure_keep(packed, sizeof packed);
+    int opened = kw_keystore_open(blob, bn, pass, packed, sizeof packed, &slen);
+    if (opened) opened = kw_seedfile_unpack(packed, slen, seed, NULL);
+    kw_secure_forget(packed, sizeof packed);
     kw_secure_forget(pass, KWUI_SECRET_MAX); free(pass);
     kw_secure_zero(blob, sizeof blob);
-    if (!opened || slen != 64) { fprintf(stderr, "kwui: wrong passphrase or corrupt keystore\n"); return 1; }
+    if (!opened) { fprintf(stderr, "kwui: wrong passphrase or corrupt keystore\n"); return 1; }
 
     char defpath[4200];
     if (!utxos) { snprintf(defpath, sizeof defpath, "%s.utxos", ks); utxos = defpath; }

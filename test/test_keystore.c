@@ -3,6 +3,7 @@
  * Copyright (c) 2026 bluezr */
 
 #include "keystore.h"
+#include "seedfile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -89,7 +90,71 @@ int main(void)
         }
     }
 
+    /* What the keystore actually seals for a wallet. The birthday rides inside
+       the sealed bytes rather than in the keystore header, so it is covered by
+       the tag and a keystore written before it existed is still exactly 64
+       bytes of seed. */
+    {
+        uint8_t seed[KW_SEED_LEN], back[KW_SEED_LEN];
+        for (size_t i = 0; i < sizeof seed; i++) seed[i] = (uint8_t)(i * 7 + 1);
+
+        kw_birthday b = { 6447218, { 0 } };
+        for (int i = 0; i < 32; i++) b.hash[i] = (uint8_t)(0xa0 + i);
+
+        uint8_t packed[KW_SEEDFILE_MAX];
+        size_t n = kw_seedfile_pack(seed, &b, packed, sizeof packed);
+        if (n != KW_SEED_LEN + 40) {
+            fprintf(stderr, "FAIL: packed length %zu, want %d\n", n, KW_SEED_LEN + 40); return 1; }
+
+        kw_birthday got = { 0, { 0 } };
+        if (!kw_seedfile_unpack(packed, n, back, &got) ||
+            memcmp(back, seed, sizeof seed) != 0 ||
+            got.height != b.height || memcmp(got.hash, b.hash, 32) != 0) {
+            fprintf(stderr, "FAIL: birthday did not survive a round trip\n"); return 1; }
+
+        /* No birthday writes no trailer, so such a keystore is byte-identical
+           to one from before any of this. */
+        size_t n0 = kw_seedfile_pack(seed, NULL, packed, sizeof packed);
+        if (n0 != KW_SEED_LEN) {
+            fprintf(stderr, "FAIL: a wallet with no birthday packed %zu bytes\n", n0); return 1; }
+        got.height = 1;
+        if (!kw_seedfile_unpack(packed, n0, back, &got) || got.height != 0) {
+            fprintf(stderr, "FAIL: a seed with no trailer did not read back as no birthday\n");
+            return 1; }
+
+        /* A height of zero is the same as none, and pack must not write a
+           trailer claiming it, since unpack reads that as a built-by-hand blob. */
+        kw_birthday zero = { 0, { 0 } };
+        if (kw_seedfile_pack(seed, &zero, packed, sizeof packed) != KW_SEED_LEN) {
+            fprintf(stderr, "FAIL: height 0 wrote a trailer\n"); return 1; }
+
+        /* Everything that is not one of those two shapes is refused rather than
+           read as a seed with something after it. */
+        n = kw_seedfile_pack(seed, &b, packed, sizeof packed);
+        packed[KW_SEED_LEN] ^= 0xff;                      /* broken tag */
+        if (kw_seedfile_unpack(packed, n, back, &got)) {
+            fprintf(stderr, "FAIL: a bad trailer tag was accepted\n"); return 1; }
+        packed[KW_SEED_LEN] ^= 0xff;
+        if (kw_seedfile_unpack(packed, n - 1, back, &got) ||
+            kw_seedfile_unpack(packed, KW_SEED_LEN + 1, back, &got)) {
+            fprintf(stderr, "FAIL: a short trailer was accepted\n"); return 1; }
+        memset(packed + KW_SEED_LEN + 4, 0, 4);           /* trailer saying height 0 */
+        if (kw_seedfile_unpack(packed, n, back, &got)) {
+            fprintf(stderr, "FAIL: a trailer claiming height 0 was accepted\n"); return 1; }
+
+        /* And it survives the seal, which is the only path that matters. */
+        n = kw_seedfile_pack(seed, &b, packed, sizeof packed);
+        uint8_t blob[512];
+        size_t bn = kw_keystore_seal(packed, n, "pw", &KW_KEYSTORE_DEFAULT, blob, sizeof blob);
+        uint8_t out[KW_SEEDFILE_MAX]; size_t olen = 0;
+        if (!bn || !kw_keystore_open(blob, bn, "pw", out, sizeof out, &olen) ||
+            !kw_seedfile_unpack(out, olen, back, &got) ||
+            got.height != b.height || memcmp(back, seed, sizeof seed) != 0) {
+            fprintf(stderr, "FAIL: the birthday did not survive a seal and open\n"); return 1; }
+    }
+
     printf("keystore ok: round trip, wrong passphrase, tamper rejection, randomized seals,\n"
-           "  kdf parameters bounded\n");
+           "  kdf parameters bounded, and a birthday sealed beside the seed with\n"
+           "  pre-birthday keystores still opening\n");
     return 0;
 }
