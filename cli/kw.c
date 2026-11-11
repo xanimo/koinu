@@ -451,23 +451,7 @@ static int derive_address(const kw_chainparams *cp, const uint8_t seed[64],
                           uint32_t account, uint32_t change, uint32_t index,
                           char *addr, size_t addrcap)
 {
-    /* Locked, not only wiped: a child key is the seed one step on, and a stack
-       buffer holding one is pageable. The early return on a failed pubkey left
-       both of these in memory, unwiped, which is the one path out that skipped
-       the cleanup below. */
-    kw_bip32_key master, key;
-    kw_secure_keep(&master, sizeof master);
-    kw_secure_keep(&key, sizeof key);
-    int ok = kw_bip32_from_seed(seed, 64, cp->bip32, &master) &&
-             kw_bip44_derive(&master, cp->bip44_coin, account, change, index, &key);
-    if (ok) {
-        uint8_t pub[33];
-        ok = kw_bip32_pubkey(&key, pub) &&
-             kw_address_p2pkh(pub, cp->p2pkh, addr, addrcap) != 0;
-    }
-    kw_secure_forget(&master, sizeof master);
-    kw_secure_forget(&key, sizeof key);
-    return ok;
+    return kw_bip44_address(cp, seed, 64, account, change, index, addr, addrcap);
 }
 
 /* change below this is folded into the fee rather than made into an output */
