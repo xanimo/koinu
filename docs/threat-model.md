@@ -348,7 +348,21 @@ and is why the anchor table is regenerated every release.
 
 On the count above there is usually no second filter peer to ask, so in practice
 the line sits at the newest anchor and the protection is refusing the tail rather
-than comparing it. A second node you run yourself is what moves it, and on
+than comparing it. Refusing it costs little here, where the span above the
+newest anchor is the blocks since the last release and an outpoint query can
+fetch them whole. It would cost everything on an install that lags releases by
+months, where that span is hundreds of thousands of blocks and fetching them
+whole is not a fallback, so `net/cfanchors.h` carries the rule a fetched anchor
+table would have to satisfy: the compiled table is never discarded, a candidate
+may only add heights above the newest compiled anchor, it must agree at some
+height this binary already pins, and one disagreement rejects all of it. Nothing
+fetches such a table, and the rule ships before the fetch so that adding one is
+a data change rather than a trust change. What it bounds is that a key signing
+such tables could lie about the span above the newest anchor, which is what a
+lying peer can already do there, and could not rewrite anything this binary
+pins.
+
+A second node you run yourself is what moves the line, and on
 2026-11-08 it did: two nodes that had never spoken to each other, each synced
 from the public network, agreed on the filter header at the tip and the settled
 height moved from 6447218 to it, so 1582 blocks no anchor pins were served. The
