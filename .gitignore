@@ -71,6 +71,7 @@
 /test/test_sighash
 /test/fakenode
 /test/test_chainsel
+/test/test_cfanchors
 /test/test_change
 /net_services
 /h.kwh
@@ -106,3 +107,4 @@ xpub*.txt
 /koinu-chain.pc
 /test/test_opmap
 /test/cfstub
+/test/stallrelay

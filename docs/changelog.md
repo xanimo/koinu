@@ -4,6 +4,17 @@
 
 ### Added
 
+- `net/cfanchors.h` carries the rule a fetched filter-anchor table would have to
+  satisfy, with nothing fetching one. The compiled table is never discarded, a
+  candidate may only add heights above the newest compiled anchor, it must agree
+  at a height this binary already pins, and one disagreement at a shared height
+  rejects all of it. Omitting a pinned height is not a disagreement, since
+  regenerating drops the previous run's tip, which lands on no multiple of the
+  spacing. The rule ships before any fetch so adding one later is a data change
+  rather than a trust change, which is the part that cannot be walked back after
+  a release. It bounds a signing key to lying about the span above the newest
+  anchor, which is what a lying peer can already do there.
+
 - A wallet records the height it was created at. `kw new` and `kw restore` take
   `--birthday HEIGHT:HASH`, `kw height` prints that pair ready to paste, and a
   scan starts there instead of at the bottom of the chain. Nothing can pay an

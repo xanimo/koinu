@@ -110,7 +110,7 @@ the lines.
 
 Nothing is tagged until all of these pass on the commit being tagged:
 
-    make check          53/53 suites, which now ends with fuzz-syntax and
+    make check          54/54 suites, which now ends with fuzz-syntax and
                         fuzz-run, so the harnesses compile in the fast loop.
                         A skipped suite is not a pass: sweep and scan find a
                         free port pair rather than skipping on a busy one, so
