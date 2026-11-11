@@ -4,6 +4,20 @@
 
 ### Added
 
+- `kw_bip44_address` derives the address at a BIP44 path in one call. Sixteen
+  places composed it out of four, and each had to know that the master and the
+  child must be locked as well as wiped, since a child key is the seed one step
+  on and a stack buffer holding one is pageable. An external consumer has no way
+  to learn that from the headers, so it is on this side of them now. Found by
+  writing one: koinu-mobile is the first program to link `libkoinu-sign` from
+  outside this tree.
+- It refuses a seed outside BIP32's 16 to 64 bytes. `kw_bip32_from_seed` bounds
+  nothing and will derive a usable key from one byte, so a caller that gets the
+  length wrong gets a working wallet from whatever entropy it passed, which
+  looks like success until the funds are gone. Checked on the new function
+  because narrowing `kw_bip32_from_seed` would bump the soname; its laxness is
+  unchanged and now documented.
+
 - `net/cfanchors.h` carries the rule a fetched filter-anchor table would have to
   satisfy, with nothing fetching one. The compiled table is never discarded, a
   candidate may only add heights above the newest compiled anchor, it must agree

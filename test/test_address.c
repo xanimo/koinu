@@ -38,9 +38,53 @@ static void wif_vector(const kw_chainparams *cp, const char *wif, const char *wa
     }
 }
 
+/* The whole derivation behind one call, which is what an external consumer
+   gets. Checked against the four-call form rather than against a constant, so
+   it is the composition that is pinned and not a vector somebody could update
+   to match a mistake. */
+static int bip44_address_matches_the_long_way(void)
+{
+    const kw_chainparams *cp = &KW_DOGE_MAINNET;
+    uint8_t seed[64];
+    for (size_t i = 0; i < sizeof seed; i++) seed[i] = (uint8_t)(i * 3 + 5);
+
+    for (uint32_t change = 0; change < 2; change++) {
+        for (uint32_t i = 0; i < 4; i++) {
+            kw_bip32_key master, key;
+            char want[128], got[128];
+            uint8_t pub[33];
+
+            if (!kw_bip32_from_seed(seed, sizeof seed, cp->bip32, &master) ||
+                !kw_bip44_derive(&master, cp->bip44_coin, 0, change, i, &key) ||
+                !kw_bip32_pubkey(&key, pub) ||
+                !kw_address_p2pkh(pub, cp->p2pkh, want, sizeof want)) {
+                fprintf(stderr, "FAIL: the long way failed at change %u index %u\n", change, i);
+                return 0;
+            }
+            if (!kw_bip44_address(cp, seed, sizeof seed, 0, change, i, got, sizeof got) ||
+                strcmp(want, got) != 0) {
+                fprintf(stderr, "FAIL: kw_bip44_address gave %s, the long way gave %s\n",
+                        got, want);
+                return 0;
+            }
+        }
+    }
+
+    /* And it refuses rather than half-answering. */
+    char tiny[4];
+    if (kw_bip44_address(cp, seed, sizeof seed, 0, 0, 0, tiny, sizeof tiny)) {
+        fprintf(stderr, "FAIL: a buffer too small still reported success\n"); return 0; }
+    if (tiny[0]) { fprintf(stderr, "FAIL: a refused derivation left bytes behind\n"); return 0; }
+    char buf[128];
+    if (kw_bip44_address(cp, seed, 1, 0, 0, 0, buf, sizeof buf)) {
+        fprintf(stderr, "FAIL: a one-byte seed derived an address\n"); return 0; }
+    return 1;
+}
+
 int main(void)
 {
     if (!kw_ec_start()) { fprintf(stderr, "FAIL ec_start\n"); return 1; }
+    if (!bip44_address_matches_the_long_way()) return 1;
 
     /* Dogecoin version bytes: mainnet 'D...' address / 'Q...' compressed wif,
        regtest 'm|n...' address / 'c...' wif. Pairs from libdogecoin. */
@@ -86,6 +130,7 @@ int main(void)
 
     kw_ec_stop();
     if (fails) { fprintf(stderr, "%d address/bip44 failure(s)\n", fails); return 1; }
-    printf("address ok: dogecoin wif/p2pkh vectors, dgpv/dgub prefixes, bip44 path agreement\n");
+    printf("address ok: dogecoin wif/p2pkh vectors, dgpv/dgub prefixes, bip44 path agreement,\n"
+           "  one-call derivation matching the four-call form and refusing a short seed\n");
     return 0;
 }
