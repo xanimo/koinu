@@ -164,15 +164,20 @@ SHARED_OK = $(if $(VERSCRIPT_OK),$(if $(SONAME_OK),yes,),)
 
 # $(SECP_LIB) is linked in rather than left undefined, so the .so is complete
 # on its own; the version script keeps its names off the exported list.
+# $(LDFLAGS) because HARDLDFLAGS lands there, and without it the shared
+# libraries were the one thing built here with no -z now: partial RELRO rather
+# than full, so the GOT stayed writable after startup. Every executable had it
+# and the library docs/abi.md makes promises about did not, because the
+# hardening check in docs/release-process.md reads kw and nothing else.
 $(SIGN_SOV): $(SIGN_PIC_OBJ) $(SECP_LIB) koinu.map
-	$(CC) $(CFLAGS) -shared $(SONAME_FLAG) $(VERSCRIPT_FLAG) \
+	$(CC) $(CFLAGS) $(LDFLAGS) -shared $(SONAME_FLAG) $(VERSCRIPT_FLAG) \
 	    -o $@ $(SIGN_PIC_OBJ) $(SECP_LIB)
 	ln -sf $@ $(SIGN_SO).$(KW_ABI)
 	ln -sf $(SIGN_SO).$(KW_ABI) $(SIGN_SO)
 
 $(CHAIN_SOV): $(CHAIN_PIC_OBJ) $(SIGN_SOV) koinu.map
-	$(CC) $(CFLAGS) -shared -Wl$(,)-soname$(,)$(CHAIN_SO).$(KW_ABI) $(VERSCRIPT_FLAG) \
-	    -o $@ $(CHAIN_PIC_OBJ) -L. -lkoinu-sign
+	$(CC) $(CFLAGS) $(LDFLAGS) -shared -Wl$(,)-soname$(,)$(CHAIN_SO).$(KW_ABI) \
+	    $(VERSCRIPT_FLAG) -o $@ $(CHAIN_PIC_OBJ) -L. -lkoinu-sign
 	ln -sf $@ $(CHAIN_SO).$(KW_ABI)
 	ln -sf $(CHAIN_SO).$(KW_ABI) $(CHAIN_SO)
 
