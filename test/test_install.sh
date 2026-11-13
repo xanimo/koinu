@@ -25,6 +25,32 @@ for f in /opt/koinu/include/koinu/koinu-sign.h \
     [ -e "$D$f" ] || { echo "FAIL: install did not produce $f" >&2; exit 1; }
 done
 
+# The chain half's headers, because for a long time there were none. It shipped
+# libkoinu-chain with 115 exported names and a koinu-chain.pc naming an
+# includedir, and installed nothing to put there, so a consumer could link it
+# and could not declare a single function in it. Nothing noticed because
+# consumer.c includes koinu-sign.h and this list did not mention net at all.
+for f in peer.h sync.h headers.h cf.h cfstore.h powq.h socks5.h; do
+    [ -e "$D/opt/koinu/include/koinu/$f" ] \
+        || { echo "FAIL: install did not produce include/koinu/$f, so libkoinu-chain \
+has no public api" >&2; exit 1; }
+done
+
+# And that they compile with only the installed prefix on the path, which is
+# what catches one of them including a private header.
+cat > "$D/chain_consumer.c" <<'EOC'
+#include <koinu/peer.h>
+#include <koinu/sync.h>
+#include <koinu/powq.h>
+#include <koinu/cfstore.h>
+#include <koinu/socks5.h>
+int main(void) { return 0; }
+EOC
+${CC:-cc} -std=gnu11 -Wall -Wextra -I"$D/opt/koinu/include" \
+    -c "$D/chain_consumer.c" -o "$D/chain_consumer.o" 2>"$D/chain_consumer.err" \
+    || { echo "FAIL: the chain headers do not compile from the installed prefix:" >&2
+         sed 's/^/    /' "$D/chain_consumer.err" >&2; exit 1; }
+
 # the .pc has to say where things actually are
 if command -v pkg-config >/dev/null 2>&1; then
     export PKG_CONFIG_PATH="$D/opt/koinu/lib/pkgconfig"

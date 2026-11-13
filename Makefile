@@ -223,6 +223,16 @@ SIGN_HDRS = include/koinu-sign.h include/kw_version.h crypto/log.h \
             wallet/change.h wallet/fee.h wallet/journal.h wallet/seedfile.h \
             wallet/utxo.h
 
+# The chain half's headers. It ships a .so exporting 115 names and a .pc file
+# naming an includedir, and installed nothing to put there: a consumer could
+# link libkoinu-chain and had no way to declare a single function in it. Found
+# by writing one. cf.h and cfstore.h include wallet/utxo.h and crypto headers,
+# which are in the list above, so the set is closed.
+CHAIN_HDRS = net/auxpow.h net/cf.h net/cfanchors.h net/cfstore.h net/chainsel.h \
+             net/gcs.h net/headers.h net/msg.h net/opmap.h net/peer.h net/pow.h \
+             net/powq.h net/proto.h net/psync.h net/seed.h net/socks5.h \
+             net/spv.h net/sync.h
+
 # The prefix is a prerequisite, through a stamp file, because it is not one of
 # the inputs make can see: two installs with different PREFIX values used to put
 # the first one's paths in the second one's .pc, which test/test_abi.sh ran into
@@ -239,7 +249,7 @@ SHARED_INSTALL = $(if $(SHARED_OK),$(SIGN_SOV) $(CHAIN_SOV),)
 install: $(SIGN_LIB) $(CHAIN_LIB) $(SHARED_INSTALL) koinu-sign.pc koinu-chain.pc kw kwd kwui
 	install -d $(DESTDIR)$(includedir)/koinu $(DESTDIR)$(libdir) \
 	           $(DESTDIR)$(pkgconfdir) $(DESTDIR)$(bindir)
-	install -m 644 $(SIGN_HDRS) $(DESTDIR)$(includedir)/koinu/
+	install -m 644 $(SIGN_HDRS) $(CHAIN_HDRS) $(DESTDIR)$(includedir)/koinu/
 	install -m 644 $(SIGN_LIB) $(CHAIN_LIB) $(DESTDIR)$(libdir)/
 ifeq ($(SHARED_OK),yes)
 	install -m 755 $(SIGN_SOV) $(CHAIN_SOV) $(DESTDIR)$(libdir)/
