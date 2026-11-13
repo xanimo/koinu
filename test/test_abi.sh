@@ -66,6 +66,18 @@ ABI=$(sed -n 's/^KW_ABI *= *//p' Makefile)
 
 fail() { echo "FAIL: $*"; exit 1; }
 
+# Can this linker produce BIND_NOW at all? Asked of a throwaway library rather
+# than assumed, in the same style as the Makefile's own probes, so a toolchain
+# without it skips the check instead of failing somebody else's build.
+NOW_OK=no
+probe=$(mktemp -d)
+printf 'int kw_probe(void){return 0;}\n' > "$probe/p.c"
+if ${CC:-cc} -shared -fPIC -Wl,-z,now -o "$probe/p.so" "$probe/p.c" 2>/dev/null \
+   && readelf -d "$probe/p.so" 2>/dev/null | grep -q BIND_NOW; then
+    NOW_OK=yes
+fi
+rm -rf "$probe"
+
 for half in sign chain; do
     # The payload carries the abi as well as the release, so a bump at an
     # unchanged KW_VERSION writes a new file rather than overwriting the one the
@@ -95,6 +107,22 @@ $extra"
 
     n=$(nm -D --defined-only "$so" | awk '{print $3}' | grep -cE '^(kw_|KW_)')
     [ "$n" -gt 0 ] || fail "$so exports nothing, so the check above was vacuous"
+
+    # Hardening, on the library rather than only on kw. The shared link did not
+    # pass $(LDFLAGS), which is where HARDLDFLAGS lands, so these shipped with
+    # partial RELRO and a writable GOT while every executable had full, and the
+    # check in docs/release-process.md reads kw so nothing noticed.
+    #
+    # Conditioned on the linker rather than on kw. The first version of this
+    # asked whether kw had BIND_NOW, and kw does not exist after a clean when
+    # only `make shared` has run, so the condition was false, the whole block
+    # skipped, and the gate reported ok against a library with a writable GOT.
+    if [ "$NOW_OK" = yes ]; then
+        readelf -d "$so" | grep -q BIND_NOW \
+            || fail "$so has no BIND_NOW though this linker supports -z now, so \
+the library is less hardened than the binaries built beside it"
+        readelf -lW "$so" | grep -q GNU_RELRO || fail "$so has no GNU_RELRO"
+    fi
     echo "  $so: soname $want, $n exported"
 done
 

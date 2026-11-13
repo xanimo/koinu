@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The shared libraries were linked without `$(LDFLAGS)`, which is where
+  `HARDLDFLAGS` lands, so `libkoinu-sign.so` and `libkoinu-chain.so` shipped
+  with partial RELRO and a writable GOT while every executable built beside them
+  had full RELRO and `BIND_NOW`. The library `docs/abi.md` makes promises about,
+  and the one an external consumer links, was the only unhardened thing here.
+  Nothing noticed because the hardening check in `docs/release-process.md` reads
+  `kw` and stops.
+- `test/test_abi.sh` checks the libraries for `BIND_NOW` and `GNU_RELRO`, gated
+  on a probe of whether the linker can produce them rather than on whether `kw`
+  happens to exist. The first version asked `readelf -d kw`, which is absent
+  after a clean when only `make shared` has run, so the condition was false, the
+  whole check skipped, and the gate reported ok against a library with a
+  writable GOT.
+
 ### Added
 
 - `kw_bip44_address` derives the address at a BIP44 path in one call. Sixteen
