@@ -574,6 +574,43 @@ echo "$SOUT" | grep -q "^signed  1 of 1" \
     || { echo "FAIL: psbt sign did not sign the input" >&2; echo "$SOUT" >&2; exit 1; }
 printf '%s\n' "$(echo "$SOUT" | awk '/^psbt/{print $2}')" > "$WORK/pbs.hex"
 
+# The read-back exists because the builder is the side this split assumes may be
+# compromised, so what it says about an output has to be true. It tested the
+# length and the twenty bytes at offset 3 and nothing else, and an OP_RETURN
+# carrying one 23-byte push is also 25 bytes with those twenty in the same
+# place. The change was swapped for one and the line read
+#   out 1 mine  998.99977400 DOGE to an unrecognised script (this wallet, ...)
+# for coins being burned, and it signed. Both halves of that line ask one
+# function now.
+#
+# The substitution keeps the script at 25 bytes, so nothing else in the psbt
+# moves: 76a914<h160>88ac and 6a1700<h160>0000 are the same length.
+CHGSPK=$(./kw --regtest address --keystore "$WORK/ks" --passphrase "@$WORK/pass" \
+         --change --spk 2>/dev/null)
+CH160=${CHGSPK:6:40}
+BURN="6a1700${CH160}0000"
+[ ${#BURN} -eq ${#CHGSPK} ] || { echo "FAIL: the burn script is a different length" >&2; exit 1; }
+BPSBT=$(printf '%s' "$PSBT" | sed "s/$CHGSPK/$BURN/")
+[ "$BPSBT" != "$PSBT" ] || { echo "FAIL: the change script was not found in the psbt" >&2; exit 1; }
+printf '%s\n' "$BPSBT" > "$WORK/pbburn.hex"
+
+BOUT2=$(./kw --regtest psbt sign --psbt "@$WORK/pbburn.hex" --keystore "$WORK/ks" \
+        --passphrase "@$WORK/pass" --gap 5 2>/dev/null)
+# The line about the burned output specifically. This psbt pays an address the
+# wallet also derives, so output 0 is honestly "mine" and grepping the whole
+# read-back matches it.
+BURNLINE=$(echo "$BOUT2" | grep "unrecognised script" || true)
+[ -n "$BURNLINE" ] \
+    || { echo "FAIL: the burn output was not reported as unrecognised" >&2
+         echo "$BOUT2" >&2; exit 1; }
+echo "$BURNLINE" | grep -q "mine" \
+    && { echo "FAIL: an OP_RETURN carrying the change hash160 was called mine" >&2
+         echo "$BURNLINE" >&2; exit 1; }
+# and the honest psbt still names its change, so this is not just refusing
+# everything
+echo "$SOUT" | grep -q "mine" \
+    || { echo "FAIL: real p2pkh change is no longer named" >&2; exit 1; }
+
 # and the signing run must open no socket
 if command -v strace >/dev/null 2>&1; then
     NS=$(strace -f -e trace=socket,connect ./kw --regtest psbt sign --psbt "@$WORK/pb.hex" \
@@ -881,3 +918,4 @@ fi
     || { echo "FAIL: usage does not offer --spacing" >&2; exit 1; }
 
 echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket, sign --raw pipes into send, cfcheckpoints refuses --since"
+echo "  an OP_RETURN carrying the change hash160 is not called mine"
