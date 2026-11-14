@@ -590,3 +590,53 @@ int kw_script_cosignable(const uint8_t *script, size_t scriptlen,
     }
     return mine;
 }
+
+struct kw_tx_pick {
+    uint32_t  want;
+    int       found;
+    int       toolong;
+    uint64_t  value;
+    uint8_t  *spk;
+    size_t    cap;
+    size_t    spklen;
+};
+
+static void kw_tx_pick_output(void *ctx, const uint8_t txid[32], uint32_t index,
+                              uint64_t value, const uint8_t *spk, size_t spklen)
+{
+    struct kw_tx_pick *q = (struct kw_tx_pick *)ctx;
+    (void)txid;
+    if (index != q->want || q->found || q->toolong) return;
+    if (q->spk) {
+        if (spklen > q->cap) { q->toolong = 1; return; }
+        memcpy(q->spk, spk, spklen);
+    }
+    q->spklen = spklen;
+    q->value = value;
+    q->found = 1;
+}
+
+int kw_tx_output_at(const uint8_t *raw, size_t len, uint32_t index,
+                    uint64_t *value, uint8_t *spk, size_t cap, size_t *spklen)
+{
+    struct kw_tx_pick q;
+    uint8_t id[32];
+    size_t used;
+
+    if (!raw || !len) return 0;
+    memset(&q, 0, sizeof q);
+    q.want = index;
+    q.spk = spk;
+    q.cap = cap;
+
+    used = kw_tx_scan(raw, len, id, NULL, kw_tx_pick_output, &q);
+    /* Exactly one transaction. Trailing bytes are not covered by the txid a
+       caller is about to compare against, which is the check that makes the
+       bytes the outpoint's rather than merely parseable. */
+    if (!used || used != len) return 0;
+    if (!q.found || q.toolong) return 0;
+
+    if (value) *value = q.value;
+    if (spklen) *spklen = q.spklen;
+    return 1;
+}

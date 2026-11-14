@@ -167,6 +167,25 @@ int  kw_tx_txid(const kw_tx *tx, uint8_t out[32]);
    so a scanner can form the created outpoint. Dogecoin chain transactions are
    legacy, so txid is SHA256d over the whole tx. Returns the number of bytes
    consumed (the tx length, so a caller can walk a block) or 0 if malformed. */
+/* Value and scriptPubKey of output (index) of the transaction in (raw), without
+   holding the rest of it. Returns 1, or 0 if (raw) is not exactly one
+   transaction, has no such output, or that output's script does not fit (cap).
+   (spk) may be NULL when only the value is wanted, and (cap) is then ignored.
+
+   Here because kw_tx_parse bounds a transaction by KW_TX_MAX_IN, KW_TX_MAX_OUT
+   and KW_TX_SCRIPT_MAX, which are the right bounds for one koinu builds and the
+   wrong ones for one it is handed. A coin paid as one of forty outputs, the
+   shape of an exchange payout, was found by kw scan and spent by kw sign, which
+   read those bytes with kw_tx_scan, and refused by every psbt and cosign path,
+   which read them with kw_tx_parse. For a 2-of-2 there was no second path.
+
+   The limit that remains is on the one output being spent, which is the script
+   that gets signed over: a script too long to hold is a coin this cannot sign
+   whatever it does. What is gone is a limit on every other output in somebody
+   else's transaction. */
+int kw_tx_output_at(const uint8_t *raw, size_t len, uint32_t index,
+                    uint64_t *value, uint8_t *spk, size_t cap, size_t *spklen);
+
 size_t kw_tx_scan(const uint8_t *raw, size_t len, uint8_t txid[32],
                   void (*on_input)(void *ctx, const uint8_t prev_txid[32], uint32_t vout),
                   void (*on_output)(void *ctx, const uint8_t txid[32], uint32_t index,

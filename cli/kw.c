@@ -3408,16 +3408,21 @@ static int cosign_run(const kw_chainparams *cp, const char *tx_arg, const char *
         size_t wl = kw_script_p2sh(redeem, rl, want);
         uint32_t n = 0;
         kw_tx_input_prevout(tx, (size_t)vin, NULL, &n);
-        if (!pn || kw_tx_parse(prevraw, pn, prev) != pn) {
+        /* The one output this spends, not the whole of a transaction somebody
+           else built. A 2-of-2 funded as one of forty outputs had no second
+           path at all: kw sign cannot spend it either, since the script is not
+           a single key's. */
+        uint8_t psc[KW_TX_SCRIPT_MAX];
+        size_t psl = 0;
+        int got_out = pn && kw_tx_output_at(prevraw, pn, n, NULL, psc, sizeof psc, &psl);
+        if (!pn) {
             kw_secure_forget(sk, sizeof sk);
             fprintf(stderr, "kw: --utxo is not a transaction\n"); return 1;
         }
         uint8_t want_id[32];
-        const uint8_t *psc = NULL;
-        size_t psl = 0;
         kw_tx_input_prevout(tx, (size_t)vin, want_id, NULL);
         kw_hash256(prevraw, pn, pid);
-        if (memcmp(pid, want_id, 32) != 0 || !kw_tx_output(prev, n, NULL, &psc, &psl) ||
+        if (memcmp(pid, want_id, 32) != 0 || !got_out ||
             !wl || psl != wl || memcmp(psc, want, wl) != 0) {
             kw_secure_forget(sk, sizeof sk);
             fprintf(stderr, "kw: --utxo is not the coin input %d spends, or it does not pay "
@@ -4479,7 +4484,7 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
        computed cannot be applied, and signing anyway is the whole attack. */
     for (size_t i = 0; i < kw_tx_nin(utx); i++) {
         const uint8_t *u = NULL;
-        size_t ulen = 0, used;
+        size_t ulen = 0;
         uint32_t vout = 0;
         uint8_t want[32], got[32];
         uint64_t v = 0;
@@ -4496,8 +4501,11 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
                             "its outpoint names; nothing signed\n", i);
             goto out;
         }
-        used = kw_tx_parse(u, ulen, prev);
-        if (!used || used != ulen || !kw_tx_output(prev, vout, &v, NULL, NULL)) {
+        /* One output, not the whole transaction: kw_tx_parse's bounds are
+           koinu's own and a coin paid as one of forty outputs is not koinu's
+           to bound. The message also blamed the input for what was this
+           wallet's limit. */
+        if (!kw_tx_output_at(u, ulen, vout, &v, NULL, 0, NULL)) {
             fprintf(stderr, "kw: input %zu names an output its transaction does not "
                             "have; nothing signed\n", i);
             goto out;
@@ -4534,7 +4542,7 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
 
     for (size_t i = 0; i < kw_tx_nin(utx); i++) {
         const uint8_t *u = NULL;
-        size_t ulen = 0, used;
+        size_t ulen = 0;
         uint32_t vout = 0;
         int j = -1;
 
@@ -4546,14 +4554,15 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
             skipped++;
             continue;
         }
-        used = kw_tx_parse(u, ulen, prev);
-        if (!used || used != ulen) { skipped++; continue; }
         {
-            const uint8_t *sc = NULL;
+            uint8_t sc[KW_TX_SCRIPT_MAX];
             size_t sl = 0;
-            if (!kw_tx_output(prev, vout, NULL, &sc, &sl) || sl != 25) { skipped++; continue; }
+            const uint8_t *ph;
+            if (!kw_tx_output_at(u, ulen, vout, NULL, sc, sizeof sc, &sl)) { skipped++; continue; }
+            ph = p2pkh_hash160(sc, sl);
+            if (!ph) { skipped++; continue; }
             for (int t = 0; t < m; t++)
-                if (memcmp(h160[t], sc + 3, 20) == 0) { j = t; break; }
+                if (memcmp(h160[t], ph, 20) == 0) { j = t; break; }
         }
         if (j < 0) { skipped++; continue; }
         /* kw_psbt_sign checks the transaction hashes to the outpoint and that
@@ -4854,7 +4863,7 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
 
             for (size_t i = 0; i < kw_tx_nin(stx); i++) {
                 const uint8_t *u = NULL;
-                size_t ulen = 0, used;
+                size_t ulen = 0;
                 uint32_t pv = 0;
                 uint8_t want[32], got[32];
                 uint64_t v = 0;
@@ -4862,9 +4871,8 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
                 kw_tx_input_prevout(stx, i, want, &pv);
                 if (!kw_psbt_utxo(p, i, &u, &ulen)) { known = 0; continue; }
                 kw_hash256(u, ulen, got);
-                used = kw_tx_parse(u, ulen, sprev);
-                if (memcmp(want, got, 32) != 0 || !used || used != ulen ||
-                    !kw_tx_output(sprev, pv, &v, NULL, NULL)) { known = 0; continue; }
+                if (memcmp(want, got, 32) != 0 ||
+                    !kw_tx_output_at(u, ulen, pv, &v, NULL, 0, NULL)) { known = 0; continue; }
                 if (v > KOINU_MAX_MONEY - sin) { known = 0; continue; }
                 sin += v;
             }
