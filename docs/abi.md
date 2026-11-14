@@ -1,6 +1,6 @@
 # ABI
 
-What a program linked against `libkoinu-sign.so.2` or `libkoinu-chain.so.2` can
+What a program linked against `libkoinu-sign.so.3` or `libkoinu-chain.so.3` can
 rely on, and what it cannot. `test/test_abi.sh` checks the mechanical half of
 this on every `make check`.
 
@@ -19,7 +19,14 @@ caller linked against the old abi loads the new code with no diagnostic. `make
 uninstall` removes this abi and leaves any other in place, for the same reason
 they are allowed to sit side by side.
 
-It is 2 as of 0.5.1. `kw_script_cosignable` now answers only for a canonical
+It is 3 as of this release. `kw_bip39_to_seed` refuses a passphrase with a byte
+at or above 0x80: BIP39 hashes the NFKD form of a passphrase and this hashes the
+bytes it is handed, so one outside ASCII derived a seed no other implementation
+derives, silently, because every passphrase is a valid wallet and the restore
+elsewhere simply comes up empty. A caller that passed one gets 0 where it used
+to get a seed.
+
+It was 2 as of 0.5.1. `kw_script_cosignable` now answers only for a canonical
 m-of-n `CHECKMULTISIG` with m at least two and no key repeated, where it used to
 answer for any script pushing two distinct keys. A caller relying on the old
 rule gets 0 for a script it used to get 1 for. `kw_script_key_count` is gone
@@ -31,7 +38,7 @@ not name the signing key: binding the script to the coin says the script is the
 one the coin is locked to and says nothing about whose signature it wants, so a
 caller handed a script naming somebody else got a signature and a success.
 
-`libkoinu-sign.so.1` and `.so.2` install side by side.
+`libkoinu-sign.so.2` and `.so.3` install side by side.
 
 ## The exported set
 

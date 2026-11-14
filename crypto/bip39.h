@@ -36,6 +36,18 @@ int kw_bip39_to_entropy(const char *mnemonic, uint8_t *out, size_t outcap, size_
    BIP39, but does require known words, and hashes them joined by single spaces
    however they were spaced on the way in, so a phrase that kw_bip39_check
    accepts and the seed it yields cannot disagree. Returns 1 on success. */
+/* The BIP39 seed for (mnemonic) under (passphrase). Returns 1, or 0 on a
+   mnemonic that does not check out or a passphrase holding a byte at or above
+   0x80.
+
+   BIP39 hashes the NFKD form of both. This hashes the bytes given, so a
+   passphrase outside ASCII derived a seed no other implementation derives: a
+   precomposed e-acute and its decomposed form are the same passphrase to a
+   person and different ones here. It is refused rather than normalised, because
+   NFKD needs the Unicode decomposition tables and a wallet no other
+   implementation can restore is worse than one that cannot be created. The
+   mnemonic needs no such check: it is rebuilt from the parsed words, which come
+   from an ASCII wordlist. */
 int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[KW_BIP39_SEED_LEN]);
 
 #endif /* KOINU_BIP39_H */

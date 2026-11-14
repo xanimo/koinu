@@ -168,6 +168,26 @@ int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[
     if (!mnemonic) return 0;
     if (!passphrase) passphrase = "";
 
+    /* BIP39 hashes the NFKD form of the mnemonic and the passphrase. This
+       hashes the bytes it was handed, so "cafe" with a precomposed e-acute
+       (U+00E9) derived a seed here that the same words and passphrase derive
+       nowhere else, while the decomposed form of the same passphrase agreed
+       with everyone. Nothing reported it, because every passphrase is a valid
+       wallet: the restore simply comes up empty, here or elsewhere.
+
+       Refused rather than normalised. NFKD needs the Unicode decomposition
+       tables, which are larger than everything this project vendors put
+       together, and a wallet that cannot be restored by any other
+       implementation is worse than one that cannot be created. The header has
+       asked the caller to enforce this since it was written and no caller did,
+       which is why it is here and not there.
+
+       A wallet already made this way still opens from its keystore, which holds
+       the seed rather than the words. What it cannot do is be restored from the
+       words anywhere, including here, and that was true before this check. */
+    for (const unsigned char *q = (const unsigned char *)passphrase; *q; q++)
+        if (*q >= 0x80) return 0;
+
     /* Seed from the phrase rebuilt out of the parsed words, not from what was
        typed. parse_words accepts a leading, doubled or trailing space, so a
        phrase that checks out could otherwise hash to a different seed and
