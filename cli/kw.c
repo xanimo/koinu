@@ -2928,14 +2928,33 @@ static void fmt_doge(uint64_t v, char *out, size_t cap)
 /* A scriptPubKey back to the address it pays, which is the reverse of addr_to_spk
    above. Returns 0 for anything that is not p2pkh or p2sh, and the caller says so
    rather than pretending it knows where the money went. */
+/* The twenty bytes a p2pkh script pays, or NULL where this is not one.
+
+   Its own function because two places needed the answer and asked it two ways:
+   spk_to_addr tested the five opcode bytes, and the "is this output mine" tests
+   checked the length and the twenty bytes alone. An OP_RETURN with one 23-byte
+   push is also 25 bytes with those twenty at offset 3, so one line printed
+   "mine ... (this wallet, m/44'/1'/0'/1/0)" beside "an unrecognised script" for
+   999 DOGE being burned, and signed it. Anything reading "out N mine" to decide
+   what leaves the wallet believed the change was still change.
+
+   One function so the two halves of that line cannot disagree again. */
+static const uint8_t *p2pkh_hash160(const uint8_t *spk, size_t len)
+{
+    if (len != 25) return NULL;
+    if (spk[0] != 0x76 || spk[1] != 0xa9 || spk[2] != 0x14) return NULL;
+    if (spk[23] != 0x88 || spk[24] != 0xac) return NULL;
+    return spk + 3;
+}
+
 static int spk_to_addr(const kw_chainparams *cp, const uint8_t *spk, size_t len,
                        char *out, size_t outcap)
 {
     uint8_t pay[21];
-    if (len == 25 && spk[0] == 0x76 && spk[1] == 0xa9 && spk[2] == 0x14 &&
-        spk[23] == 0x88 && spk[24] == 0xac) {
+    const uint8_t *h = p2pkh_hash160(spk, len);
+    if (h) {
         pay[0] = cp->p2pkh;
-        memcpy(pay + 1, spk + 3, 20);
+        memcpy(pay + 1, h, 20);
     } else if (len == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87) {
         pay[0] = cp->p2sh;
         memcpy(pay + 1, spk + 2, 20);
@@ -4632,9 +4651,10 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
                path. Anything else pays someone else, which is the point: a
                builder sending the balance to itself shows up here as a payment
                to an address that is not one of these. */
-            if (ol == 25)
+            const uint8_t *oh = p2pkh_hash160(ospk, ol);
+            if (oh)
                 for (int t = 0; t < m; t++)
-                    if (memcmp(h160[t], ospk + 3, 20) == 0) { j = t; break; }
+                    if (memcmp(h160[t], oh, 20) == 0) { j = t; break; }
             if (j >= 0)
                 snprintf(mine, sizeof mine, " (this wallet, m/44'/%u'/0'/%d/%d)",
                          cp->bip44_coin, hchg[j], hidx[j]);
@@ -4863,7 +4883,8 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
                 fmt_doge(ov, amt, sizeof amt);
                 if (!spk_to_addr(cp, ospk, ol, addr, sizeof addr))
                     snprintf(addr, sizeof addr, "an unrecognised script");
-                mine = (ol == 25 && memcmp(ospk + 3, myh, 20) == 0);
+                const uint8_t *oh = p2pkh_hash160(ospk, ol);
+                mine = (oh && memcmp(oh, myh, 20) == 0);
                 /* stderr, not stdout: this subcommand writes the psbt alone on
                    stdout so a caller can capture it, and a readback mixed into
                    that is a psbt its own tooling cannot read back. */
