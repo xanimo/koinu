@@ -125,7 +125,38 @@ int main(void)
         fprintf(stderr, "%d bip39 failure(s)\n", fails + kw_test_fails());
         return 1;
     }
-    printf("bip39 ok: wordlist hash, trezor vectors, round trips, checksum rejection, generate,\n"
+    /* BIP39 hashes the NFKD form of the passphrase and this hashes the bytes it
+       is handed, so "cafe" with a precomposed e-acute derived a seed here that
+       the same words and passphrase derive nowhere else, while the decomposed
+       form agreed with everyone. Nothing reported it: every passphrase is a
+       valid wallet, so the restore just comes up empty. Refused rather than
+       normalised, since NFKD wants the Unicode tables and a wallet no other
+       implementation can restore is worse than one that cannot be made. */
+    {
+        const char *m12 = "abandon abandon abandon abandon abandon abandon abandon abandon "
+                          "abandon abandon abandon about";
+        uint8_t s1[KW_BIP39_SEED_LEN];
+
+        if (!kw_bip39_to_seed(m12, "cafe", s1)) {
+            fprintf(stderr, "FAIL: an ascii seed passphrase was refused\n"); fails++; }
+
+        /* U+00E9 precomposed, and e + U+0301 decomposed. Both are "café". */
+        if (kw_bip39_to_seed(m12, "caf\xc3\xa9", s1)) {
+            fprintf(stderr, "FAIL: a precomposed non-ascii passphrase derived a seed\n");
+            fails++; }
+        if (kw_bip39_to_seed(m12, "cafe\xcc\x81", s1)) {
+            fprintf(stderr, "FAIL: a decomposed non-ascii passphrase derived a seed\n");
+            fails++; }
+
+        /* The boundary, so this is a check on the high bit and not on a guess
+           about which characters look foreign. 0x7f is ascii and passes. */
+        if (!kw_bip39_to_seed(m12, "a\x7f" "b", s1)) {
+            fprintf(stderr, "FAIL: 0x7f is ascii and was refused\n"); fails++; }
+        if (kw_bip39_to_seed(m12, "a\x80" "b", s1)) {
+            fprintf(stderr, "FAIL: 0x80 is not ascii and was accepted\n"); fails++; }
+    }
+
+    printf("bip39 ok: a non-ascii seed passphrase refused rather than hashed,\n  wordlist hash, trezor vectors, round trips, checksum rejection, generate,\n"
            "  and spacing that check accepts cannot move the seed\n");
     return 0;
 }

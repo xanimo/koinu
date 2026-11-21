@@ -43,8 +43,13 @@ $C generatetoaddress 150 "$MINE" >/dev/null
 ADDR=$($C getnewaddress)
 TX=$($C sendtoaddress "$ADDR" 10)
 $C generatetoaddress 6 "$MINE" >/dev/null
-VOUT=$($C gettransaction "$TX" | tr ',' '\n' | grep -A2 '"receive"' | grep '"vout"' | tr -dc '0-9')
-[ -n "$VOUT" ] || VOUT=0
+# Ask the node which output pays this address rather than picking it out of
+# gettransaction's json with grep. The first version defaulted to 0 when the
+# pipeline produced nothing, so the test asked about an output that pays
+# somebody else and read "not seen since 150" as a failure of what it was
+# measuring. A default that can be wrong is worse than no default.
+VOUT=$($C listunspent 1 9999 "[\"$ADDR\"]" | grep '"vout"' | head -1 | tr -dc '0-9')
+[ -n "$VOUT" ] || { echo "FAIL: cannot tell which output pays $ADDR" >&2; exit 1; }
 
 ./kwd --regtest --node "127.0.0.1:$P2P" --socket "$D/kwd.sock" \
       --headers "$D/h.kwh" --filters "$D/f.cf" > "$D/kwd.log" 2>&1 &

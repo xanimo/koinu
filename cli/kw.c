@@ -576,6 +576,25 @@ static void h160_to_spk(const uint8_t h160[20], uint8_t spk[25])
     spk[0]=0x76; spk[1]=0xa9; spk[2]=0x14; memcpy(spk+3, h160, 20); spk[23]=0x88; spk[24]=0xac;
 }
 
+/* BIP39 hashes the NFKD form of a passphrase and koinu hashes the bytes, so a
+   passphrase outside ASCII makes a wallet no other implementation can restore.
+   kw_bip39_to_seed refuses it, and refuses with the same 0 it returns for a bad
+   mnemonic, so the reason is worked out here: "cannot derive a seed from that
+   mnemonic" for a passphrase problem sends somebody to check their words. */
+static int seedpass_ok(const char *pass)
+{
+    if (!pass) return 1;
+    for (const unsigned char *q = (const unsigned char *)pass; *q; q++)
+        if (*q >= 0x80) {
+            fprintf(stderr, "kw: --seed-passphrase has a byte outside ascii. bip39 hashes "
+                            "the nfkd form\n    of a passphrase and this hashes what it is "
+                            "given, so such a passphrase\n    would make a wallet no other "
+                            "implementation can restore\n");
+            return 0;
+        }
+    return 1;
+}
+
 /* Open the keystore at (path) with the passphrase and recover the seed, and the
    birthday where one was recorded. (birth) may be NULL. A keystore written
    before birthdays existed holds the seed alone and comes back with height 0,
@@ -907,6 +926,7 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
     kw_secure_keep(seed, sizeof seed);
     /* Checked: on a failure the buffer is whatever was on the stack, and sealing
        that under a mnemonic gives a keystore the mnemonic does not restore. */
+    if (!seedpass_ok(seedpass)) { kw_secure_zero(mnem, sizeof mnem); return 1; }
     if (!kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed)) {
         kw_secure_forget(seed, sizeof seed);
         if (seedpass) secret_free(seedpass);
@@ -988,6 +1008,7 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     kw_secure_keep(seed, sizeof seed);
     /* Checked: on a failure the buffer is whatever was on the stack, and sealing
        that under a mnemonic gives a keystore the mnemonic does not restore. */
+    if (!seedpass_ok(seedpass)) { kw_secure_zero(mnem, sizeof mnem); return 1; }
     if (!kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed)) {
         kw_secure_forget(seed, sizeof seed);
         if (seedpass) secret_free(seedpass);
@@ -3618,6 +3639,7 @@ static int backup_verify(const kw_chainparams *cp, const char *path,
 
     uint8_t typed[64];
     kw_secure_keep(typed, sizeof typed);
+    if (!seedpass_ok(seedpass)) { kw_secure_forget(typed, sizeof typed); return 1; }
     int ok = kw_bip39_to_seed(mnem, seedpass ? seedpass : "", typed);
     secret_free(mnem);
     if (seedpass) secret_free(seedpass);

@@ -105,12 +105,18 @@ split: $(SIGN_LIB) $(CHAIN_LIB)
 # shape or goes away. It is not the release version: two releases carry the same
 # soname unless something listed in docs/abi.md moves.
 #
-# 2 because kw_script_cosignable now refuses custom scripts and repeated keys,
+# 3 because kw_bip39_to_seed now refuses a passphrase holding a byte at or above
+# 0x80. BIP39 hashes the NFKD form and this hashes the bytes given, so such a
+# passphrase made a wallet no other implementation can restore; a caller that
+# passed one gets 0 where it used to get a seed, which is the "making it refuse
+# an input it used to take" entry in docs/abi.md.
+#
+# 2 was because kw_script_cosignable now refuses custom scripts and repeated keys,
 # so a caller relying on its former key-count rule gets 0, and because
 # kw_script_key_count is gone from the exported set. Both are on the list in
 # docs/abi.md. 1 was kw_psbt_sign refusing a p2sh redeem that does not name the
 # signing key, which is the same kind of narrowing.
-KW_ABI    = 2
+KW_ABI    = 3
 SIGN_SO   = libkoinu-sign.so
 CHAIN_SO  = libkoinu-chain.so
 # The ABI is in the payload filename as well as the soname. Without it an ABI

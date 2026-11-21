@@ -2,7 +2,26 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `KW_ABI` goes 2 to 3. `kw_bip39_to_seed` refuses a passphrase holding a byte
+  at or above 0x80, which is a narrowing: a caller that passed one gets 0 where
+  it used to get a seed. `libkoinu-sign.so.2` and `.so.3` install side by side.
+
 ### Fixed
+
+- `--seed-passphrase` was hashed as the bytes typed, where BIP39 hashes the NFKD
+  form of the mnemonic and the passphrase. "cafe" with a precomposed e-acute
+  derived a wallet here that the same words and passphrase derive nowhere else,
+  while the decomposed form of the same passphrase agreed with everyone. Nothing
+  reported it, because every passphrase is a valid wallet: a restore in other
+  software, or a restore here of a wallet made elsewhere, simply comes up empty.
+  Refused rather than normalised, since NFKD needs the Unicode decomposition
+  tables, which are larger than everything this project vendors put together,
+  and a wallet no other implementation can restore is worse than one that cannot
+  be created. The mnemonic needs no such check: it is rebuilt from parsed words
+  taken from an ASCII wordlist. A wallet already made this way still opens from
+  its keystore, which holds the seed rather than the words.
 
 - `kwd` decided once, at startup, how far up its filters were settled, and
   nothing moved the line afterwards, so every block mined while it was up sat
