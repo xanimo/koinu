@@ -116,6 +116,13 @@ static uint32_t g_cfbase = 1;
    peer's word decides, which is not something to serve as though it were
    checked, so requests are clamped here. 0 until the first sync sets it. */
 static uint32_t g_cfsettled;
+/* The tip settle_filters last ran against. It ran once, from main, and nothing
+   moved the line afterwards, so every block mined while kwd was up sat above it
+   and was fetched whole on every query that reached it: a hundred blocks after
+   startup a query fetched a hundred, five hundred after it fetched five
+   hundred, and restarting put the line back at the tip. A caller giving the
+   backend a few seconds eventually stops getting an answer at all. */
+static uint32_t g_settled_at;
 
 /* The filter path indexes a header store and a filter cache against each other,
    so it takes a store whose first entry is the cache's base height. This store
@@ -212,6 +219,7 @@ static void settle_filters(const kw_chainparams *cp, const kw_headerstore *cfs,
 {
     uint32_t tip = g_cfbase + (uint32_t)(cfs->count ? cfs->count - 1 : 0);
     g_cfsettled = tip;
+    g_settled_at = tip;
 
     /* Only mainnet pins filter anchors. On a network that pins none there is no
        height this clamp could settle anything against, so clamping to the newest
@@ -354,6 +362,22 @@ static int cff_one(void *ctx, uint32_t height, const uint8_t *filter, size_t fle
     if (!write_all(o->fd, "\n", 1)) { o->broken = 1; return 0; }
     o->wrote++;
     return 1;
+}
+
+/* Move the line as the chain does. settle_filters asks a second peer for one
+   filter header, which is one small round trip, so it is paid only when the tip
+   has moved since the last time it was asked. Nothing to re-ask on a tip that
+   has not changed, and the answer would be the same.
+
+   The filters have to be synced first: kw_cfstore_agree walks the local cache
+   to the height it compares, and a cache that stops short cannot answer for a
+   height above it. */
+static void resettle_if_moved(const kw_chainparams *cp, const kw_headerstore *cfs,
+                              const char *filters_path, kw_peer *from)
+{
+    uint32_t tip = g_cfbase + (uint32_t)(cfs->count ? cfs->count - 1 : 0);
+    if (tip == g_settled_at) return;
+    settle_filters(cp, cfs, filters_path, from);
 }
 
 /* "cffilters <from> <count>" -> "0 <from> <n>\n" then n lines of
@@ -519,6 +543,15 @@ static void handle(const kw_chainparams *cp, kw_headerstore *s,
        deadline covers reading the line, not the work behind it. */
     kw_outpoint_result r;
     kw_headerstore sv = cf_view(s, g_cfbase);
+    /* Before the query rather than inside it: the query syncs filters as a side
+       effect of answering, and the line it is handed has to be the one that sync
+       justifies. */
+    if (g_filters) {
+        if (kw_cfstore_sync(p, &sv, filters_path, g_cfbase) < 0) {
+            write_all(fd, "1 filter sync failed\n", 21); return;
+        }
+        resettle_if_moved(cp, &sv, filters_path, p);
+    }
     if (kw_query_outpoint_settled(p, &sv, g_filters ? filters_path : NULL, g_cfbase,
                                   g_filters ? g_cfsettled : UINT32_MAX,
                                   spk, spklen, txint, vout, (uint32_t)since, &r) != 1) {

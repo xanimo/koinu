@@ -607,6 +607,7 @@ check: $(TESTS) kw kwd kwui test/fakenode test/cfstub test/mkutxos test/signonly
 	./test/test_scan.sh
 	./test/test_kwui.sh
 	./test/test_kwd.sh
+	./test/test_kwdsettle.sh
 	./test/test_cfcheck.sh
 	$(MAKE) fuzz-syntax
 	$(MAKE) fuzz-run

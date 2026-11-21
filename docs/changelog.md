@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- `kwd` decided once, at startup, how far up its filters were settled, and
+  nothing moved the line afterwards, so every block mined while it was up sat
+  above it and was fetched whole on every outpoint query that reached it. A
+  hundred blocks after startup a query fetched a hundred; five hundred after, it
+  fetched five hundred; restarting put the line back at the tip. A caller giving
+  the backend a few seconds eventually stops getting an answer. The line moves
+  when the tip does, and the second peer's round trip is paid only then, since
+  re-asking about a tip that has not moved would get the same answer.
+
 - Every signing path that reads the transaction behind an input parsed it with
   `kw_tx_parse`, whose `KW_TX_MAX_IN`, `KW_TX_MAX_OUT` and `KW_TX_SCRIPT_MAX`
   are the right bounds for a transaction koinu builds and the wrong ones for a
