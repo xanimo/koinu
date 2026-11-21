@@ -182,11 +182,22 @@ int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[
        asked the caller to enforce this since it was written and no caller did,
        which is why it is here and not there.
 
-       A wallet already made this way still opens from its keystore, which holds
-       the seed rather than the words. What it cannot do is be restored from the
-       words anywhere, including here, and that was true before this check. */
+       A wallet already made this way opens from its keystore, which holds the
+       seed rather than the words, and is restored from its words by
+       kw_bip39_to_seed_raw. An earlier version of this comment said such a
+       wallet could not be restored here either and that this changed nothing,
+       which was wrong: koinu made those wallets and could restore them, and for
+       a while after the check went in it could not. */
     for (const unsigned char *q = (const unsigned char *)passphrase; *q; q++)
         if (*q >= 0x80) return 0;
+    return kw_bip39_to_seed_raw(mnemonic, passphrase, seed);
+}
+
+int kw_bip39_to_seed_raw(const char *mnemonic, const char *passphrase,
+                         uint8_t seed[KW_BIP39_SEED_LEN])
+{
+    if (!mnemonic) return 0;
+    if (!passphrase) passphrase = "";
 
     /* Seed from the phrase rebuilt out of the parsed words, not from what was
        typed. parse_words accepts a leading, doubled or trailing space, so a

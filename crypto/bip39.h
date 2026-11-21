@@ -50,4 +50,17 @@ int kw_bip39_to_entropy(const char *mnemonic, uint8_t *out, size_t outcap, size_
    from an ASCII wordlist. */
 int kw_bip39_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[KW_BIP39_SEED_LEN]);
 
+/* The same, hashing the passphrase bytes exactly as given, including bytes at
+   or above 0x80. This is what koinu did before the check above existed, and it
+   is here so a wallet made that way can still be reached.
+
+   Not a way to make one. Creation must go through kw_bip39_to_seed, because a
+   wallet derived from un-normalised bytes is one no other implementation can
+   restore. This exists for the two operations that act on a wallet that already
+   exists: restoring it from its words, and checking a written phrase against
+   it. A caller offering this where a wallet is created has reintroduced the
+   thing the check was added to stop. */
+int kw_bip39_to_seed_raw(const char *mnemonic, const char *passphrase,
+                         uint8_t seed[KW_BIP39_SEED_LEN]);
+
 #endif /* KOINU_BIP39_H */

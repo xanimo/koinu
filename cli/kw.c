@@ -69,6 +69,7 @@ static void usage(void)
       "                                          [--birthday HEIGHT:HASH]\n"
       "  restore  --keystore PATH [--passphrase @FILE|-] [--mnemonic @FILE|-]\n"
       "                                          [--seed-passphrase @FILE|-]\n"
+      "                                          [--seed-passphrase-bytes]\n"
       "                                          [--birthday HEIGHT:HASH]\n"
       "  address  --keystore PATH [--passphrase @FILE|-] [--account N]\n"
       "                                          [--index N] [--change] [--spk]\n"
@@ -581,15 +582,21 @@ static void h160_to_spk(const uint8_t h160[20], uint8_t spk[25])
    kw_bip39_to_seed refuses it, and refuses with the same 0 it returns for a bad
    mnemonic, so the reason is worked out here: "cannot derive a seed from that
    mnemonic" for a passphrase problem sends somebody to check their words. */
-static int seedpass_ok(const char *pass)
+/* (recoverable) is for the two commands that act on a wallet which already
+   exists. Creating one has no way past this: that is the whole of the fix. */
+static int seedpass_ok(const char *pass, int recoverable)
 {
     if (!pass) return 1;
     for (const unsigned char *q = (const unsigned char *)pass; *q; q++)
         if (*q >= 0x80) {
             fprintf(stderr, "kw: --seed-passphrase has a byte outside ascii. bip39 hashes "
                             "the nfkd form\n    of a passphrase and this hashes what it is "
-                            "given, so such a passphrase\n    would make a wallet no other "
-                            "implementation can restore\n");
+                            "given, so such a passphrase\n    makes a wallet no other "
+                            "implementation can derive\n");
+            if (recoverable)
+                fprintf(stderr, "    koinu up to 0.5.2 made such wallets. to reach one, "
+                                "pass --seed-passphrase-bytes,\n    which hashes the bytes "
+                                "as they were typed, the way that release did\n");
             return 0;
         }
     return 1;
@@ -926,7 +933,7 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
     kw_secure_keep(seed, sizeof seed);
     /* Checked: on a failure the buffer is whatever was on the stack, and sealing
        that under a mnemonic gives a keystore the mnemonic does not restore. */
-    if (!seedpass_ok(seedpass)) { kw_secure_zero(mnem, sizeof mnem); return 1; }
+    if (!seedpass_ok(seedpass, 0)) { kw_secure_zero(mnem, sizeof mnem); return 1; }
     if (!kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed)) {
         kw_secure_forget(seed, sizeof seed);
         if (seedpass) secret_free(seedpass);
@@ -991,7 +998,7 @@ static int cmd_new(const kw_chainparams *cp, const char *path, const char *pass_
 static int cmd_restore(const kw_chainparams *cp, const char *path,
                        const kw_birthday *birth,
                        const char *pass_arg, const char *seedpass_arg,
-                       const char *mnem_arg)
+                       const char *mnem_arg, int raw_seedpass)
 {
     if (!path) { usage(); return 2; }
     char *mnem = read_secret(mnem_arg, "mnemonic: ");
@@ -1008,8 +1015,9 @@ static int cmd_restore(const kw_chainparams *cp, const char *path,
     kw_secure_keep(seed, sizeof seed);
     /* Checked: on a failure the buffer is whatever was on the stack, and sealing
        that under a mnemonic gives a keystore the mnemonic does not restore. */
-    if (!seedpass_ok(seedpass)) { kw_secure_zero(mnem, sizeof mnem); return 1; }
-    if (!kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed)) {
+    if (!raw_seedpass && !seedpass_ok(seedpass, 1)) { kw_secure_zero(mnem, sizeof mnem); return 1; }
+    if (!(raw_seedpass ? kw_bip39_to_seed_raw(mnem, seedpass ? seedpass : "", seed)
+                       : kw_bip39_to_seed(mnem, seedpass ? seedpass : "", seed))) {
         kw_secure_forget(seed, sizeof seed);
         if (seedpass) secret_free(seedpass);
         secret_free(mnem);
@@ -3619,7 +3627,7 @@ static int cmd_export(const kw_chainparams *cp, const char *sub, const char *pat
  * With no --keystore it prints what the words derive, the master fingerprint and
  * the first address, so a paper backup can be checked against an address already
  * known without a wallet file at all. */
-static int backup_verify(const kw_chainparams *cp, const char *path,
+static int backup_verify(const kw_chainparams *cp, const char *path, int raw_seedpass,
                          const char *pass_arg, const char *seedpass_arg, const char *mnem_arg)
 {
     char *mnem = read_secret(mnem_arg, "mnemonic: ");
@@ -3639,8 +3647,9 @@ static int backup_verify(const kw_chainparams *cp, const char *path,
 
     uint8_t typed[64];
     kw_secure_keep(typed, sizeof typed);
-    if (!seedpass_ok(seedpass)) { kw_secure_forget(typed, sizeof typed); return 1; }
-    int ok = kw_bip39_to_seed(mnem, seedpass ? seedpass : "", typed);
+    if (!raw_seedpass && !seedpass_ok(seedpass, 1)) { kw_secure_forget(typed, sizeof typed); return 1; }
+    int ok = raw_seedpass ? kw_bip39_to_seed_raw(mnem, seedpass ? seedpass : "", typed)
+                          : kw_bip39_to_seed(mnem, seedpass ? seedpass : "", typed);
     secret_free(mnem);
     if (seedpass) secret_free(seedpass);
     if (!ok) {
@@ -4117,6 +4126,7 @@ out:
 }
 
 static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *path,
+                      int raw_seedpass,
                       const char *pass_arg, const char *seedpass_arg, const char *mnem_arg,
                       const char *groups_arg, int group_threshold,
                       const char *bpass_arg, const char *shares_arg,
@@ -4135,7 +4145,7 @@ static int cmd_backup(const kw_chainparams *cp, const char *sub, const char *pat
     }
 
     if (!strcmp(sub, "verify"))
-        return backup_verify(cp, path, pass_arg, seedpass_arg, mnem_arg);
+        return backup_verify(cp, path, raw_seedpass, pass_arg, seedpass_arg, mnem_arg);
     if (!strcmp(sub, "split")) {
         if (codex) return backup_split_codex32(cp, path, pass_arg, groups_arg, id_arg);
         if (id_arg) {
@@ -5055,6 +5065,7 @@ int main(int argc, char **argv)
     long spacing = -1;
     kw_birthday birth = { 0, { 0 } };
     int have_birth = 0;
+    int raw_seedpass = 0;
     int vin = -1, nsigs = 0, finish = 0, peers = 1;   /* -1: every input */
     const char *inputs[KW_TX_MAX_IN], *sigs[16];
 
@@ -5112,6 +5123,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--since"))    { uint32_t u = 0;
             if (!arg_u32("--since", NEXT(), INT32_MAX, &u)) return 2;
             since = (long)u; }
+        /* Only restore and backup verify read this, and cmd_new is not given
+           it at all: a wallet derived from un-normalised bytes is one no other
+           implementation can restore, and the point of refusing is that koinu
+           stops making them. Reaching one that exists is a different act. */
+        else if (!strcmp(a, "--seed-passphrase-bytes")) raw_seedpass = 1;
         else if (!strcmp(a, "--spacing")) { uint32_t u = 0;
             if (!arg_u32("--spacing", NEXT(), INT32_MAX, &u)) return 2;
             spacing = (long)u; }
@@ -5212,7 +5228,7 @@ int main(int argc, char **argv)
     }
     int rc;
     if      (!strcmp(cmd, "new"))     rc = cmd_new(cp, path, pass_arg, have_birth ? &birth : NULL, seedpass_arg, words);
-    else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, have_birth ? &birth : NULL, pass_arg, seedpass_arg, mnem_arg);
+    else if (!strcmp(cmd, "restore")) rc = cmd_restore(cp, path, have_birth ? &birth : NULL, pass_arg, seedpass_arg, mnem_arg, raw_seedpass);
     else if (!strcmp(cmd, "address")) rc = cmd_address(cp, path, pass_arg, account, (uint32_t)change, index, want_spk);
     else if (!strcmp(cmd, "scan"))    rc = cmd_scan(cp, path, pass_arg, xpub_arg, node, port, tor, use_cf, gap, utxos_arg, headers_arg, filters_arg, peers, validate_pow, since);
     else if (!strcmp(cmd, "sign"))    rc = cmd_sign(cp, path, pass_arg, (char **)inputs, ninputs, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, utxos_arg, gap, raw_only);
@@ -5235,7 +5251,7 @@ int main(int argc, char **argv)
     else if (!strcmp(cmd, "cfbase"))  rc = cmd_cfbase(cp, filters_arg, cfbase_arg);
     else if (!strcmp(cmd, "outpoint")) rc = cmd_outpoint(cp, watch_arg, outpoint_arg, node, port, tor, use_cf, headers_arg, filters_arg, since, daemon_arg, peers, validate_pow);
     else if (!strcmp(cmd, "send"))    rc = cmd_send(cp, tx_arg, node, port, tor, assume_yes);
-    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);
+    else if (!strcmp(cmd, "backup"))  rc = cmd_backup(cp, sub, path, raw_seedpass, pass_arg, seedpass_arg, mnem_arg, groups_arg, group_threshold, bpass_arg, shares_arg, format_arg, id_arg);
     else if (!strcmp(cmd, "export"))  rc = cmd_export(cp, sub, path, pass_arg, account);
     else if (!strcmp(cmd, "psbt"))    rc = cmd_psbt(cp, sub, psbt_arg, tx_arg, redeem_arg, utxo_arg, wif_arg, script_arg, psbts, npsbt, vin, path, pass_arg, xpub_arg, utxos_arg, to_arg, fee_arg, feerate_arg, maxfee_arg, change_arg, gap);
     else if (!strcmp(cmd, "cosign"))  rc = cmd_cosign(cp, tx_arg, redeem_arg, utxo_arg, wif_arg, vin, sigs, nsigs, finish);

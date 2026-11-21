@@ -906,6 +906,59 @@ if ./kw --regtest psbt extract --psbt "$PC" >/dev/null 2>&1; then
     echo "FAIL: extracted an unfinalized psbt" >&2; exit 1
 fi
 
+# koinu up to 0.5.2 made wallets from a seed passphrase outside ascii, and the
+# check that stops it making more also turned away the words of one it had
+# already made: kw restore and kw backup verify, the command kw new points a
+# user at, both refused. Creation still has no way through; reaching a wallet
+# that exists does.
+NASC=$(printf 'caf\303\251')
+printf '%s\n' "$NASC" > "$WORK/nasc"
+NWORDS="month orphan what element about zone type radar bind swift stuff rally"
+printf '%s\n' "$NWORDS" > "$WORK/nwords"
+
+if ./kw --regtest new --keystore "$WORK/na1.ks" --passphrase "@$WORK/pass" \
+        --seed-passphrase "@$WORK/nasc" --seed-passphrase-bytes >/dev/null 2>&1; then
+    echo "FAIL: kw new made a wallet from a non-ascii seed passphrase" >&2; exit 1
+fi
+{ ./kw --regtest new --keystore "$WORK/na1.ks" --passphrase "@$WORK/pass" \
+       --seed-passphrase "@$WORK/nasc" 2>&1 || true; } | grep -q "outside ascii" \
+    || { echo "FAIL: kw new did not name the reason" >&2; exit 1; }
+
+# restore without the flag refuses and says how to get through
+# expected to fail, so the assignment must not take the script down with it
+RMSG=$(./kw --regtest restore --keystore "$WORK/na2.ks" --passphrase "@$WORK/pass" \
+       --mnemonic "@$WORK/nwords" --seed-passphrase "@$WORK/nasc" 2>&1 || true)
+echo "$RMSG" | grep -q -- "--seed-passphrase-bytes" \
+    || { echo "FAIL: the refusal does not name the way to reach an existing wallet" >&2
+         echo "$RMSG" >&2; exit 1; }
+
+# with the flag it restores, and to the same wallet every time
+A1=$(./kw --regtest restore --keystore "$WORK/na3.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/nwords" --seed-passphrase "@$WORK/nasc" \
+     --seed-passphrase-bytes 2>/dev/null | awk '/^first address/{print $3}')
+[ -n "$A1" ] || { echo "FAIL: --seed-passphrase-bytes did not restore" >&2; exit 1; }
+A2=$(./kw --regtest restore --keystore "$WORK/na4.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/nwords" --seed-passphrase "@$WORK/nasc" \
+     --seed-passphrase-bytes 2>/dev/null | awk '/^first address/{print $3}')
+[ "$A1" = "$A2" ] || { echo "FAIL: the same words and passphrase gave $A1 then $A2" >&2; exit 1; }
+
+# and backup verify, which kw new tells a user to run, agrees with it
+./kw --regtest backup verify --keystore "$WORK/na3.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/nwords" --seed-passphrase "@$WORK/nasc" \
+     --seed-passphrase-bytes 2>&1 | grep -q "^match:" \
+    || { echo "FAIL: backup verify cannot check a wallet restored that way" >&2; exit 1; }
+
+# the flag must not change an ascii wallet, or it is two derivations for one
+# passphrase rather than one for a wallet that already exists
+printf 'plainpass\n' > "$WORK/apass"
+B1=$(./kw --regtest restore --keystore "$WORK/na5.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/nwords" --seed-passphrase "@$WORK/apass" 2>/dev/null \
+     | awk '/^first address/{print $3}')
+B2=$(./kw --regtest restore --keystore "$WORK/na6.ks" --passphrase "@$WORK/pass" \
+     --mnemonic "@$WORK/nwords" --seed-passphrase "@$WORK/apass" \
+     --seed-passphrase-bytes 2>/dev/null | awk '/^first address/{print $3}')
+[ "$B1" = "$B2" ] || { echo "FAIL: the flag changed an ascii wallet: $B1 then $B2" >&2; exit 1; }
+
 # --since is a start height for outpoint and was a spacing for cfcheckpoints,
 # two lines apart in one usage text. Refused rather than read as a spacing:
 # --since 6400000 wrote a one-entry table that reads as the generator failing.
@@ -918,4 +971,5 @@ fi
     || { echo "FAIL: usage does not offer --spacing" >&2; exit 1; }
 
 echo "cli ok: new/address round trip, index varies, wrong passphrase and clobber refused, sign deterministic, change rotates between spends and past spent addresses, too many inputs refused, --input amounts checked against the set, amounts bounded, one spelling per outpoint, no empty passphrase, broadcast needs --yes, journaled once per spend, send decodes and confirms, cosign 2-of-2 bound to its key, psbt roles agree with cosign, a seed passphrase makes another wallet from the same words, backup verify checks a phrase without revealing it, a threshold of shares restores the wallet and fewer restore nothing, codex32 the same in base32, a psbt built from an xpub and signed without a socket, sign --raw pipes into send, cfcheckpoints refuses --since"
-echo "  an OP_RETURN carrying the change hash160 is not called mine"
+echo "  an OP_RETURN carrying the change hash160 is not called mine, and a wallet"
+echo "  made with a non-ascii seed passphrase is reachable but not makeable"

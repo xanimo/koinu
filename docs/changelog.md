@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- Refusing a seed passphrase outside ASCII also turned away the words of a
+  wallet koinu had already made with one. `kw restore` and `kw backup verify`,
+  the command `kw new` points a user at, both refused, so somebody who lost
+  their keystore held words and a passphrase that the program that made the
+  wallet would not accept. `--seed-passphrase-bytes` hashes the bytes as typed,
+  the way releases up to 0.5.2 did, and the refusal names it. `kw new` is not
+  given it: creation is what had to stop, and reaching a wallet that already
+  exists is a different act. The comment claiming such a wallet "cannot be
+  restored from the words anywhere, including here, and that was true before
+  this check" was wrong on both counts.
+
 - `kwd` blocked in `accept()` between requests, so it read nothing its node said
   and answered no ping. dogecoind drops a peer it has heard nothing from for
   twenty minutes, and announcements piled up until a later sync walked past
@@ -32,8 +43,8 @@
   tables, which are larger than everything this project vendors put together,
   and a wallet no other implementation can restore is worse than one that cannot
   be created. The mnemonic needs no such check: it is rebuilt from parsed words
-  taken from an ASCII wordlist. A wallet already made this way still opens from
-  its keystore, which holds the seed rather than the words.
+  taken from an ASCII wordlist. A wallet already made this way opens from its
+  keystore and is restored with `--seed-passphrase-bytes`.
 
 - `kwd` decided once, at startup, how far up its filters were settled, and
   nothing moved the line afterwards, so every block mined while it was up sat
