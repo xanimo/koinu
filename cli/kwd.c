@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/stat.h>
@@ -362,6 +363,50 @@ static int cff_one(void *ctx, uint32_t height, const uint8_t *filter, size_t fle
     if (!write_all(o->fd, "\n", 1)) { o->broken = 1; return 0; }
     o->wrote++;
     return 1;
+}
+
+/* How long the accept loop waits before looking at its peers again. Short
+   enough that a node's ping is answered inside the twenty minutes dogecoind
+   allows, long enough that an idle daemon is not spinning. */
+#define KWD_IDLE_POLL_MS 2000
+
+/* How many messages one drain takes before going back to the loop. A peer
+   sending without pause must not hold the accept loop, which serves one request
+   at a time, so this is bounded for the same reason KW_SYNC_MAX_SKIP is. */
+#define KWD_DRAIN_MAX 64
+
+/* Read what peer (i) has said since the last request and throw it away.
+   kw_peer_recv answers a ping on the way past, which is the half of this that
+   keeps the connection alive; dropping the announcements is the half that keeps
+   the next header sync from walking past its skip limit.
+
+   A peer that has gone is marked dead rather than redialled here: kwd_sync
+   redials at the start of the next request, where a failure can be reported to
+   somebody. */
+static void drain_peer(int i)
+{
+    char cmd[13];
+    const uint8_t *pl = NULL;
+    size_t pn = 0;
+
+    for (int n = 0; n < KWD_DRAIN_MAX; n++) {
+        struct pollfd one = { g_peer[i].fd, POLLIN, 0 };
+        if (poll(&one, 1, 0) <= 0) return;
+        /* 1 is a message, 0 is a hangup or a timeout, -1 is a protocol error.
+           Only 1 is worth continuing on, and testing for zero alone took the
+           error as a message. */
+        if (kw_peer_recv(&g_peer[i], cmd, &pl, &pn) != 1) {
+            kw_peer_close(&g_peer[i]);
+            g_alive[i] = 0;
+            return;
+        }
+        /* kw_peer_recv hands a ping to its caller rather than answering it;
+           kw_peer_wait is where that is done during an exchange. Answering is
+           the whole point here, so it is done here. Dropping the ping instead,
+           which is what the first version of this did, reads every message and
+           still lets the node hang up at twenty minutes. */
+        if (!strcmp(cmd, "ping")) kw_peer_send(&g_peer[i], "pong", pl, pn);
+    }
 }
 
 /* Move the line as the chain does. settle_filters asks a second peer for one
@@ -745,6 +790,37 @@ int main(int argc, char **argv)
     fprintf(stderr, "kwd: ready, tip %zu, listening on %s\n", s.count, sock);
 
     while (!stop) {
+        /* Wait on the peers as well as on the socket. Blocking in accept() meant
+           nothing was read from a node between requests, and two things followed
+           from that. Announcements piled up, so the next sync walked past
+           KW_SYNC_MAX_SKIP messages that were not the headers it asked for and
+           failed; and dogecoind drops a peer it has heard nothing from for
+           twenty minutes, which includes a ping this daemon never answered. The
+           caller saw one failed answer and a second identical question
+           succeeding after a redial.
+
+           kw_peer_recv answers a ping itself, so draining is both halves of the
+           fix: the queue stays short and the connection stays up. */
+        struct pollfd pfd[1 + KWD_MAX_PEERS];
+        int peer_of[KWD_MAX_PEERS];
+        nfds_t np = 0;
+        pfd[np].fd = ls; pfd[np].events = POLLIN; np++;
+        for (int i = 0; i < dial.nnode; i++) {
+            if (!g_alive[i] || g_peer[i].fd < 0) continue;
+            peer_of[np - 1] = i;
+            pfd[np].fd = g_peer[i].fd; pfd[np].events = POLLIN; np++;
+        }
+
+        int pr = poll(pfd, np, KWD_IDLE_POLL_MS);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) continue;
+
+        for (nfds_t k = 1; k < np; k++) {
+            if (!(pfd[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            drain_peer(peer_of[k - 1]);
+        }
+        if (!(pfd[0].revents & POLLIN)) continue;
+
         int fd = accept(ls, NULL, NULL);
         if (fd < 0) { if (errno == EINTR) continue; break; }
         struct timeval tv = { KWD_READ_SECONDS, 0 };

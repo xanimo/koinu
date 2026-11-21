@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `kwd` blocked in `accept()` between requests, so it read nothing its node said
+  and answered no ping. dogecoind drops a peer it has heard nothing from for
+  twenty minutes, and announcements piled up until a later sync walked past
+  `KW_SYNC_MAX_SKIP` messages that were not the headers it asked for. Either way
+  one request failed and the identical question after it worked, once the peer
+  had been redialled. It now waits on its peers as well as on its socket, reads
+  what they say while idle and answers their pings. Measured on a node rather
+  than waited out: with 150 seconds of silence the node's `bytesrecv` for kwd
+  did not move at all before, and moves by one pong now.
+
 ### Changed
 
 - `KW_ABI` goes 2 to 3. `kw_bip39_to_seed` refuses a passphrase holding a byte

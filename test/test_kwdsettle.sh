@@ -106,6 +106,24 @@ WHOLE=$(( $(grep -c "fetched whole" "$D/kwd.log" || true) - WHOLE0 ))
     exit 1
 }
 
+# And that kwd answers its peer between requests. dogecoind drops a peer it has
+# heard nothing from for twenty minutes, and kwd blocked in accept() with no
+# request in flight, so it answered no ping: the node hung up and the next
+# question failed, the one after it worked after a redial. Measured rather than
+# waited out, by asking the node whether it has heard from kwd lately. Core
+# pings an idle peer every two minutes.
+BEFORE=$($C getpeerinfo | tr ',' '\n' | grep '"bytesrecv"' | head -1 | tr -dc '0-9')
+sleep 150
+AFTER=$($C getpeerinfo | tr ',' '\n' | grep '"bytesrecv"' | head -1 | tr -dc '0-9')
+[ -n "$BEFORE" ] && [ -n "$AFTER" ] \
+    || { echo "FAIL: cannot read bytesrecv from the node" >&2; exit 1; }
+[ "$AFTER" -gt "$BEFORE" ] || {
+    echo "FAIL: the node heard nothing from an idle kwd in 150s, so a ping went" >&2
+    echo "      unanswered and the node will hang up at twenty minutes" >&2
+    exit 1
+}
+
 NOW=$($C getblockcount)
 echo "kwdsettle ok: kwd started at $START, the chain reached $NOW, and no block"
-echo "  above the startup line was fetched whole"
+echo "  above the startup line was fetched whole, and it answered its peer"
+echo "  while idle ($BEFORE to $AFTER bytes received by the node)"
