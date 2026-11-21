@@ -373,7 +373,67 @@ int main(void)
 
     kw_ec_stop();
 
-    printf("psbt ok: create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused whichever psbt carries them, %d bip174 vectors parsed and round-tripped, %d refused\n",
+    /* A coin paid as one of forty outputs, which is what an exchange or pool
+       payout looks like. kw_tx_parse holds 32 outputs, so every psbt and cosign
+       path refused such a coin while kw scan found it and kw sign spent it,
+       both of those reading the same bytes with kw_tx_scan. For a 2-of-2 there
+       was no second path. The bound that remains is on the one output being
+       spent, which is the script signed over. */
+    {
+        uint8_t prev[8192];
+        size_t pn = 0;
+        const uint32_t NOUT = 41, OURS = 7;
+
+        /* version, one input, NOUT outputs, locktime */
+        memcpy(prev + pn, "\x01\x00\x00\x00", 4); pn += 4;
+        prev[pn++] = 1;
+        memset(prev + pn, 0, 32); pn += 32;
+        memcpy(prev + pn, "\xff\xff\xff\xff", 4); pn += 4;
+        prev[pn++] = 1; prev[pn++] = 0x51;
+        memcpy(prev + pn, "\xff\xff\xff\xff", 4); pn += 4;
+        prev[pn++] = (uint8_t)NOUT;
+        for (uint32_t i = 0; i < NOUT; i++) {
+            uint64_t v = 500000000;
+            for (int k = 0; k < 8; k++) prev[pn++] = (uint8_t)(v >> (8 * k));
+            prev[pn++] = 25;
+            prev[pn++] = 0x76; prev[pn++] = 0xa9; prev[pn++] = 0x14;
+            memset(prev + pn, (int)(i & 0xff), 20); pn += 20;
+            prev[pn++] = 0x88; prev[pn++] = 0xac;
+        }
+        memset(prev + pn, 0, 4); pn += 4;
+
+        uint64_t v = 0;
+        size_t sl = 0;
+        uint8_t spk[KW_TX_SCRIPT_MAX];
+
+        if (!kw_tx_output_at(prev, pn, OURS, &v, spk, sizeof spk, &sl)) {
+            fprintf(stderr, "FAIL: output %u of a %u-output transaction was not readable\n",
+                    OURS, NOUT);
+            return 1;
+        }
+        if (v != 500000000 || sl != 25 || spk[3] != (uint8_t)OURS) {
+            fprintf(stderr, "FAIL: read the wrong output back\n"); return 1; }
+
+        /* kw_tx_parse is what could not, which is why this exists. */
+        kw_tx *t = kw_tx_new();
+        if (t && kw_tx_parse(prev, pn, t) == pn) {
+            fprintf(stderr, "FAIL: kw_tx_parse took %u outputs, so this test proves "
+                            "nothing\n", NOUT);
+            return 1;
+        }
+        kw_tx_free(t);
+
+        /* An output past the end, and one whose script will not fit. */
+        if (kw_tx_output_at(prev, pn, NOUT, &v, NULL, 0, NULL)) {
+            fprintf(stderr, "FAIL: an output past the end was read\n"); return 1; }
+        if (kw_tx_output_at(prev, pn, OURS, NULL, spk, 8, &sl)) {
+            fprintf(stderr, "FAIL: a script too long for the buffer was accepted\n"); return 1; }
+        /* Trailing bytes are not covered by the txid a caller compares against. */
+        if (kw_tx_output_at(prev, pn - 1, OURS, &v, NULL, 0, NULL)) {
+            fprintf(stderr, "FAIL: a truncated transaction was read\n"); return 1; }
+    }
+
+    printf("psbt ok: one output of a 41-output funding read without parsing it,\n  create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused whichever psbt carries them, %d bip174 vectors parsed and round-tripped, %d refused\n",
            parsed, refused);
     return 0;
 }

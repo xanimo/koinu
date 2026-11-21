@@ -110,31 +110,32 @@ int kw_psbt_set_utxo(kw_psbt *p, size_t index, const uint8_t *rawtx, size_t len)
  * Either way the script and the value come out of bytes that hash to the txid
  * being spent, which is the whole reason a psbt carries the previous
  * transaction: legacy sighash commits to neither. */
+/* The one output being spent, read with kw_tx_output_at rather than by parsing
+   the whole transaction: kw_tx_parse's bounds are the right ones for something
+   koinu builds and the wrong ones for a stranger's. See crypto/tx.h. */
 static int prevout_code(const kw_psbt *p, size_t index, const uint8_t pub[33],
                         uint8_t *code, size_t cap, size_t *codelen)
 {
     const kw_psbt_in *in = &p->in[index];
-    kw_tx prev;
-    size_t used, n;
+    uint8_t spk[KW_TX_SCRIPT_MAX];
+    size_t spklen = 0, n;
     uint8_t pid[32];
 
     if (!in->utxo || !in->utxolen) return 0;
-    used = kw_tx_parse(in->utxo, in->utxolen, &prev);
-    if (!used || used != in->utxolen) return 0;  /* trailing bytes are not the txid's */
+
+    n = p->tx.vin[index].vout;
+    if (!kw_tx_output_at(in->utxo, in->utxolen, (uint32_t)n, NULL,
+                         spk, sizeof spk, &spklen)) return 0;
 
     kw_hash256(in->utxo, in->utxolen, pid);
     if (memcmp(pid, p->tx.vin[index].prevout, 32) != 0) return 0;
-
-    n = p->tx.vin[index].vout;
-    if (n >= prev.nout) return 0;
 
     if (in->redeemlen) {
         uint8_t want[23];
         size_t wl = kw_script_p2sh(in->redeem, in->redeemlen, want);
 
         if (!wl || in->redeemlen > cap) return 0;
-        if (prev.vout[n].scriptlen != wl ||
-            memcmp(prev.vout[n].script, want, wl) != 0) return 0;
+        if (spklen != wl || memcmp(spk, want, wl) != 0) return 0;
         /* The script has to name this key. Binding it to the coin says the
            script is the one that coin is locked to, and says nothing about
            whose signature it wants: a signer handed its own p2pkh script as a
@@ -160,8 +161,8 @@ static int prevout_code(const kw_psbt *p, size_t index, const uint8_t pub[33],
        signature over it, which is the shape of the bug that made --utxo
        mandatory for cosign. */
     {
-        const uint8_t *sc = prev.vout[n].script;
-        size_t sl = prev.vout[n].scriptlen;
+        const uint8_t *sc = spk;
+        size_t sl = spklen;
         uint8_t h[20];
 
         if (sl != 25 || sl > cap) return 0;

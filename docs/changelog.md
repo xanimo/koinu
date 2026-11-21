@@ -4,6 +4,26 @@
 
 ### Fixed
 
+- Every signing path that reads the transaction behind an input parsed it with
+  `kw_tx_parse`, whose `KW_TX_MAX_IN`, `KW_TX_MAX_OUT` and `KW_TX_SCRIPT_MAX`
+  are the right bounds for a transaction koinu builds and the wrong ones for a
+  stranger's. A coin paid as one of forty outputs, the shape of an exchange or
+  pool payout, was found by `kw scan` and spent by `kw sign`, which read those
+  bytes with `kw_tx_scan`, and refused by `kw psbt sign` and `kw cosign`, which
+  did not. For a 2-of-2 there was no second path at all, and one such coin
+  sitting ahead of the wallet's own in the set poisoned every psbt it built.
+  `kw_tx_output_at` reads the one output being spent without holding the rest,
+  and the four callers ask it. The remaining bound is on the output signed over,
+  where a script too long to hold is a coin this cannot sign regardless.
+- `kw psbt sign` called an output "mine" on its length and the twenty bytes at
+  offset 3, where `spk_to_addr` on the same line checked the five opcode bytes
+  around them, so an `OP_RETURN` carrying one 23-byte push read as the wallet's
+  own change with a derivation path beside it while the same line called it an
+  unrecognised script. 999 DOGE to a burn, signed. `p2pkh_hash160` answers it
+  once for all three places.
+
+### Fixed
+
 - The shared libraries were linked without `$(LDFLAGS)`, which is where
   `HARDLDFLAGS` lands, so `libkoinu-sign.so` and `libkoinu-chain.so` shipped
   with partial RELRO and a writable GOT while every executable built beside them
