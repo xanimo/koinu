@@ -339,9 +339,14 @@ int kw_psbt_extract(const kw_psbt *p, kw_tx *tx)
 /* ── writer ──────────────────────────────────────────────────── */
 typedef struct { uint8_t *p; size_t cap, len; int ok; } wr;
 
+/* (w->p) NULL measures instead of writing, which is how a caller finds out how
+   large a buffer this needs. Everything else about the walk is identical, so
+   the number it returns is the number the real pass writes. */
 static void w_bytes(wr *w, const void *b, size_t n)
 {
-    if (!w->ok || w->len + n > w->cap) { w->ok = 0; return; }
+    if (!w->ok) return;
+    if (!w->p) { w->len += n; return; }
+    if (w->len + n > w->cap) { w->ok = 0; return; }
     memcpy(w->p + w->len, b, n); w->len += n;
 }
 static void w_varint(wr *w, uint64_t v)

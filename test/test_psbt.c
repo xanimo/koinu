@@ -433,7 +433,44 @@ int main(void)
             fprintf(stderr, "FAIL: a truncated transaction was read\n"); return 1; }
     }
 
-    printf("psbt ok: one output of a 41-output funding read without parsing it,\n  create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused whichever psbt carries them, %d bip174 vectors parsed and round-tripped, %d refused\n",
+    /* The serializer can be asked how large a psbt will be, which is what lets
+       a caller hold one that does not fit a fixed buffer. Six places in the cli
+       held a psbt in 32768 bytes, and a psbt carries the whole transaction
+       behind each input, so a coin paid by a large batch could be found by a
+       scan and spent by kw sign and not go through a psbt at all. */
+    {
+        kw_psbt *p = kw_psbt_new();
+        if (!p) { fprintf(stderr, "FAIL: psbt_new\n"); return 1; }
+
+        /* a one-input, one-output spend is enough to compare the two forms */
+        kw_tx *t = kw_tx_new();
+        if (!t || !kw_tx_add_input(t, "00112233445566778899aabbccddeeff"
+                                      "00112233445566778899aabbccddeeff", 0) ||
+            !kw_tx_add_output(t, 1000, (const uint8_t *)"\x76\xa9\x14"
+                              "aaaaaaaaaaaaaaaaaaaa" "\x88\xac", 25) ||
+            !kw_psbt_create(p, t)) {
+            fprintf(stderr, "FAIL: building a psbt to measure\n"); return 1; }
+        kw_tx_free(t);
+
+        size_t want = kw_psbt_serialize(p, NULL, 0);
+        if (!want) { fprintf(stderr, "FAIL: measuring returned 0\n"); return 1; }
+
+        uint8_t *buf = (uint8_t *)malloc(want);
+        if (!buf) { fprintf(stderr, "FAIL: alloc\n"); return 1; }
+        size_t got = kw_psbt_serialize(p, buf, want);
+        if (got != want) {
+            fprintf(stderr, "FAIL: measured %zu, wrote %zu\n", want, got); return 1; }
+
+        /* One byte short must still fail rather than truncate, or measuring
+           would be the only thing standing between a caller and a short write. */
+        if (kw_psbt_serialize(p, buf, want - 1)) {
+            fprintf(stderr, "FAIL: a buffer one byte short was written anyway\n");
+            return 1; }
+        free(buf);
+        kw_psbt_free(p);
+    }
+
+    printf("psbt ok: the serializer measures what it will write,\n  one output of a 41-output funding read without parsing it,\n  create/update/sign/combine/finalize/extract, sign bound to its utxo,\n  unverifiable and foreign signatures refused whichever psbt carries them, %d bip174 vectors parsed and round-tripped, %d refused\n",
            parsed, refused);
     return 0;
 }

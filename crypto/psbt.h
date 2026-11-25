@@ -105,6 +105,16 @@ int kw_psbt_sighash(const kw_psbt *p, size_t index, uint32_t *hashtype);
    Parse releases whatever (p) held first, so it takes a psbt from kw_psbt_new
    or one already parsed, and not a struct a caller declared and never
    initialised: there is nothing to tell those apart from inside. */
+/* Serialize (p) into (out), returning the bytes written or 0 if it does not
+   fit. (out) NULL measures instead: the return is the size a buffer must have,
+   and (outcap) is ignored.
+
+   The measuring form exists because the callers held a psbt in a fixed 32 KiB
+   buffer. A psbt carries the whole transaction behind each input, the utxo set
+   accepts one up to KW_UTXO_PREVTX_MAX, and a node will relay a transaction of
+   100 kB, so a coin paid by a large batch could be found by a scan, spent by
+   kw sign, and refused by anything that had to put it in a psbt. Guessing a
+   bigger fixed number moves that wall rather than removing it. */
 size_t kw_psbt_serialize(const kw_psbt *p, uint8_t *out, size_t outcap);
 int    kw_psbt_parse(const uint8_t *in, size_t len, kw_psbt *p);
 

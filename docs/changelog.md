@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- A psbt was held in a fixed 32768-byte buffer in six places in the cli, and a
+  psbt carries the whole transaction behind each input, so a coin paid by a
+  large batch could be found by `kw scan` and spent by `kw sign` and refused by
+  everything that had to put it in a psbt. The utxo set accepts a previous
+  transaction up to `KW_UTXO_PREVTX_MAX` and a node will relay one of 100 kB, so
+  a bigger fixed number moves that wall rather than removing it.
+  `kw_psbt_serialize` with a NULL buffer now returns the size one needs, and the
+  callers allocate from it, reading included: a psbt a counterparty hands back
+  carries the same transactions, so what could not be written could not be read.
+  A 1001-output funding went from `--psbt is not valid hex` to `signed 1 of 1`.
+- `read_hex_alloc` names a size it will not take as a size, where the fixed
+  buffer reported it as invalid hex and sent the reader to check bytes that were
+  fine.
+
 - `kwd` gave back the height two peers had agreed on whenever a later ask
   failed. A node asked for the filter header of a block it has not seen yet
   hangs up, which reads as no answer, so a second peer a moment behind dropped

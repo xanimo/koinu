@@ -3320,6 +3320,61 @@ static size_t read_hex_arg(const char *arg, const char *what, uint8_t *out, size
     return n;
 }
 
+/* The same, into memory sized from the input rather than into a fixed buffer.
+   The caller frees it. (*len) is the byte count on success.
+
+   A psbt carries the whole transaction behind each input, the utxo set takes
+   one up to KW_UTXO_PREVTX_MAX, and a node relays a transaction of 100 kB, so a
+   32 KiB buffer refused coins that kw scan had found and kw sign could spend. A
+   larger fixed number moves that wall instead of removing it.
+
+   Still bounded, because this reads a file somebody else may have written:
+   KW_HEXARG_MAX is far above anything the chain will carry and far below
+   anything that is a memory problem. */
+#define KW_HEXARG_MAX (8u * 1024u * 1024u)
+static uint8_t *read_hex_alloc(const char *arg, const char *what, size_t *len)
+{
+    char *txt = read_text(arg);
+    if (!txt) { fprintf(stderr, "kw: cannot read %s\n", what); return NULL; }
+    size_t hl = strlen(txt), n = hl / 2;
+    if (n > KW_HEXARG_MAX) {
+        free(txt);
+        /* Named for what it is. The fixed buffer this replaces reported a size
+           it could not take as "not valid hex", which sends somebody to check
+           bytes that were fine. */
+        fprintf(stderr, "kw: %s is %zu bytes, past the %u this reads\n",
+                what, n, KW_HEXARG_MAX);
+        return NULL;
+    }
+    if (!hl || (hl % 2)) {
+        free(txt);
+        fprintf(stderr, "kw: %s is not valid hex\n", what);
+        return NULL;
+    }
+    uint8_t *out = (uint8_t *)malloc(n);
+    int ok = out && kw_hex_decode(txt, hl, out, n);
+    free(txt);
+    if (!ok) { free(out); fprintf(stderr, "kw: %s is not valid hex\n", what); return NULL; }
+    *len = n;
+    return out;
+}
+
+/* A psbt as hex, in memory sized by asking the serializer first. The caller
+   frees it. */
+static char *psbt_hex(const kw_psbt *p)
+{
+    size_t n = kw_psbt_serialize(p, NULL, 0);
+    if (!n) return NULL;
+    uint8_t *raw = (uint8_t *)malloc(n);
+    if (!raw) return NULL;
+    if (kw_psbt_serialize(p, raw, n) != n) { free(raw); return NULL; }
+    char *hex = (char *)malloc(n * 2 + 1);
+    if (hex) kw_hex_encode(raw, n, hex, n * 2 + 1);
+    kw_secure_zero(raw, n);
+    free(raw);
+    return hex;
+}
+
 /* The two transactions are passed in rather than opened here: cosign refuses on
    nineteen paths, and a handle allocated inside would have to be released on
    every one of them. */
@@ -3556,12 +3611,8 @@ static int cmd_cosign(const kw_chainparams *cp, const char *tx_arg, const char *
 
 static int print_psbt(const kw_psbt *p)
 {
-    uint8_t raw[32768];
-    size_t n = kw_psbt_serialize(p, raw, sizeof raw);
-    if (!n) { fprintf(stderr, "kw: psbt does not fit\n"); return 1; }
-    char *hex = (char *)malloc(n * 2 + 1);
-    if (!hex) return 1;
-    kw_hex_encode(raw, n, hex, n * 2 + 1);
+    char *hex = psbt_hex(p);
+    if (!hex) { fprintf(stderr, "kw: psbt does not fit\n"); return 1; }
     printf("%s\n", hex);
     free(hex);
     return 0;
@@ -4394,14 +4445,8 @@ static int psbt_build(const kw_chainparams *cp, const char *path, const char *pa
     }
 
     {
-        uint8_t raw[32768];
-        size_t n = kw_psbt_serialize(p, raw, sizeof raw);
-        char *hex;
-
-        if (!n) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
-        hex = (char *)malloc(2 * n + 1);
-        if (!hex) { fprintf(stderr, "kw: out of memory\n"); goto out; }
-        kw_hex_encode(raw, n, hex, 2 * n + 1);
+        char *hex = psbt_hex(p);
+        if (!hex) { fprintf(stderr, "kw: psbt too large to serialize\n"); goto out; }
         char amt[32];
 
         fmt_doge(send_amt, amt, sizeof amt);
@@ -4440,7 +4485,10 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
                               const char *pass_arg, const char *psbt_arg,
                               const char *maxfee_arg, int gap)
 {
-    uint8_t raw[32768], seed[64];
+    uint8_t seed[64];
+    uint8_t *raw = NULL;
+    uint8_t *out_raw = NULL;
+    size_t on = 0;
     kw_bip32_key master, *keys = NULL;
     uint8_t (*h160)[20] = NULL;
     int *hchg = NULL, *hidx = NULL;
@@ -4452,13 +4500,16 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     int rc = 1, have_psbt = 0, nkeys = 0, signed_n = 0, skipped = 0, m = 0;
 
     if (!path || !psbt_arg) { usage(); return 2; }
-    n = read_hex_arg(psbt_arg, "--psbt", raw, sizeof raw);
-    if (!n) return 1;
+    /* Sized from the hex. A psbt carries the whole transaction behind each
+       input, so a fixed buffer here decided which coins could be signed. */
+    raw = read_hex_alloc(psbt_arg, "--psbt", &n);
+    if (!raw) return 1;
     p = kw_psbt_new();
-    if (!p) { fprintf(stderr, "kw: out of memory\n"); return 1; }
+    if (!p) { free(raw); fprintf(stderr, "kw: out of memory\n"); return 1; }
     have_psbt = 1;
     if (!kw_psbt_parse(raw, n, p)) {
         fprintf(stderr, "kw: --psbt does not parse\n");
+        free(raw);
         kw_psbt_free(p);
         return 1;
     }
@@ -4640,8 +4691,15 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     }
 
     {
-        uint8_t out_raw[32768];
-        size_t on = kw_psbt_serialize(p, out_raw, sizeof out_raw);
+        /* Sized by asking rather than guessed at: a psbt carries the whole
+           transaction behind each input, so a fixed buffer is a ceiling on which
+           coins can be signed at all. Freed at out:, which every path below
+           goes through. */
+        on = kw_psbt_serialize(p, NULL, 0);
+        out_raw = on ? (uint8_t *)malloc(on) : NULL;
+        if (on && (!out_raw || kw_psbt_serialize(p, out_raw, on) != on)) {
+            free(out_raw); out_raw = NULL; on = 0;
+        }
         kw_psbt *back = NULL;
         const kw_tx *btx;
         uint64_t back_out = 0;
@@ -4732,6 +4790,8 @@ static int psbt_sign_keystore(const kw_chainparams *cp, const char *path,
     rc = 0;
 
 out:
+    free(raw);
+    free(out_raw);
     kw_tx_free(prev);
     if (keys) {
         kw_secure_zero(keys, (size_t)nkeys * sizeof *keys);
@@ -4769,7 +4829,7 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
     if (!strcmp(sub, "sign") && path && !wif_arg)
         return psbt_sign_keystore(cp, path, pass_arg, psbt_arg, maxfee_arg, gap);
 
-    uint8_t raw[32768];
+    uint8_t *raw = NULL;
     kw_psbt *p;
 
     /* 182kB of fixed arrays, so it is allocated rather than left on this frame.
@@ -4779,12 +4839,13 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
     if (!p) { fprintf(stderr, "kw: out of memory\n"); return 1; }
 
     if (!strcmp(sub, "create")) {
-        size_t n = read_hex_arg(tx_arg, "--tx", raw, sizeof raw);
+        size_t n = 0;
+        raw = read_hex_alloc(tx_arg, "--tx", &n);
         kw_tx *tx = kw_tx_new();
         int crc = 1;
 
         if (!tx) { fprintf(stderr, "kw: out of memory\n"); goto out_create; }
-        if (!n) goto out_create_tx;
+        if (!raw || !n) goto out_create_tx;
         if (kw_tx_parse(raw, n, tx) != n) { fprintf(stderr, "kw: --tx is not a transaction\n"); goto out_create_tx; }
         if (!kw_psbt_create(p, tx)) { fprintf(stderr, "kw: --tx already carries a scriptSig\n"); goto out_create_tx; }
         /* the updater's job: the previous transaction each input spends, which is
@@ -4803,13 +4864,18 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
     out_create_tx:
         kw_tx_free(tx);
     out_create:
+        free(raw);
         kw_psbt_free(p);
         return crc;
     }
 
-    size_t n = read_hex_arg(psbt_arg, "--psbt", raw, sizeof raw);
+    /* Every subcommand below this reads the psbt the same way, and raw is now
+       sized from the hex rather than a fixed array: sizeof on it was a pointer
+       after that change, which asan caught as extract returning nothing. */
+    size_t n = 0;
+    raw = read_hex_alloc(psbt_arg, "--psbt", &n);
     int rc = 1;
-    if (!n) goto out;
+    if (!raw || !n) goto out;
     if (!kw_psbt_parse(raw, n, p)) { fprintf(stderr, "kw: --psbt is not a psbt kw can represent\n"); goto out; }
     if (!strcmp(sub, "tx")) {
         /* the unsigned transaction, so a signer can see what it is signing */
@@ -4975,15 +5041,19 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
         rc = 0;
     } else if (!strcmp(sub, "combine")) {
         for (int i = 0; i < nextra; i++) {
-            uint8_t o[32768];
-            size_t on = read_hex_arg(extra[i], "--psbt", o, sizeof o);
+            /* Sized from the hex rather than into a fixed buffer: a psbt a
+               counterparty hands back carries the same previous transactions,
+               so what could not be written could not be read either. */
+            size_t on = 0;
+            uint8_t *o = read_hex_alloc(extra[i], "--psbt", &on);
             kw_psbt *q = kw_psbt_new();
-            if (!q) { fprintf(stderr, "kw: out of memory\n"); goto out; }
-            if (!on || !kw_psbt_parse(o, on, q)) {
+            if (!q) { free(o); fprintf(stderr, "kw: out of memory\n"); goto out; }
+            if (!o || !on || !kw_psbt_parse(o, on, q)) {
                 fprintf(stderr, "kw: bad --psbt to combine\n");
-                kw_psbt_free(q);
+                free(o); kw_psbt_free(q);
                 goto out;
             }
+            free(o);
             int okc = kw_psbt_combine(p, q);
             kw_psbt_free(q);
             if (!okc) { fprintf(stderr, "kw: those psbts describe different transactions\n"); goto out; }
@@ -5013,6 +5083,7 @@ static int cmd_psbt(const kw_chainparams *cp, const char *sub, const char *psbt_
     } else { usage(); rc = 2; }
 
 out:
+    free(raw);
     kw_psbt_free(p);
     return rc;
 }
