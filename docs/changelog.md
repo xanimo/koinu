@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- `kwd` gave back the height two peers had agreed on whenever a later ask
+  failed. A node asked for the filter header of a block it has not seen yet
+  hangs up, which reads as no answer, so a second peer a moment behind dropped
+  the line to the newest anchor and every query until the next block fetched
+  whole every block above it: 511 blocks measured, for a peer one block behind
+  for about a second. Catching up did not help, because nothing asked again
+  until the tip moved. The highest agreed height is kept while the filter header
+  there is unchanged, and a miss is retried on the next request. The same case
+  costs one block now, which is the one the second peer had not seen.
+
 - Refusing a seed passphrase outside ASCII also turned away the words of a
   wallet koinu had already made with one. `kw restore` and `kw backup verify`,
   the command `kw new` points a user at, both refused, so somebody who lost

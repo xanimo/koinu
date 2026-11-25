@@ -124,6 +124,23 @@ static uint32_t g_cfsettled;
    hundred, and restarting put the line back at the tip. A caller giving the
    backend a few seconds eventually stops getting an answer at all. */
 static uint32_t g_settled_at;
+/* The highest height two peers have agreed on, and the filter header they
+   agreed about. An agreement is about one header, so it survives the tip moving
+   and does not survive that header changing: a reorg below it makes it an
+   agreement about a chain neither peer is on any more.
+
+   Kept because settle_filters used to begin each run by dropping the line to
+   the anchor and raise it again only if the second peer answered in that same
+   call. A node asked for the filter header of a block it has not seen yet hangs
+   up, which reads as no answer, so a second peer one block behind for a second
+   cost every query until the next block the whole span above the anchor,
+   fetched whole. Before the line was allowed to move at all it could not fall;
+   making it follow the chain let it fall too. */
+static uint32_t g_agreed_h;
+static uint8_t  g_agreed_hdr[32];
+/* A miss is worth retrying on the next request rather than at the next block,
+   since what it usually means is that the other peer was a moment behind. */
+static int      g_agree_retry;
 
 /* The filter path indexes a header store and a filter cache against each other,
    so it takes a store whose first entry is the cache's base height. This store
@@ -230,21 +247,53 @@ static void settle_filters(const kw_chainparams *cp, const kw_headerstore *cfs,
 
     uint32_t anchored = newest_anchor(cp, tip);
     if (tip <= anchored) return;
-    g_cfsettled = anchored;
+
+    /* The floor is the anchor, or a height two peers have already agreed on if
+       this chain still gives the header they agreed about. Checked rather than
+       remembered: an agreement about a header is worth nothing once the chain
+       at that height is a different one. */
+    uint32_t floor_h = anchored;
+    if (g_agreed_h > anchored && g_agreed_h <= tip) {
+        uint8_t now[32];
+        if (kw_cfstore_headers_anchored(cp, filters_path, g_cfbase, g_agreed_h,
+                                        now, 1) == 1 &&
+            memcmp(now, g_agreed_hdr, 32) == 0) {
+            floor_h = g_agreed_h;
+        } else {
+            /* The chain moved under it. Nothing is carried forward. */
+            g_agreed_h = 0;
+        }
+    }
+    g_cfsettled = floor_h;
+    g_agree_retry = 0;
 
     kw_peer *q = other_live(from);
     if (!q) {
         fprintf(stderr, "kwd: one filter peer, so heights above %u are unchecked and "
                         "not served;\n     give --node twice to have them compared\n",
-                anchored);
+                floor_h);
         return;
     }
+    if (tip <= floor_h) return;          /* already agreed this far */
+
     int agreed = kw_cfstore_agree(cp, q, cfs, filters_path, g_cfbase, tip);
-    if (agreed == 1) { g_cfsettled = tip; return; }
+    if (agreed == 1) {
+        uint8_t hdr[32];
+        g_cfsettled = tip;
+        if (kw_cfstore_headers_anchored(cp, filters_path, g_cfbase, tip, hdr, 1) == 1) {
+            g_agreed_h = tip;
+            memcpy(g_agreed_hdr, hdr, 32);
+        }
+        return;
+    }
+    /* Keep what was earned and ask again next request. A peer that has not seen
+       the block yet hangs up rather than disagreeing, and the two are reported
+       the same way here, so neither is treated as a reason to give back ground. */
+    g_agree_retry = 1;
     fprintf(stderr, agreed == 0
             ? "kwd: two peers disagree on the filters above %u, serving only to there\n"
             : "kwd: the second peer could not answer for the filters above %u, "
-              "serving only to there\n", anchored);
+              "serving only to there\n", floor_h);
 }
 
 /* Every live peer's chain, weighed, with the work of everything above the newest
@@ -421,7 +470,7 @@ static void resettle_if_moved(const kw_chainparams *cp, const kw_headerstore *cf
                               const char *filters_path, kw_peer *from)
 {
     uint32_t tip = g_cfbase + (uint32_t)(cfs->count ? cfs->count - 1 : 0);
-    if (tip == g_settled_at) return;
+    if (tip == g_settled_at && !g_agree_retry) return;
     settle_filters(cp, cfs, filters_path, from);
 }
 
