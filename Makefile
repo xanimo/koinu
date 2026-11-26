@@ -503,6 +503,9 @@ test/cfstub: test/cfstub.o
 test/fakenode: test/fakenode.o $(LIB) $(SECP_LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/fakenode.o $(LIB) $(SECP_LIB)
 
+test/stallrelay: test/stallrelay.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/stallrelay.o
+
 net_handshake: test/net_handshake.o $(LIB)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/net_handshake.o $(LIB)
 
@@ -562,7 +565,7 @@ crypto/vendor/argon2/%.o: CFLAGS += -Wno-type-limits -Wno-sign-compare
 # fails at runtime looking like a logic bug rather than at the build.
 -include $(CORE_OBJ:.o=.d) $(TESTS:=.d) cli/kw.d cli/kwd.d cli/kwui.d test/testutil.d
 
-check: $(TESTS) kw kwd kwui test/fakenode test/cfstub test/mkutxos test/signonly test/hostnames
+check: $(TESTS) kw kwd kwui test/fakenode test/cfstub test/stallrelay test/mkutxos test/signonly test/hostnames
 	./test/test_cpu
 	./test/test_rng
 	./test/test_sha2
@@ -614,6 +617,7 @@ check: $(TESTS) kw kwd kwui test/fakenode test/cfstub test/mkutxos test/signonly
 	./test/test_kwui.sh
 	./test/test_kwd.sh
 	./test/test_kwdsettle.sh
+	./test/test_kwddrain.sh
 	./test/test_cfcheck.sh
 	$(MAKE) fuzz-syntax
 	$(MAKE) fuzz-run
@@ -694,7 +698,7 @@ fuzz-asan:
 	fi
 
 clean:
-	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(SIGN_SO)* $(CHAIN_SO)* koinu.map .pcprefix koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(PIC_OBJ) $(PIC_OBJ:.o=.d) $(TESTS) test/mkutxos test/signonly test/hostnames test/cfstub test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
+	rm -f $(LIB) $(SIGN_LIB) $(CHAIN_LIB) $(SIGN_SO)* $(CHAIN_SO)* koinu.map .pcprefix koinu-sign.pc koinu-chain.pc $(CORE_OBJ) $(PIC_OBJ) $(PIC_OBJ:.o=.d) $(TESTS) test/mkutxos test/signonly test/hostnames test/cfstub test/stallrelay test/*.o test/*.d kw kwd kwui fuzz_parse fuzz_shares fuzz_socks5 fuzz_kwd fuzz_replay $(NETFUZZ:%=fz_%) cli/*.o cli/*.d crypto/*.d net/*.d wallet/*.d crypto/vendor/*/*.d crypto/vendor/argon2/blake2/*.d net_handshake net_tor net_sync net_spv net_cf net_multisig net_auxpow net_powtail net_services pow_chain gen_checkpoints mkvectors_chain test/fakenode
 
 # Also clean the submodule build. Left out of `clean` because rebuilding
 # secp256k1 is slow and rarely what you want between edits.

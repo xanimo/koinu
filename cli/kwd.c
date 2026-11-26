@@ -93,10 +93,17 @@ static struct {
     int port, tor;
 } dial;
 
+/* The receive timeout a peer is dialled with, and what drain_peer puts back
+   after borrowing the socket for a short one. Named rather than repeated, since
+   restoring a different number from the one it was dialled with would change
+   every exchange that follows. */
+#define KWD_PEER_SECONDS 15
+
 static int peer_dial(kw_peer *p, const char *host)
 {
-    int ok = dial.tor ? kw_peer_connect_socks5(p, dial.cp, host, dial.port, 15, "127.0.0.1", 9050)
-                      : kw_peer_connect(p, dial.cp, host, dial.port, 15);
+    int ok = dial.tor ? kw_peer_connect_socks5(p, dial.cp, host, dial.port,
+                                               KWD_PEER_SECONDS, "127.0.0.1", 9050)
+                      : kw_peer_connect(p, dial.cp, host, dial.port, KWD_PEER_SECONDS);
     if (!ok) return 0;
     if (!kw_peer_handshake(p, 0)) { kw_peer_close(p); return 0; }
     return 1;
@@ -424,6 +431,21 @@ static int cff_one(void *ctx, uint32_t height, const uint8_t *filter, size_t fle
    at a time, so this is bounded for the same reason KW_SYNC_MAX_SKIP is. */
 #define KWD_DRAIN_MAX 64
 
+/* And how long one may take, which the count above does not bound at all.
+   kw_peer_recv returns when a whole message is in, so a peer that sent half a
+   ping and stopped held this for the socket timeout, and one dribbling a byte
+   held it for KW_PEER_EXCHANGE_SECONDS. Measured at 14 seconds and 119 seconds,
+   both of them blocking requests that needed no peer: a client asking for a
+   cached filter header waited behind a peer that had sent nothing complete.
+
+   A drain is opportunistic. It reads what has arrived and comes back, so the
+   socket gets a short timeout for its duration and an incomplete message is
+   left in the peer's buffer for the next pass rather than waited on. The bytes
+   already read are kept, so a slow peer still makes progress a pass at a time
+   instead of being dropped for being slow. */
+#define KWD_DRAIN_MS      1000
+#define KWD_DRAIN_READ_MS  100
+
 /* Read what peer (i) has said since the last request and throw it away.
    kw_peer_recv answers a ping on the way past, which is the half of this that
    keeps the connection alive; dropping the announcements is the half that keeps
@@ -437,14 +459,22 @@ static void drain_peer(int i)
     char cmd[13];
     const uint8_t *pl = NULL;
     size_t pn = 0;
+    struct timeval quick = { 0, KWD_DRAIN_READ_MS * 1000 };
+    struct timeval slow  = { KWD_PEER_SECONDS, 0 };
+    struct timespec t0;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    setsockopt(g_peer[i].fd, SOL_SOCKET, SO_RCVTIMEO, &quick, sizeof quick);
 
     for (int n = 0; n < KWD_DRAIN_MAX; n++) {
         struct pollfd one = { g_peer[i].fd, POLLIN, 0 };
-        if (poll(&one, 1, 0) <= 0) return;
+        if (poll(&one, 1, 0) <= 0) break;
         /* 1 is a message, 0 is a hangup or a timeout, -1 is a protocol error.
            Only 1 is worth continuing on, and testing for zero alone took the
            error as a message. */
-        if (kw_peer_recv(&g_peer[i], cmd, &pl, &pn) != 1) {
+        int r = kw_peer_recv(&g_peer[i], cmd, &pl, &pn);
+        if (r == 0 && g_peer[i].timed_out) break;   /* part of a message; later */
+        if (r != 1) {
             kw_peer_close(&g_peer[i]);
             g_alive[i] = 0;
             return;
@@ -455,7 +485,13 @@ static void drain_peer(int i)
            which is what the first version of this did, reads every message and
            still lets the node hang up at twenty minutes. */
         if (!strcmp(cmd, "ping")) kw_peer_send(&g_peer[i], "pong", pl, pn);
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if ((now.tv_sec - t0.tv_sec) * 1000L +
+            (now.tv_nsec - t0.tv_nsec) / 1000000L >= KWD_DRAIN_MS) break;
     }
+    setsockopt(g_peer[i].fd, SOL_SOCKET, SO_RCVTIMEO, &slow, sizeof slow);
 }
 
 /* Move the line as the chain does. settle_filters asks a second peer for one
