@@ -2,7 +2,40 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
+Work earned and then given back, in four places. A late filter answer dropped
+the height two peers had agreed on, a drain bounded by messages and not by time
+held every request behind one a peer never finished, and the anchor generator
+threw away a whole walk on one dropped chunk. The fourth is not fixed here: a
+header sync still discards every header it verified when the link fails, which
+cost four of the fifteen runs that regenerated this release's anchors.
+
+`KW_ABI` goes 2 to 3, so this is 0.6.0 rather than a patch.
+
 ### Fixed
+
+- `kw cfcheckpoints` walks every block from genesis in 1000-block chunks through
+  one peer, and a chunk that failed ended the run with a table too short to use.
+  Fifteen runs against a node across a wifi link reached between 9 and 283 of
+  the 647 anchors, each failing at a random height, which made the step
+  `docs/release-process.md` asks for at every release a lottery. The running
+  filter-header chain is held by the generator rather than by the peer, so a
+  lost chunk is redialled and asked again where the walk stood. The continuity
+  check on the peer's `previous_filter_header` still has to pass across that
+  seam.
+
+- One `kwd` drain was bounded by messages and not by time. `kw_peer_recv`
+  returns only once a whole message is in, so a peer that sent part of a ping
+  and stopped held the accept loop for the socket timeout, and one dribbling a
+  byte held it for `KW_PEER_EXCHANGE_SECONDS`: 12.3 seconds and 117.1 seconds
+  measured, both of them in front of a `cfheaders` request answered entirely out
+  of the local cache, which needs no peer at all. A drain is opportunistic now,
+  with a short read timeout for its duration and a one-second deadline over it,
+  and an unfinished message is left in the peer's buffer for the next pass. The
+  bytes already read are kept, so a slow peer makes progress a pass at a time
+  rather than being dropped for being slow.
+
 
 - A psbt was held in a fixed 32768-byte buffer in six places in the cli, and a
   psbt carries the whole transaction behind each input, so a coin paid by a
@@ -49,13 +82,6 @@
   than waited out: with 150 seconds of silence the node's `bytesrecv` for kwd
   did not move at all before, and moves by one pong now.
 
-### Changed
-
-- `KW_ABI` goes 2 to 3. `kw_bip39_to_seed` refuses a passphrase holding a byte
-  at or above 0x80, which is a narrowing: a caller that passed one gets 0 where
-  it used to get a seed. `libkoinu-sign.so.2` and `.so.3` install side by side.
-
-### Fixed
 
 - `--seed-passphrase` was hashed as the bytes typed, where BIP39 hashes the NFKD
   form of the mnemonic and the passphrase. "cafe" with a precomposed e-acute
@@ -97,7 +123,6 @@
   unrecognised script. 999 DOGE to a burn, signed. `p2pkh_hash160` answers it
   once for all three places.
 
-### Fixed
 
 - The shared libraries were linked without `$(LDFLAGS)`, which is where
   `HARDLDFLAGS` lands, so `libkoinu-sign.so` and `libkoinu-chain.so` shipped
@@ -112,6 +137,26 @@
   after a clean when only `make shared` has run, so the condition was false, the
   whole check skipped, and the gate reported ok against a library with a
   writable GOT.
+
+### Changed
+
+- Filter-header anchors run to 6474774, 648 of them, where 0.5.2 shipped 645 to
+  6447218. All 644 heights both tables hold are byte-identical, 6450000, 6460000
+  and 6470000 are new, and the 0.5.2 last entry is absent because it was that
+  run's tip rather than a multiple. The block table moved for the first time in
+  three releases: the chain passed 6450000, so 259 entries where there were 258,
+  and all 258 reproduce exactly.
+
+- `KW_ABI` goes 2 to 3. `kw_bip39_to_seed` refuses a passphrase holding a byte
+  at or above 0x80, which is a narrowing: a caller that passed one gets 0 where
+  it used to get a seed. `libkoinu-sign.so.2` and `.so.3` install side by side.
+
+
+- `docs/threat-model.md` records the cross-peer check running against two
+  independent mainnet nodes rather than only against the fake peer in
+  `test/test_cfstore.c`. 0.5.2 shipped the agreeing branch exercised only by a
+  unit test, which is the branch that opens the gate: a bug there serves
+  unchecked filters and reports them as checked.
 
 ### Added
 
@@ -160,13 +205,7 @@
   are exported and take a `base_height` already, so a narrower view of the
   header store does it without a wider signature. No soname bump.
 
-### Changed
-
-- `docs/threat-model.md` records the cross-peer check running against two
-  independent mainnet nodes rather than only against the fake peer in
-  `test/test_cfstore.c`. 0.5.2 shipped the agreeing branch exercised only by a
-  unit test, which is the branch that opens the gate: a bug there serves
-  unchecked filters and reports them as checked.
+**Full Changelog**: https://github.com/xanimo/koinu/compare/v0.5.2...v0.6.0
 
 ## [0.5.2] - 2026-11-06
 
