@@ -2334,6 +2334,33 @@ static int cmd_sweep(const kw_chainparams *cp, const char *wif_arg, const char *
    per 1000 blocks rather than the whole filter set. This is a release-time tool:
    the values it prints are only as good as the node they came from, so run it
    against a node whose blocks you trust. */
+/* One chunk of the filter-header walk, redialled rather than given up on.
+   cfcheckpoints walks every block from genesis in 1000-block chunks through one
+   peer, and a link that drops mid-walk cost the whole walk: fifteen runs over
+   wifi reached between 9 and 283 of the 647 anchors, each failing at a random
+   height and each printing a table too short to use. The running chain state is
+   held here, not on the peer, so a redial continues where the walk stood. The
+   continuity check on (prev) still has to pass across that seam, so a peer that
+   serves a different chain after the redial is caught as before. */
+#define KW_CFGEN_REDIALS 8
+static int cf_fetch_chunk(kw_peer *p, const kw_headerstore *s, size_t s0, size_t s1,
+                          uint8_t prev[32], uint8_t (*fh)[32], const kw_chainparams *cp,
+                          const char *node, int port, int tor)
+{
+    int live = 1;
+    for (int try = 0; try <= KW_CFGEN_REDIALS; try++) {
+        /* Only ask a peer that is open. Fetching on one a failed redial had
+           already closed would read a closed descriptor. */
+        if (live && kw_cf_fetch_headers(p, s, 1, s0, s1, prev, fh)) return 1;
+        if (try == KW_CFGEN_REDIALS) break;
+        fprintf(stderr, "kw: lost the peer at height %zu, redialling (%d of %d)\n",
+                s0 + 1, try + 1, KW_CFGEN_REDIALS);
+        if (live) kw_peer_close(p);
+        live = peer_open(p, cp, node, port, tor);
+    }
+    return 0;
+}
+
 static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int port, int tor,
                              const char *headers_path, int peers, long spacing,
                              int validate_pow)
@@ -2376,7 +2403,7 @@ static int cmd_cfcheckpoints(const kw_chainparams *cp, const char *node, int por
             size_t s1 = s0 + CHUNK; if (s1 > s.count) s1 = s.count;
             uint8_t prev[32];
             /* store index 0 is height 1: genesis is not in the header store */
-            if (!kw_cf_fetch_headers(&p, &s, 1, s0, s1, prev, fh)) {
+            if (!cf_fetch_chunk(&p, &s, s0, s1, prev, fh, cp, node, port, tor)) {
                 fprintf(stderr, "kw: cfheaders fetch failed at height %zu "
                                 "(does %s serve BIP157?)\n", s0 + 1, node);
                 goto out;
